@@ -47,5 +47,13 @@
     <ClInclude Include="CPU.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="reg.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <MASM Include="reg.asm">
+      <Filter>Header Files</Filter>
+    </MASM>
   </ItemGroup>
 </Project>

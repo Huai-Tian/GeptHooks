@@ -12,3 +12,5 @@ typedef struct _VCPU {
 }VCPU, * PVCPU;
 
 int VMXInitCpu();
+int VMXSetupVmcs();
+void VMXFillSelectorData();

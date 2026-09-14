@@ -6,6 +6,26 @@
 
 #define MSR_IA32_FEATURE_CONTROL 0x3a
 
+typedef struct {
+	USHORT sel;
+	USHORT attributes;
+	ULONG32 limit;
+	ULONG64 base;
+} SEGMENT_SELECTOR;
+#pragma warning(push)
+#pragma warning(disable: 4201)
+typedef struct {
+    USHORT LimitLow;
+    USHORT BaseLow;
+    UCHAR BaseMid;
+    UCHAR AttributesLow;
+    struct {
+        UCHAR LimitHigh : 4;
+        UCHAR AttributesHigh : 4;
+    };
+    UCHAR BaseHigh;
+} SEGMENT_DESCRIPTOR, * PSEGMENT_DESCRIPTOR;
+#pragma warning(pop)
 BOOLEAN CommCheckBios();
 BOOLEAN CommCheckCpuId();
 BOOLEAN CommCheckCr4();

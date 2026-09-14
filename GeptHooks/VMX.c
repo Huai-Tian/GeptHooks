@@ -184,7 +184,7 @@ void VmxExitHandler(PGUEST_REGS GuestRegs)
 	{
 		if (GuestRegs->rcx == 1)//表示要退出vt
 		{
-			DbgBreakPoint();
+			Log("cpu%d 关闭VT", KeGetCurrentProcessorNumber());
 			__vmx_off();
 			//返回到正确的位置
 			VmxJumGuest(guestRsp, guestRip + exitCodeLen);
@@ -192,8 +192,7 @@ void VmxExitHandler(PGUEST_REGS GuestRegs)
 		//EPT hook
 		else if (GuestRegs->rcx == 2)
 		{
-			EptSetHook(GuestRegs->rdx, GuestRegs->r8, GuestRegs->r9);
-
+			EptSetHook(GuestRegs->rdx, GuestRegs->r8);
 		}
 
 	}
@@ -326,9 +325,9 @@ int VmxSetupVmcs(PVOID GuestRsp)
 	__vmx_vmwrite(VM_ENTRY_MSR_LOAD_COUNT, 0);
 	__vmx_vmwrite(VM_ENTRY_INTR_INFO_FIELD, 0);
 	__vmx_vmwrite(GUEST_ACTIVITY_STATE, 0);   // 处于正常执行指令状态 
-	//0xC0000082 
+	//0xC0000082
 	//VmxSetMsrRw(0xC0000082,0,TRUE);
-	DbgBreakPoint();
+	Log("cpu%d VMCS填充完成, 开始初始化EPT", cpuNumber);
 	if (NT_SUCCESS(EptInitEptData()))
 	{
 		ULONG64 ctls2Value = VmxMsrAdjuest(MSR_IA32_VMX_PROCBASED_CTLS2, 2 | 0X20);
@@ -337,11 +336,14 @@ int VmxSetupVmcs(PVOID GuestRsp)
 		__vmx_vmwrite(0, KeGetCurrentProcessorNumberEx(NULL) + 1);
 	}
 
+	Log("cpu%d vmlaunch...", cpuNumber);
 	result = __vmx_vmlaunch();
 
 	if (result)
 	{
-		DbgBreakPoint();
+		ULONG vmerr = 0;
+		__vmx_vmread(VM_INSTRUCTION_ERROR, &vmerr);
+		Log("cpu%d vmlaunch失败! 错误码=%d", cpuNumber, vmerr);
 	}
 	return result;
 }

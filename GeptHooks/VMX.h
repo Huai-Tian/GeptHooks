@@ -1,4 +1,6 @@
 #pragma once
+#ifndef VMX_H
+#define VMX_H
 #include<ntifs.h>
 #include"ept.h"
 #define EXIT_REASON_EXCEPTION_NMI       0
@@ -56,7 +58,12 @@ typedef struct _VCPU
     PVOID MsrBitMap;
     PEPT_DATA PeptData;
     EPT_EPTP Eptp;
+    PVOID HighPdptVa[512];      //动态建立的pml4[i>0]对应pdpt页的虚拟地址(>512GB MMIO区)
+    volatile LONG bInGuest;     //该CPU已成功进入VMX non-root(卸载时用于判断能否vmcall)
+    volatile LONG bLaunchFailed;//vmlaunch失败标志(区分fall-through路径)
+    volatile LONG bVmxOn;       //该CPU的__vmx_on已成功(卸载时需vmx_off+清CR4.VMXE)
 } VCPU, * PVCPU;
+extern VCPU g_vcpu[128];      //定义于VMX.c, 每CPU一个虚拟CPU实例
 typedef enum _INV_TYPE
 {
     //TLB 
@@ -71,15 +78,18 @@ typedef struct _EPT_CTX
     ULONG64 High;
 } EPT_CTX, * PEPT_CTX;
 PVCPU VmxGetCurrentVcpu(ULONG cpuNumber);
-int VMXInitCpu();
+int VMXInitCpuAlloc(ULONG cpuNumber);   //PASSIVE_LEVEL: 预分配VMXON/VMCS/VMM栈/MSR位图
+int VMXInitCpuStart();                  //DPC(目标核): vmxon+vmptrld+vmlaunch
 int VmxSetupVmcs();
 void VmxFillSelectorData();
-ULONG VmxMsrAdjuest(ULONG64 msrNum,ULONG controlValue);
+ULONG VmxMsrAdjuest(ULONG64 msrNum, ULONG controlValue);
 void VmxVmexitHandler();
 void VmxExitHandler();
-void VmxJumGuest(ULONG64 targetRsp,ULONG64 targetRip);
-void VmxFreeMemery();
+void VmxJumGuest(ULONG64 targetRsp, ULONG64 targetRip);
+void VmxFreeCpuResources(ULONG cpuNumber);  //PASSIVE_LEVEL: 释放指定CPU的全部VT资源
 void VmxInvd();
-void VmxSetMsrRw(ULONG64 msrNum,UCHAR rw,BOOLEAN flag);
+void VmxSetMsrRw(ULONG64 msrNum, UCHAR rw, BOOLEAN flag);
 void VmxInvept(INVEPT_TYPE type, PEPT_CTX ctx);
+
+#endif // VMX_H
 

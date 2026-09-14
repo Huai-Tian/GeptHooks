@@ -33,16 +33,20 @@ BOOLEAN EptIsSupportEpt()
 	return TRUE;
 }
 
-NTSTATUS EptInitEptData()
+//bit17: EPT 1GB大页支持(用于超512GB区域的动态映射)
+BOOLEAN g_bEpt1GbPage = FALSE;
+
+//必须在PASSIVE_LEVEL调用(DriverEntry预分配阶段), 不能在DPC里分配2MB连续内存
+NTSTATUS EptInitEptData(ULONG cpuNumber)
 {
 	ULONG64 msrCap = __readmsr(MSR_IA32_VMX_EPT_VPID_CAP);
 	NTSTATUS status = STATUS_SUCCESS;
 	PHYSICAL_ADDRESS phys = { 0 };
 	phys.QuadPart = MAXULONG64;
-	ULONG cpuNumber = KeGetCurrentProcessorNumber();
 	PVCPU currentVcpu = VmxGetCurrentVcpu(cpuNumber);
 	ULONG memtype = ((msrCap >> 14) & 1) ? 6 : 0;
 	ULONG ifDirty = ((msrCap >> 21) & 1) ? 1 : 0;
+	g_bEpt1GbPage = (BOOLEAN)((msrCap >> 17) & 1);
 	if (!EptIsSupportEpt())
 	{
 		return STATUS_UNSUCCESSFUL;
@@ -80,6 +84,84 @@ NTSTATUS EptInitEptData()
 	return status;
 }
 
+//为超出512GB恒等映射的gpa(典型: PCIe高地址MMIO)动态建立EPT路径
+//惰性策略: 只为命中的512GB区间建一个pdpt页, pdpte项用1GB大页(不支持时建pdt页+2M大页)
+//内存类型一律UC: MMIO必须不可缓存; 即使是RAM也只是慢而不会错
+BOOLEAN EptBuildHighMapping(ULONG64 gpa)
+{
+	ULONG pml4Idx = (ULONG)((gpa >> 39) & 0x1FF);
+	ULONG pdpteIdx = (ULONG)((gpa >> 30) & 0x1FF);
+	ULONG cpuNumber = KeGetCurrentProcessorNumber();
+	PEPT_DATA eptData = g_vcpu[cpuNumber].PeptData;
+	if (eptData == NULL)
+	{
+		return FALSE;
+	}
+	PEPT_PDPTE pdpt = (PEPT_PDPTE)g_vcpu[cpuNumber].HighPdptVa[pml4Idx];
+	if (pdpt == NULL)
+	{
+		pdpt = (PEPT_PDPTE)ExAllocatePoolWithTag(NonPagedPool, PAGE_SIZE, 'tpeP');
+		if (pdpt == NULL)
+		{
+			Log("EPT动态建表失败: pdpt分配失败 gpa=%p", (PVOID)gpa);
+			return FALSE;
+		}
+		RtlZeroMemory(pdpt, PAGE_SIZE);
+		g_vcpu[cpuNumber].HighPdptVa[pml4Idx] = pdpt;
+		eptData->pml4[pml4Idx].ALL = 0;
+		eptData->pml4[pml4Idx].fileds.present = 1;
+		eptData->pml4[pml4Idx].fileds.write = 1;
+		eptData->pml4[pml4Idx].fileds.execute = 1;
+		eptData->pml4[pml4Idx].fileds.physicalAddr = MmGetPhysicalAddress(pdpt).QuadPart / PAGE_SIZE;
+		Log("EPT动态建表: pml4[%d] -> pdpt (512GB区间 %d)", pml4Idx, pml4Idx);
+	}
+	if (pdpt[pdpteIdx].fileds.present)
+	{
+		//该1GB已建好(可能上次invept前残留的重复violation)
+		return TRUE;
+	}
+	if (g_bEpt1GbPage)
+	{
+		//1GB大页恒等映射, UC
+		EPT_PDPTE_1G e1g;
+		e1g.ALL = 0;
+		e1g.fileds.present = 1;
+		e1g.fileds.write = 1;
+		e1g.fileds.execute = 1;
+		e1g.fileds.memoryType = 0;	//UC
+		e1g.fileds.largePage = 1;
+		e1g.fileds.physicalAddr = (ULONG64)pml4Idx * 512 + pdpteIdx;	//1GB页帧号(bits 47:30)
+		pdpt[pdpteIdx].ALL = e1g.ALL;
+	}
+	else
+	{
+		//无1GB支持: 建pdt页, 512个2M大页恒等, UC
+		PEPT_PDE_2M pdt = (PEPT_PDE_2M)ExAllocatePoolWithTag(NonPagedPool, PAGE_SIZE, 'tpeP');
+		if (pdt == NULL)
+		{
+			Log("EPT动态建表失败: pdt分配失败 gpa=%p", (PVOID)gpa);
+			return FALSE;
+		}
+		RtlZeroMemory(pdt, PAGE_SIZE);
+		ULONG64 base2mPfn = ((ULONG64)pml4Idx * 512 + pdpteIdx) * 512;	//该1GB区间首个2M页帧号
+		for (ULONG i = 0; i < 512; i++)
+		{
+			pdt[i].fileds.present = 1;
+			pdt[i].fileds.write = 1;
+			pdt[i].fileds.execute = 1;
+			pdt[i].fileds.memoryType = 0;	//UC
+			pdt[i].fileds.ps = 1;
+			pdt[i].fileds.physicalAddr = base2mPfn + i;
+		}
+		pdpt[pdpteIdx].ALL = 0;
+		pdpt[pdpteIdx].fileds.present = 1;
+		pdpt[pdpteIdx].fileds.write = 1;
+		pdpt[pdpteIdx].fileds.execute = 1;
+		pdpt[pdpteIdx].fileds.physicalAddr = MmGetPhysicalAddress(pdt).QuadPart / PAGE_SIZE;
+	}
+	return TRUE;
+}
+
 void EptExitHandler(PGUEST_REGS GuestRegs)
 {
 	EPT_EXITDATA eptExit = { 0 };
@@ -104,12 +186,12 @@ void EptExitHandler(PGUEST_REGS GuestRegs)
 	PPAGE_HOOK_ENTRY pageEntry = PHGetHookEntryPageBy(pfn);
 	if (pageEntry == NULL)
 	{
-		//未被hook的页发生EPT违规(典型原因: 物理地址超出512GB恒等映射范围)
+		//未被hook的页发生EPT违规(典型原因: 物理地址超出512GB恒等映射范围, 如PCIe高地址MMIO)
 		//原版直接return -> 同一指令无限重试 -> 整机卡死
-		//补救: 恢复该PTE全部权限让指令能继续执行
 		PEPT_PDE_2M pde2M = EptGetPde2B(gpa);
 		if (pde2M != NULL)
 		{
+			//512GB内但2M页尚未拆分等情形: 恢复该PTE全部权限让指令继续执行
 			PEPT_PTE ppte = EptGetPte(gpa);
 			if (ppte != NULL)
 			{
@@ -117,11 +199,27 @@ void EptExitHandler(PGUEST_REGS GuestRegs)
 				ppte->fileds.write = 1;
 				ppte->fileds.execute = 1;
 			}
+			else
+			{
+				//2M页尚未拆分为PTE: 直接恢复PDE全权限兜底
+				pde2M->fileds.present = 1;
+				pde2M->fileds.write = 1;
+				pde2M->fileds.execute = 1;
+			}
+			//必须刷新EPT缓存, 否则旧翻译仍在, 同一指令继续violation
+			EPT_CTX ctx = { 0 };
+			VmxInvept(2, &ctx);
 		}
 		else
 		{
-			//超出映射范围连PTE都拿不到, 无法自动恢复, 只能记录
-			Log("EPT violation beyond 512GB identity map! gpa=%p", (PVOID)gpa);
+			//超出512GB恒等映射: 动态建立EPT路径(惰性, UC内存类型对MMIO安全)
+			if (EptBuildHighMapping(gpa))
+			{
+				//映射已建立, 刷新EPT缓存后重执行同一指令(此次能通过)
+				EPT_CTX ctx = { 0 };
+				VmxInvept(2, &ctx);
+			}
+			//分配失败则只能记录(极小概率, NonPagedPool耗尽)
 		}
 		return;
 	}

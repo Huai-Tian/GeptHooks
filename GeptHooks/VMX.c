@@ -9,24 +9,25 @@ PVCPU VmxGetCurrentVcpu(ULONG cpuNumber)
 {
 	return &g_vcpu[cpuNumber];
 }
-int VMXInitCpu()
+//PASSIVE_LEVEL预分配: DriverEntry里调用.
+//绝不能在DPC(DISPATCH_LEVEL)里做MmAllocateContiguousMemory:
+//文档要求IRQL<=APC_LEVEL, 且每核2MB连续内存搜索在系统碎片化后
+//会让所有核的DPC同时自旋等待 -> 整机冻结(无蓝屏)
+int VMXInitCpuAlloc(ULONG cpuNumber)
 {
-	ULONG cpuNumber = KeGetCurrentProcessorNumber();
-	VCPU currentCpu = g_vcpu[cpuNumber];
 	PHYSICAL_ADDRESS phys = { 0 };
-	PHYSICAL_ADDRESS physvmon = { 0 };
-	PHYSICAL_ADDRESS physvmcs = { 0 };
 	phys.QuadPart = MAXULONG64;
 	PVMX_VMCS pvmxon = (PVMX_VMCS)MmAllocateContiguousMemory(sizeof(VMX_VMCS), phys);
 	PVMX_VMCS pvmcs = (PVMX_VMCS)MmAllocateContiguousMemory(sizeof(VMX_VMCS), phys);
 	PVOID MsrBitMap = MmAllocateContiguousMemory(PAGE_SIZE, phys);
 	PVOID pvmmStack = MmAllocateContiguousMemory(PAGE_SIZE * 6, phys);
-	if (pvmmStack == NULL || MsrBitMap == NULL)
+	if (pvmmStack == NULL || MsrBitMap == NULL || pvmxon == NULL || pvmcs == NULL)
 	{
-		return 1;
-	}
-	if (pvmxon == NULL || pvmcs == NULL)
-	{
+		//释放已成功的部分, 调用方负责清理
+		if (pvmmStack) MmFreeContiguousMemory(pvmmStack);
+		if (MsrBitMap) MmFreeContiguousMemory(MsrBitMap);
+		if (pvmxon) MmFreeContiguousMemory(pvmxon);
+		if (pvmcs) MmFreeContiguousMemory(pvmcs);
 		return 1;
 	}
 	RtlZeroMemory(pvmxon, sizeof(VMX_VMCS));
@@ -38,6 +39,21 @@ int VMXInitCpu()
 	g_vcpu[cpuNumber].VMMStack = pvmmStack;
 	g_vcpu[cpuNumber].VMCS = pvmcs;
 	g_vcpu[cpuNumber].MsrBitMap = MsrBitMap;
+	g_vcpu[cpuNumber].bInGuest = 0;
+	g_vcpu[cpuNumber].bLaunchFailed = 0;
+	return 0;
+}
+
+//DPC(目标核上)执行: vmxon -> vmclear/vmptrld -> 填VMCS -> vmlaunch
+int VMXInitCpuStart()
+{
+	ULONG cpuNumber = KeGetCurrentProcessorNumber();
+	PHYSICAL_ADDRESS physvmon = { 0 };
+	PHYSICAL_ADDRESS physvmcs = { 0 };
+	if (g_vcpu[cpuNumber].VMXON == NULL || g_vcpu[cpuNumber].VMCS == NULL)
+	{
+		return 1;
+	}
 	ULONG64 mycr4 = __readcr4();
 	mycr4 |= __readmsr(MSR_IA32_VMX_CR4_FIXED0);
 	mycr4 &= __readmsr(MSR_IA32_VMX_CR4_FIXED1);
@@ -46,20 +62,27 @@ int VMXInitCpu()
 	mycr0 &= __readmsr(MSR_IA32_VMX_CR0_FIXED1);
 	__writecr0(mycr0);
 	__writecr4(mycr4);
-	physvmon = MmGetPhysicalAddress(pvmxon);
-	physvmcs = MmGetPhysicalAddress(pvmcs);
+	physvmon = MmGetPhysicalAddress(g_vcpu[cpuNumber].VMXON);
+	physvmcs = MmGetPhysicalAddress(g_vcpu[cpuNumber].VMCS);
 	UCHAR vmonResult = __vmx_on(&physvmon);
-
 	if (vmonResult)
 	{
+		Log("cpu%d __vmx_on失败=%d (Hyper-V/VBS占用?)", cpuNumber, vmonResult);
+		g_vcpu[cpuNumber].bLaunchFailed = 1;
 		return vmonResult;
 	}
+	g_vcpu[cpuNumber].bVmxOn = 1;
 
 	__vmx_vmclear(&physvmcs);
 	__vmx_vmptrld(&physvmcs);
-	//填充VMCS区域
+	//填充VMCS区域(vmlaunch在其中)
 	CmGuestRsp();
-	//xxx
+	//vmlaunch成功: guest从CmGeustRip续跑后返回到这里(已处于non-root)
+	//vmlaunch失败: fall-through恢复栈后返回到这里(仍在root)
+	if (!g_vcpu[cpuNumber].bLaunchFailed)
+	{
+		g_vcpu[cpuNumber].bInGuest = 1;
+	}
 	return 0;
 }
 
@@ -71,10 +94,9 @@ ULONG VmxMsrAdjuest(ULONG64 msrNum, ULONG controlValue)
 	return controlValue;
 }
 
-void VmxFreeMemery()
+//PASSIVE_LEVEL释放指定CPU的全部VT资源(DriverUload调用)
+void VmxFreeCpuResources(ULONG cpuNumber)
 {
-	ULONG cpuNumber = KeGetCurrentProcessorNumber();
-	VCPU currentCpu = g_vcpu[cpuNumber];
 	if (g_vcpu[cpuNumber].VMCS)
 	{
 		MmFreeContiguousMemory(g_vcpu[cpuNumber].VMCS);
@@ -95,9 +117,23 @@ void VmxFreeMemery()
 		MmFreeContiguousMemory(g_vcpu[cpuNumber].MsrBitMap);
 		g_vcpu[cpuNumber].MsrBitMap = NULL;
 	}
-	ULONG64 myCr4 = __readcr4();
-	myCr4 &= ~0X2000;
-	__writecr4(myCr4);
+	if (g_vcpu[cpuNumber].PeptData)
+	{
+		MmFreeContiguousMemory(g_vcpu[cpuNumber].PeptData);
+		g_vcpu[cpuNumber].PeptData = NULL;
+	}
+	//释放>512GB动态建立的pdpt页
+	for (ULONG i = 0; i < 512; i++)
+	{
+		if (g_vcpu[cpuNumber].HighPdptVa[i])
+		{
+			ExFreePool(g_vcpu[cpuNumber].HighPdptVa[i]);
+			g_vcpu[cpuNumber].HighPdptVa[i] = NULL;
+		}
+	}
+	g_vcpu[cpuNumber].bInGuest = 0;
+	g_vcpu[cpuNumber].bLaunchFailed = 0;
+	g_vcpu[cpuNumber].bVmxOn = 0;
 }
 
 void VmxSetMsrRw(ULONG64 msrNum, UCHAR rw, BOOLEAN flag)
@@ -214,8 +250,27 @@ void VmxExitHandler(PGUEST_REGS GuestRegs)
 		return;
 	}
 	break;
+	case EXIT_REASON_EPT_CONFIG:
+	{
+		//EPT misconfiguration: PTE格式非法(非指令性exit, 不能推进RIP)
+		//此处只能记录, 否则会无限重试; 出现说明EPT页表有结构性bug
+		static volatile LONG eptCfgCount = 0;
+		if (InterlockedIncrement(&eptCfgCount) <= 10)
+		{
+			Log("EPT misconfiguration! rip=%p", (PVOID)guestRip);
+		}
+	}
+	return;
 	default:
-		break;
+	{
+		//未知exit reason: 限流记录便于诊断
+		static volatile LONG unknownExitCount = 0;
+		if (InterlockedIncrement(&unknownExitCount) <= 10)
+		{
+			Log("unhandled exit reason=%d rip=%p len=%d", vmexitReason, (PVOID)guestRip, (ULONG)exitCodeLen);
+		}
+	}
+	break;
 	}
 	__vmx_vmwrite(GUEST_RIP, guestRip + exitCodeLen);
 }
@@ -327,13 +382,22 @@ int VmxSetupVmcs(PVOID GuestRsp)
 	__vmx_vmwrite(GUEST_ACTIVITY_STATE, 0);   // 处于正常执行指令状态 
 	//0xC0000082
 	//VmxSetMsrRw(0xC0000082,0,TRUE);
-	Log("cpu%d VMCS填充完成, 开始初始化EPT", cpuNumber);
-	if (NT_SUCCESS(EptInitEptData()))
+	Log("cpu%d VMCS填充完成", cpuNumber);
+	//EPT数据已在DriverEntry(PASSIVE_LEVEL)预分配, 此处只写入VMCS
+	if (g_vcpu[cpuNumber].PeptData != NULL)
 	{
 		ULONG64 ctls2Value = VmxMsrAdjuest(MSR_IA32_VMX_PROCBASED_CTLS2, 2 | 0X20);
 		__vmx_vmwrite(SECONDARY_VM_EXEC_CONTROL, ctls2Value);
 		__vmx_vmwrite(EPT_POINTER, g_vcpu[cpuNumber].Eptp.ALL);
-		__vmx_vmwrite(0, KeGetCurrentProcessorNumberEx(NULL) + 1);
+		__vmx_vmwrite(0, cpuNumber + 1);	//field 0 = VPID, 必须非0
+	}
+	else
+	{
+		//EPT未就绪: 只启用VPID, 不启用EPT(仍可虚拟化运行, 无hook能力)
+		Log("cpu%d 无EPT数据(预分配失败?), 仅启用VPID", cpuNumber);
+		ULONG64 ctls2Value = VmxMsrAdjuest(MSR_IA32_VMX_PROCBASED_CTLS2, 0X20);
+		__vmx_vmwrite(SECONDARY_VM_EXEC_CONTROL, ctls2Value);
+		__vmx_vmwrite(0, cpuNumber + 1);
 	}
 
 	Log("cpu%d vmlaunch...", cpuNumber);
@@ -343,7 +407,8 @@ int VmxSetupVmcs(PVOID GuestRsp)
 	{
 		ULONG vmerr = 0;
 		__vmx_vmread(VM_INSTRUCTION_ERROR, &vmerr);
-		Log("cpu%d vmlaunch失败! 错误码=%d", cpuNumber, vmerr);
+		g_vcpu[cpuNumber].bLaunchFailed = 1;
+		Log("cpu%d vmlaunch失败! 错误码=%d (16=非法guest状态 17=非法控制字段)", cpuNumber, vmerr);
 	}
 	return result;
 }

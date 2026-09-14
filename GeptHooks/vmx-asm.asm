@@ -38,10 +38,10 @@ EXTERN	 VmxExitHandler:PROC
 .CODE
 VmxVmexitHandler PROC
 	HVM_SAVE_ALL_NOSEGREGS
-	mov 	rcx, rsp		 
-	sub	rsp, 0100h
+	mov 	rcx, rsp
+	sub	rsp, 0108h    ;108h(非100h): 保证call VmxExitHandler时RSP 16字节对齐(x64 ABI)
 	call	VmxExitHandler
-	add	rsp, 0100h
+	add	rsp, 0108h
 	HVM_RESTORE_ALL_NOSEGREGS	
 	vmresume ;non-root guest
 	ret

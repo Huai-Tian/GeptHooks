@@ -137,8 +137,13 @@ VOID PHHookCallBackDpc(_In_ struct _KDPC* Dpc, _In_opt_ PVOID DeferredContext, _
 		//参数1:exitCode;参数2:传原函数的物理地址;参数3:CodePage物理地址
 		CmVmCall(2, hookContext->OriginalPagePFN, hookContext->CodePagePFN, 0);
 	}
-	KeSignalCallDpcDone(SystemArgument1);
-	KeSignalCallDpcSynchronize(SystemArgument2);
-
-
+	//KeGenericCallDpc约定这两个参数非空, 判空仅为满足SAL静态分析
+	if (SystemArgument1)
+	{
+		KeSignalCallDpcDone(SystemArgument1);
+	}
+	if (SystemArgument2)
+	{
+		KeSignalCallDpcSynchronize(SystemArgument2);
+	}
 }

@@ -15,13 +15,13 @@ push r12
 push r13
 push r14
 push r15
-sub rsp,28h
+sub rsp,20h        ;20h(非28h): 保证call VmxSetupVmcs时RSP 16字节对齐(x64 ABI)
 mov rcx,rsp
 call VmxSetupVmcs
 CmGuestRsp ENDP
 
 CmGeustRip PROC
- add rsp,28h
+ add rsp,20h        ;与CmGuestRsp的sub 20h配对(vmlaunch成功/失败两条路径都经此恢复)
  pop r15
  pop r14
  pop r13

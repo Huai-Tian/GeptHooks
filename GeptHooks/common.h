@@ -1,4 +1,6 @@
 #pragma once
+#ifndef COMMON_H
+#define COMMON_H
 #include<ntifs.h>
 #include<ntddk.h>
 #include<intrin.h>
@@ -78,3 +80,5 @@ extern "C" {
 #ifdef __cplusplus
 }
 #endif
+
+#endif // COMMON_H

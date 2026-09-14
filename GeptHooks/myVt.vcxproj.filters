@@ -17,15 +17,6 @@
       <UniqueIdentifier>{8E41214B-6785-4CFE-B992-037D68949A14}</UniqueIdentifier>
       <Extensions>inf;inv;inx;mof;mc;</Extensions>
     </Filter>
-    <Filter Include="ASM Files">
-      <UniqueIdentifier>{5be6bc75-5f8f-4c7e-8f25-5cf5b1a9d1a2}</UniqueIdentifier>
-      <Extensions>asm</Extensions>
-    </Filter>
-  </ItemGroup>
-  <ItemGroup>
-    <Inf Include="GeptHooks.inf">
-      <Filter>Driver Files</Filter>
-    </Inf>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="main.c">
@@ -40,10 +31,10 @@
     <ClCompile Include="ept.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="PageHook.c">
+    <ClCompile Include="LDasm.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="LDasm.c">
+    <ClCompile Include="PageHook.c">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
@@ -66,25 +57,25 @@
     <ClInclude Include="ept.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="PageHook.h">
+    <ClInclude Include="LDasm.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="LDasm.h">
+    <ClInclude Include="PageHook.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <MASM Include="reg.asm">
-      <Filter>ASM Files</Filter>
-    </MASM>
-    <MASM Include="vmx-asm.asm">
-      <Filter>ASM Files</Filter>
+      <Filter>Header Files</Filter>
     </MASM>
     <MASM Include="common-asm.asm">
-      <Filter>ASM Files</Filter>
+      <Filter>Header Files</Filter>
+    </MASM>
+    <MASM Include="vmx-asm.asm">
+      <Filter>Header Files</Filter>
     </MASM>
     <MASM Include="hook.asm">
-      <Filter>ASM Files</Filter>
+      <Filter>Header Files</Filter>
     </MASM>
   </ItemGroup>
 </Project>

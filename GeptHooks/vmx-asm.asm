@@ -35,16 +35,24 @@ HVM_RESTORE_ALL_NOSEGREGS MACRO
         pop r15
 ENDM
 EXTERN	 VmxExitHandler:PROC
+EXTERN	 VmxResumeFailedEntry:PROC
 .CODE
 VmxVmexitHandler PROC
 	HVM_SAVE_ALL_NOSEGREGS
 	mov 	rcx, rsp
-	sub	rsp, 0108h    ;108h(非100h): 保证call VmxExitHandler时RSP 16字节对齐(x64 ABI)
-	call	VmxExitHandler
-	add	rsp, 0108h
-	HVM_RESTORE_ALL_NOSEGREGS	
+	sub	rsp, 0100h    ;100h(非108h): VM-exit入口RSP=HOST_RSP(页对齐,%16==0,无返回地址),
+	call	VmxExitHandler   ;16个push(128B)不变, sub 100h(256B,%16==0)后调用点RSP%16==0正确
+	add	rsp, 0100h
+	HVM_RESTORE_ALL_NOSEGREGS
 	vmresume ;non-root guest
+	jc	VmxResumeFailed   ;CF=1: VMfailValid
+	jz	VmxResumeFailed   ;ZF=1: VMfailInvalid
 	ret
+VmxResumeFailed:
+	;vmresume失败: 原版直接ret, 栈上无有效返回地址=未定义行为
+	;改为进入C侧记录'R'标记后停掉本核(其余核由心跳日志继续观测)
+	sub	rsp, 20h          ;20h: call时保持RSP 16字节对齐(x64 ABI)+影子空间
+	call	VmxResumeFailedEntry   ;noreturn
 VmxVmexitHandler ENDP
 
 

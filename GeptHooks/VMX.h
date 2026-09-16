@@ -43,7 +43,22 @@
 #define EXIT_REASON_TPR_BELOW_THRESHOLD 43
 #define EXIT_REASON_EPT_VIOLATION       48
 #define EXIT_REASON_EPT_CONFIG          49
+#define EXIT_REASON_WBINVD              54
 #define VMX_MAX_GUEST_VMEXIT	EXIT_REASON_TPR_BELOW_THRESHOLD
+
+//vmresume失败处理(asm调用, noreturn): 'R'标记入环后逃生(vmx_off+跳回guest)
+void VmxResumeFailedEntry(void);
+//EPT事件风暴逃生(noreturn, v3.10): 标记入环后vmx_off脱离VT, 跳回guest
+//触发点重执行(RIP不推进——逃生场景指令均未成功执行)。
+//取代v3.7-v3.9停核方案: 停核会级联冻结T1日志通道(磁盘中断落停核永不
+//完成->ZwWriteFile挂死->死因困在内存环->"零[HB]零信息冻结"三次实测)。
+//tag: 'X'=violation/misconfig风暴 'A'=动态建表失败 'P'=低地址环路
+//     'D'=同(reason,rip)通用环路 'Z'=len0未知exit 'U'=len>0未知exit
+//     'R'=vmresume失败 'G'=VM-entry failure(guest状态非法, 主线程走失败分支)
+void VmxExitStormEscape(char tag, ULONG reason, ULONG64 a, ULONG64 b);
+//三重故障专用停核(noreturn): 唯一不能逃生的场景(重执行=真机三重故障
+//=直接重启且丢内存环日志), 停核留'T'标记
+void VmxTripleFaultHalt(void);
 typedef struct _VMX_VMCS
 {
     ULONG RevisionId;
@@ -59,6 +74,7 @@ typedef struct _VCPU
     PEPT_DATA PeptData;
     EPT_EPTP Eptp;
     PVOID HighPdptVa[512];      //动态建立的pml4[i>0]对应pdpt页的虚拟地址(>512GB MMIO区)
+    PVOID HighPdptRawVa[512];   //上述pdpt的原始pool指针(4KB对齐后无法反推raw, 卸载时用它ExFreePool)
     volatile LONG bInGuest;     //该CPU已成功进入VMX non-root(卸载时用于判断能否vmcall)
     volatile LONG bLaunchFailed;//vmlaunch失败标志(区分fall-through路径)
     volatile LONG bVmxOn;       //该CPU的__vmx_on已成功(卸载时需vmx_off+清CR4.VMXE)
@@ -79,10 +95,13 @@ typedef struct _EPT_CTX
 } EPT_CTX, * PEPT_CTX;
 PVCPU VmxGetCurrentVcpu(ULONG cpuNumber);
 int VMXInitCpuAlloc(ULONG cpuNumber);   //PASSIVE_LEVEL: 预分配VMXON/VMCS/VMM栈/MSR位图
-int VMXInitCpuStart();                  //DPC(目标核): vmxon+vmptrld+vmlaunch
+int VMXInitCpuStart();                  //串行模式(亲和性已切换到目标核, PASSIVE): vmxon+vmptrld+vmlaunch
+void VmxStopCpu();                      //串行模式(同上): 该核退出VT(vmcall/vmx_off+清VMXE)
 int VmxSetupVmcs();
 void VmxFillSelectorData();
-ULONG VmxMsrAdjuest(ULONG64 msrNum, ULONG controlValue);
+//控制字段计算: trueCtl=TRUE能力MSR(0x48D-0x490, VMX_BASIC bit55=1时)——
+//低32位语义与旧式MSR(0x481-0x484/0x48B)相反(允许为0 vs 必须为1), 见VMX.c
+ULONG VmxMsrAdjuest(ULONG64 msrNum, ULONG controlValue, BOOLEAN trueCtl);
 void VmxVmexitHandler();
 void VmxExitHandler();
 void VmxJumGuest(ULONG64 targetRsp, ULONG64 targetRip);

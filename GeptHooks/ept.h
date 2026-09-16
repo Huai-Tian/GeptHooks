@@ -10,13 +10,12 @@ typedef union _EPT_EPTP
 	ULONG64 ALL;
 	struct
 	{
-		ULONG64 memoryType : 3;    //bits 2:0  EPT页表内存类型(0=UC 6=WB)
-		ULONG64 reserved0 : 3;    //bits 5:3  保留, 必须为0
-		ULONG64 walkLen : 2;      //bits 7:6  页表级数-1, 4级EPT必须填3
-		ULONG64 dirty : 1;        //bit 8     accessed/dirty标志
-		ULONG64 reserved1 : 3;    //bits 11:9
-		ULONG64 physicalAddr : 40;//bits 51:12 PML4表物理地址
-		ULONG64 reserved2 : 12;
+		ULONG64 memoryType : 3;    //bits 2:0   EPT页表内存类型(0=UC 6=WB)
+		ULONG64 walkLen : 3;       //bits 5:3   页表级数-1, 4级EPT必须填3(SDM 29.2.1.1)
+		ULONG64 dirty : 1;         //bit 6      accessed/dirty标志
+		ULONG64	reseved1 : 5;      //bits 11:7  保留, 必须为0
+		ULONG64 physicalAddr : 40; //bits 51:12 PML4表物理地址
+		ULONG64	reseved2 : 12;
 	}fileds;
 }EPT_EPTP, * PEPT_EPTP;
 

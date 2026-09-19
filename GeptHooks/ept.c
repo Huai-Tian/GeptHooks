@@ -725,6 +725,9 @@ void EptSetHook(ULONG64 orginalPagePFN, ULONG64 codePagePFN)
 	PEPT_PDE_2M cPed2M = EptGetPde2B(cPFN);
 	if (oPde2M == NULL || cPed2M == NULL)
 	{
+		//v3.42: 中止留痕(>512GB或页表越界: hook静默未建立, 原版完全无声)
+		FlRingPush('n', KeGetCurrentProcessorNumber(), 2,
+			orginalPagePFN, codePagePFN, 0);
 		return;
 	}
 	//判断如果是2M页，就进行拆分
@@ -732,25 +735,50 @@ void EptSetHook(ULONG64 orginalPagePFN, ULONG64 codePagePFN)
 	{
 		//将当前的GPA所在的PDE 拆分成1个ptt 也就是512个pte
 		BOOLEAN status = EptPdeToPte(oPde2M);
+		if (!status)
+		{
+			FlRingPush('n', KeGetCurrentProcessorNumber(), 2,
+				orginalPagePFN, 0, 0);
+			return;
+		}
+		//v3.43: 三步'S'之一(拆原页完成)——b=新pte表物理帧号。
+		//DMP环判读: 死在本步与'S'rsn=23之间=拆分/分配/取pte路径
+		FlRingPush('S', KeGetCurrentProcessorNumber(), 21,
+			orginalPagePFN, ((PEPT_PDE)oPde2M)->fileds.physicalAddr, 0);
 	}
 
 	if (cPed2M->fileds.ps)
 	{
 		//将当前的GPA所在的PDE 拆分成1个ptt 也就是512个pte
 		BOOLEAN status = EptPdeToPte(cPed2M);
+		if (!status)
+		{
+			FlRingPush('n', KeGetCurrentProcessorNumber(), 2,
+				0, codePagePFN, 0);
+			return;
+		}
+		//v3.43: 三步'S'之二(拆CodePage的2M完成)——b=新pte表物理帧号
+		FlRingPush('S', KeGetCurrentProcessorNumber(), 22,
+			codePagePFN, ((PEPT_PDE)cPed2M)->fileds.physicalAddr, 0);
 	}
 	//修改页属性，将执行权限去掉
 	PEPT_PTE pte = EptGetPte(oPFN);//
 
 	if (pte == NULL)
 	{
+		FlRingPush('n', KeGetCurrentProcessorNumber(), 2,
+			orginalPagePFN, 0, 0);
 		return;
 	}
 	pte->fileds.execute = 0;
 	//刷新页表缓存TLB
 	EPT_CTX ctx = { 0 };
 	VmxInvept(2, &ctx);
-
+	//v3.42: **布防完成标记**(每核一条, DMP解析判别: 8×S rsn=23=全核armed,
+	//<8=有核死在EptSetHook路径=拆页/分配问题; 与'n'互斥)
+	//v3.43: rsn从2改为23(21/22/23=拆原页/拆Code页/清execute三步)
+	FlRingPush('S', KeGetCurrentProcessorNumber(), 23,
+		orginalPagePFN, codePagePFN, 0);
 }
 
 PEPT_PDE_2M EptGetPde2B(ULONG64 PFN)
@@ -832,6 +860,11 @@ void EptUpdatePageAcess(ULONG64 gpa, UCHAR acess, PPAGE_HOOK_ENTRY pageEntry)
 	{
 		return;
 	}
+	//v3.43: 视图切换留痕('x')——a=1读/2写/3执行, b=gpa, c=Code页PFN。
+	//DMP环判读: hook触发后无'x'=violation根本没走到切视图(死在
+	//EptExitHandler查表前); 有'x'3后死=死在vmresume后的guest执行
+	FlRingPush('x', KeGetCurrentProcessorNumber(), acess, gpa,
+		pageEntry->CodePagePFN, pageEntry->OriginalPagePFN);
 	//读
 	if (acess == 1)
 	{

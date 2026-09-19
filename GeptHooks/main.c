@@ -9,11 +9,20 @@
 //0 = 仅开启虚拟化(vmlaunch+EPT恒等映射), 用于先验证VT层稳定
 //1 = 自测Hook: hook本驱动内的GeptTestTarget并调用一次, 指令布局自控不依赖系统版本
 //2 = 正式Hook NtClose(危险: 需先确认本机NtClose前19字节prologue与hook.asm重放一致)
-#define GEPT_HOOK_STAGE 0
+//v3.41: 0→1——v3.40全核KEEP闭环(8核inGuest+11min稳定+干净卸载)授权
+#define GEPT_HOOK_STAGE 1
 
-//构建标签(v3.40): 每次改动代码必须同步修改! 会打进日志第一行,
+//构建标签(v3.43): 每次改动代码必须同步修改! 会打进日志第一行,
 //用于核对测试机跑的是不是本次编译的二进制(见DriverEntry横幅)
-#define GEPT_BUILD_TAG "v3.40"
+//v3.42: hook页隔离; b: ml64拒绝段内align 1000h, 改SEGMENT ALIGN(4096)段
+//v3.43: **蓝屏根因修复**——0x1E@(C0000005,nt+0x405B4F,0,-1)两连(v3.41/
+//v3.42b同RVA): ntoskrnl反汇编裁决=KiSwapContext入口shell的movaps xmm6,
+//[rsp+30h]未16字节对齐触发#GP(0)(内核构造AV记录时info[1]填哨兵-1,
+//"读-1"实为对齐违例签名)。错位源头=hook.asm两个跳板的sub rsp,20h:
+//call C函数时RSP%16==8违反ABI→HookTestTarget整树错8字节运行→FlLog
+//阻塞→调度器在错位栈上movaps→#GP。修复: 20h→28h(影子空间+对齐补偿)。
+//另附全程插桩: PHHook三锚点/EptSetHook三步'S'(21/22/23)/视图切换'x'
+#define GEPT_BUILD_TAG "v3.43"
 
 //v3.33: 构建标签全局副本——黑匣子(common.h GEPT_BLACKBOX)在FlInit时
 //拷入, 蓝屏DMP解析时自证二进制版本
@@ -33,6 +42,10 @@ NTSTATUS HookNtClose()
 
 VOID HookTestTarget()
 {
+	//v3.41: 成功证据走文件日志(测试链路=上传日志, DbgView非必开)。
+	//这一行=EPT hook全链路自证: 原页执行violation→双视图切CodePage
+	//→跳板AsmHookTestTarget→本函数→重放5条mov→jmp回原函数+15
+	FlLog("[STAGE1] GeptTestTarget hooked! EPT hook全链路OK(violation→CodePage视图→跳板→重放→归位)");
 	Log("GeptTestTarget hooked! EPT hook chain OK");
 }
 
@@ -263,10 +276,31 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObjct, PUNICODE_STRING pRegPath)
 #endif
 #elif GEPT_HOOK_STAGE == 1
 	//自测: 目标函数与跳板都在hook.asm, 前15字节指令布局完全已知
+	//v3.42: 页隔离验证——被hook页只允许GeptTestTarget自己(v3.41实测教训:
+	//目标曾与CmVmCall/common-asm机器码同页, DPC的vmcall返回路径自己卷进
+	//双视图切换→蓝屏0x1E@nt)。同页=拒绝安装(防止链接器布局回归)
+	if (PAGE_ALIGN(GeptTestTarget) == PAGE_ALIGN(AsmHookTestTarget) ||
+		PAGE_ALIGN(GeptTestTarget) == PAGE_ALIGN(CmVmCall))
+	{
+		FlLog("[STAGE1] **页隔离FAIL**: 目标页=%p 跳板=%p CmVmCall=%p ——被hook页含其他机器码, 拒绝安装(检查hook.asm的GEPTTGT独立段)",
+			PAGE_ALIGN(GeptTestTarget), PAGE_ALIGN(AsmHookTestTarget), PAGE_ALIGN(CmVmCall));
+		FlMarkEntryDone();
+		return STATUS_UNSUCCESSFUL;
+	}
 	g_jmp_testtarget = (ULONG64)GeptTestTarget + PHGetHookLen((ULONG64)GeptTestTarget, sizeof(JMP_OPCODE64), TRUE);
+	FlLog("[STAGE1] 安装hook: 目标=%p(独立页%p) 跳板=%p(页%p) 跳回=%llx (8核已KEEP, DPC逐核EptSetHook)",
+		GeptTestTarget, PAGE_ALIGN(GeptTestTarget), AsmHookTestTarget,
+		PAGE_ALIGN(AsmHookTestTarget), (unsigned long long)g_jmp_testtarget);
 	PHHook(GeptTestTarget, AsmHookTestTarget);
-	//触发一次: 日志出现"GeptTestTarget hooked!"且系统不死机 = EPT Hook全链路打通
+	//触发一次: 日志出现"[STAGE1] GeptTestTarget hooked!"且系统不死机
+	//=EPT Hook全链路打通(violation→双视图→跳板→重放→归位)
+	//v3.43: 触发前锚点——蓝屏窗口的最后一锚。本行之后死=死亡点在
+	//[取指hook页→violation→EptExitHandler→'x'切视图→vmresume→
+	// CodePage跳板→AsmHookTestTarget→HookTestTarget]链路内, DMP环的
+	//'V'/'x'序列可直接二分定位到具体指令段
+	FlLog("[STAGE1] 触发GeptTestTarget(下一行=hook命中或死亡点)");
 	GeptTestTarget();
+	FlLog("[STAGE1] 自测调用返回(未死机未蓝屏), EPT hook全链路打通");
 	Log("stage1: self-test hook done");
 #else
 	//NtClose: +19及hook.asm重放的prologue绑定特定Windows版本,

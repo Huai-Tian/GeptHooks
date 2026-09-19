@@ -94,6 +94,65 @@
 //v3.40(全核接管, common.h LIMIT 1→0/BASE -1→0): 单核闭环授权全部
 //  8核KEEP。史上首次全核KEEP观测通道(T1/T2)入局; v3.12/13全核冻结
 //  的两个凶手(注入状态机/ctls2许可位)均已清算
+//v3.40实测: **全核KEEP闭环**——8核vmlaunch全成功(L293-635逐核"已进入
+//  guest"), 8×inGuest=1; 11min稳定(心跳2043条, r18=4120=8核×515精确
+//  吻合, r10=CPUID正常); 卸载8核串行全干净(8×"已退出guest"cpu号全对
+//  +8×"VMXE已清"+"Unload: 完成")。**VT层至此彻底稳固**
+//v3.41(STAGE 1, main.c GEPT_HOOK_STAGE 0→1): 自测hook(GeptTestTarget)
+//  ——EPT hook全链路首次通电: PHHook建CodePage+跳板→KeGenericCallDpc
+//  逐核vmcall(2)→EptSetHook拆2M→4K+清execute→GeptTestTarget()触发
+//  violation→EptUpdatePageAcess切CodePage视图→跳板→HookTestTarget
+//  ([STAGE1]落盘)→重放5条mov→jmp归位。PageHook.c加守卫: 非guest核
+//  禁vmcall(真机vmcall=#UD蓝屏, 'h'留痕), STAGE 2前必须就位
+//v3.41实测: STAGE1安装行(L649)后<250ms蓝屏0x1E@(0xC0000005,
+//  nt+0x405B4F, 读地址-1)——死在从未运行过的hook布防路径。判读:
+//  **结构性缺陷=hook页含VT机器码**——实测目标(...10D6)/跳板(...10E6)
+//  /探针(...103D)/CmVmCall(...1075)全在同一4K页! EptSetHook清execute
+//  后, DPC自己的vmcall(2)返回ret就在被hook页上=立即violation, 全部
+//  VT机器码卷入双视图互切(exec视图write=0=活锁雷区)。自测≠真实场景
+//v3.42: **自测页隔离**——hook.asm GeptTestTarget用align 1000h
+//  隔离到独立页+跳板推到下一页; main.c STAGE1页隔离断言(目标页与
+//  跳板/CmVmCall同页=拒绝安装); ept.c EptSetHook布防环标记('S'=每核
+//  armed完成/'n'=中止, DMP解析判别8核是否全部布防成功)
+//v3.42b: v3.42的ml64编译失败修正——段内`align 1000h`报"invalid
+//  combination with segment alignment:4096"(.code段默认ALIGN(16), 段内
+//  align不得超段属性)。改用SEGMENT伪指令: GeptTestTarget放
+//  `GEPTTGT SEGMENT ALIGN(4096) 'CODE'`独立段→链接器给独立PE section,
+//  SectionAlignment=0x1000天然整页独占; 跳板回.code段(不同section必然
+//  不同页, 无需align)。VS错误列表的19条"未找到函数定义"=IntelliSense
+//  噪音(不解析.asm), 非构建错误
+//v3.42b实测: 页隔离**生效**(L639: 目标=...79000独立页/跳板=...710D6
+//  不同页)但**同签名蓝屏**0x1E@(0xC0000005, nt+0x405B4F, 0, -1)!
+//  两连蓝屏(v3.41/v3.42b)RVA完全相同(nt基址不同), 且异常地址在
+//  **驱动外**(GeptHooks=[...50370000,+170000), 两次蓝屏地址均不落内)
+//  ——页隔离修的是假设问题, 真凶另有其人。日志停在L639"安装hook"
+//  (无DriverEntry完成行), 死亡窗口=PHHook全程(MmAllocateContiguous
+//  Memory→复制→跳板→DPC广播vmcall(2)→EptSetHook)或GeptTestTarget()
+//  首次触发, 窗口内**零布点**(环'S'未落盘, Log=DbgPrint不可见)
+//v3.43(当前): **蓝屏根因修复(反汇编裁决)**——用户上传ntoskrnl.exe
+//  (SizeOfImage 0x1046000与日志模块清单精确吻合=同构建), 反汇编RVA
+//  0x405B4F: `movaps xmmword ptr [rsp+30h], xmm6`, 所属函数[405B40,
+//  405C16)为KiSwapContext入口shell(全xmm6-15+非易失GPR保存, 自定义
+//  寄存器约定rbx=gs:[20h](KPRCB)/rdi=旧线程/rsi=新线程调worker
+//  405E90=KiSwapContext本体: fxsave/xsave+mov [rdi+58h],rsp(存旧栈)
+//  +mov rsp,[rsi+58h](切新栈), 26个调用者全在调度器区)。蓝屏参数
+//  (0xC0000005, rip, 0, -1)的"读地址-1"实为#GP(0)的AV记录哨兵:
+//  movaps要求操作数16字节对齐, [rsp+30h]≡8(mod16)→#GP→内核构造
+//  AV记录时info[0]=0(读)/info[1]=-1(地址未知)→0x1E。
+//  错位源头(工程侧): hook.asm AsmHookTestTarget/AsmHookNtClose的
+//  `sub rsp,20h`+call C函数——入口RSP%16==8(跳板push+ret净值0),
+//  16 push(128B)+20h(32B)不改奇偶→call时RSP%16==8违反ABI(须≡0),
+//  HookTestTarget整棵子树错8字节运行→FlLog等T1落盘线程阻塞→
+//  KiCommitThreadWait在错位栈上调用切换shell→movaps #GP→蓝屏。
+//  全部事实自洽: 两连蓝屏同RVA(确定性调度路径)/异常在nt不在驱动/
+//  页隔离前后同签名(与hook页内容无关)/Stage0无此路径零蓝屏。
+//  修复: 两个跳板sub/add 20h→28h(32B影子空间+8B对齐补偿, 与
+//  CmGuestRsp的sub 28h同理)。另附死亡窗口插桩: PHHook三锚点FlLog/
+//  EptSetHook三步'S'(rsn=21/22/23)/EptUpdatePageAcess视图切换'x'。
+//  静态审计排除项: invept(2)=all-context合法(VMX.h枚举与Intel编号
+//  一致); GUEST_REGS布局rsp槽吸收双push rbp无错位; EptPdeToPte公式
+//  (2M帧号*512+i)正确; VMM栈HOST_RSP=base+0x5000十六对齐+exit
+//  prologue(16push+sub100h)奇偶正确=VM-exit路径无辜
 
 VCPU g_vcpu[128];
 //v3.10: 段AR指纹(CS/TR最终写入VMCS的值), 供vmlaunch前指纹日志行——

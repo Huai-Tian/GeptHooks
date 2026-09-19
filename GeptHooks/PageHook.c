@@ -3,6 +3,7 @@
 #include"LDasm.h"
 #include"winApiDef.h"
 #include"common.h"
+#include"VMX.h"
 LIST_ENTRY g_PageList = { 0 };
 NTSTATUS PHHook(PVOID pFun, PVOID pHook)
 {
@@ -42,6 +43,13 @@ NTSTATUS PHHook(PVOID pFun, PVOID pHook)
 	{
 		memset(CodePage + page_offset + sizeof(JMP_OPCODE64), 0x90, offset);
 	}
+	//v3.43: 副本+跳板构建完成落盘——蓝屏窗口(<1s)内的第一锚点。
+	//此后任何死亡, 文件日志最后一行=本行或下一锚点, 死亡点二分粒度
+	//收敛到"分配/复制/写跳板"与"DPC广播"两个子窗口
+	FlLog("[PHHook] 副本就绪: 原页PFN=%llX CodePagePFN=%llX va=%p 跳板%uB hookLen=%u(页内偏移%u)",
+		(unsigned long long)((MmGetPhysicalAddress(pFun).QuadPart) >> 12),
+		(unsigned long long)((MmGetPhysicalAddress(CodePage).QuadPart) >> 12),
+		CodePage, (unsigned)sizeof(JMP_OPCODE64), realHookLen, (ULONG)page_offset);
 
 	PPAGE_HOOK_ENTRY pHookListEntry = ExAllocatePool(NonPagedPool, sizeof(PAGE_HOOK_ENTRY));
 
@@ -66,7 +74,12 @@ NTSTATUS PHHook(PVOID pFun, PVOID pHook)
 		HOOK_CONTEXT hookContext = { 0 };
 		hookContext.CodePagePFN = pHookListEntry->CodePagePFN;
 		hookContext.OriginalPagePFN = pHookListEntry->OriginalPagePFN;
+		//v3.43: 广播前后双锚点——广播内=8核并行vmcall(2)→EptSetHook
+		//(VM-exit上下文: 拆2M页×2+分配pte页+清execute+invept)。
+		//蓝屏/冻结发生在两锚点之间=exit上下文的EptSetHook路径
+		FlLog("[PHHook] DPC广播开始: 8核vmcall(2)→EptSetHook(拆页+清execute), 环'S'rsn=21/22/23按核留痕");
 		KeGenericCallDpc(PHHookCallBackDpc, &hookContext);
+		FlLog("[PHHook] DPC广播返回(全核EptSetHook已执行)");
 	}
 	return status;
 }
@@ -134,8 +147,22 @@ VOID PHHookCallBackDpc(_In_ struct _KDPC* Dpc, _In_opt_ PVOID DeferredContext, _
 	PHOOK_CONTEXT hookContext = (PHOOK_CONTEXT)DeferredContext;
 	if (hookContext != NULL)
 	{
-		//参数1:exitCode;参数2:传原函数的物理地址;参数3:CodePage物理地址
-		CmVmCall(2, hookContext->OriginalPagePFN, hookContext->CodePagePFN, 0);
+		//v3.41守卫: 仅已进入guest(KEEP)的核才能vmcall——真机上执行vmcall
+		//=非法指令#UD=蓝屏0x1E@c000001d。KeGenericCallDpc广播到**所有**核,
+		//若任一核launch失败/逃生后留在真机, 旧版无条件vmcall会把"单核启动
+		//失败(本可安全降级)"升级成"整机蓝屏"。v3.40实测8核全inGuest=1,
+		//此守卫当前是纯防御, 但STAGE 2(NtClose全系统调用)前必须就位
+		ULONG hc = KeGetCurrentProcessorNumber();
+		if (g_vcpu[hc].bInGuest)
+		{
+			//参数1:exitCode;参数2:传原函数的物理地址;参数3:CodePage物理地址
+			CmVmCall(2, hookContext->OriginalPagePFN, hookContext->CodePagePFN, 0);
+		}
+		else
+		{
+			FlRingPush('h', hc, 2, hookContext->OriginalPagePFN,
+				hookContext->CodePagePFN, 0);
+		}
 	}
 	//KeGenericCallDpc约定这两个参数非空, 判空仅为满足SAL静态分析
 	if (SystemArgument1)

@@ -11,9 +11,13 @@
 //2 = 正式Hook NtClose(危险: 需先确认本机NtClose前19字节prologue与hook.asm重放一致)
 #define GEPT_HOOK_STAGE 0
 
-//构建标签(v3.11): 每次改动代码必须同步修改! 会打进日志第一行,
+//构建标签(v3.40): 每次改动代码必须同步修改! 会打进日志第一行,
 //用于核对测试机跑的是不是本次编译的二进制(见DriverEntry横幅)
-#define GEPT_BUILD_TAG "v3.11b"
+#define GEPT_BUILD_TAG "v3.40"
+
+//v3.33: 构建标签全局副本——黑匣子(common.h GEPT_BLACKBOX)在FlInit时
+//拷入, 蓝屏DMP解析时自证二进制版本
+CHAR g_geptBuildTag[24] = GEPT_BUILD_TAG;
 
 ULONG64 g_jmp_ntclose = 0;
 ULONG64 g_jmp_testtarget = 0;
@@ -35,6 +39,15 @@ VOID HookTestTarget()
 void DriverUload(PDRIVER_OBJECT pDriverObjct)
 {
 	UNREFERENCED_PARAMETER(pDriverObjct);
+	//v3.35: park守卫——park核的VMM栈/park代码页(sti+hlt循环)仍被占用,
+	//卸载=释放后park核执行已释放内存=延迟崩溃。拒绝卸载, 保持加载让
+	//T1继续落盘, 用户收集日志后重启清理
+	if (g_geptParkedMask != 0)
+	{
+		FlLog("Unload: 拒绝卸载! cpu掩码%X在三重故障park中(代码页/VMM栈被park核占用, 机器应存活)——请收集日志后重启系统", g_geptParkedMask);
+		Log("unload refused: parked mask=%X, reboot to clean", g_geptParkedMask);
+		return;
+	}
 	FlLog("Unload: 开始关闭VT(串行逐核)");
 	ULONG cpuCount = KeQueryActiveProcessorCount(NULL);
 	KAFFINITY allCpus = KeQueryActiveProcessors();
@@ -56,6 +69,8 @@ void DriverUload(PDRIVER_OBJECT pDriverObjct)
 	{
 		VmxFreeCpuResources(i);
 	}
+	//v3.18: 释放共享高区页表(8核EPT共用的511个pdpt, 幂等)
+	EptShutdownHighMappings();
 	FlLog("Unload: 完成, 关闭文件日志");
 	FlShutdown();
 }
@@ -77,6 +92,12 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObjct, PUNICODE_STRING pRegPath)
 	//第一行不是本横幅=旧二进制, 停止冻结分析, 先修部署(见NOTES.md 0.5)
 	FlLog("==== GeptHooks build %s | stage=%d cpu数=%d ====",
 		GEPT_BUILD_TAG, GEPT_HOOK_STAGE, cpuCount);
+	//v3.34: 蓝屏黑匣子锚点行——冻结时自旋看门狗(双线程钉cpu0/1, 纯rdtsc
+	//计时30s行环不动)主动蓝屏0xDEADC0DE写出MEMORY.DMP, 黑匣子(事件环尾48
+	//+日志行尾20+exit计数)随DMP保留; 解析器backup/tools/gept_bb_parse.ps1
+	//按魔数GEPTBB01扫描(黑匣子布局未变)
+	FlLog("黑匣子: BB=%p 魔数=GEPTBB01 看门狗v2(自旋+rdtsc, 30s不动)→蓝屏0xDEADC0DE→DMP",
+		(PVOID)&g_flBlackBox);
 	//蓝屏地址判读锚点: bugcheck 0x1E参数2若落在[base, base+size)内=驱动内代码,
 	//否则(ntoskrnl等)——配合事件查看器的BugCheck参数使用
 	FlLog("驱动映像: base=%p size=0x%X", pDriverObjct->DriverStart, pDriverObjct->DriverSize);
@@ -134,6 +155,7 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObjct, PUNICODE_STRING pRegPath)
 			{
 				VmxFreeCpuResources(j);
 			}
+			EptShutdownHighMappings();   //v3.18: 共享高区页(幂等)
 			FlShutdown();
 			return STATUS_INSUFFICIENT_RESOURCES;
 		}
@@ -146,6 +168,7 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObjct, PUNICODE_STRING pRegPath)
 			{
 				VmxFreeCpuResources(j);
 			}
+			EptShutdownHighMappings();   //v3.18: 共享高区页(幂等)
 			FlShutdown();
 			return STATUS_INSUFFICIENT_RESOURCES;
 		}
@@ -157,9 +180,28 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObjct, PUNICODE_STRING pRegPath)
 	//串行逐核启动(取代KeGenericCallDpc): PASSIVE级+亲和性切换到目标核
 	//理由: DPC让全核同时进DISPATCH级, 期间线程不可能被调度——两次实测L26+全部
 	//随冻结丢失, 是结构性观测盲区; 串行模式每步FlLog同步落盘Temp后再前进
+	//v3.32换核实验: 虚拟化目标从cpu0换到最后一核(安静核)。cpu0=存储MSI/
+	//DPC默认路由核(全机磁盘I/O完成依赖它), 虚拟化cpu0=观测通道+全机I/O
+	//全在爆炸半径(v3.17-31零事件冻结的统一解释)。安静核上: 存活=机器层
+	//全通; 冻结=T1活着(结构性脱离依赖链), [I]/[i]身份+最后事件必然落盘
+#if GEPT_LAUNCH_CPU_BASE >= 0
+	ULONG launchBase = GEPT_LAUNCH_CPU_BASE;
+#else
+	ULONG launchBase = cpuCount - 1;    //-1=最后一核(安静核)
+#endif
+	FlLog("v3.40启动模式: launchBase=cpu%u LIMIT=%d(0=不限制), 目标=全部%u核接管(单核KEEP已闭环, 授权全核)",
+		launchBase, GEPT_LAUNCH_CPU_LIMIT, cpuCount);
 	KAFFINITY allCpus = KeQueryActiveProcessors();
 	for (ULONG i = 0; i < cpuCount; i++)
 	{
+		//v3.32: 只虚拟化[launchBase, launchBase+LIMIT)区间的核, 其余真机
+		//(v3.17-31是cpu0; 换核动机见上。BASE=-1+LIMIT=1 → 仅最后一核)
+		if (GEPT_LAUNCH_CPU_LIMIT != 0 &&
+			(i < launchBase || i >= launchBase + GEPT_LAUNCH_CPU_LIMIT))
+		{
+			FlLog("cpu%u 跳过启动(换核实验: 目标=cpu%u安静核, 本核保持真机作观测/对照组)", i, launchBase);
+			continue;
+		}
 		if (g_vcpu[i].VMXON == NULL || g_vcpu[i].VMCS == NULL)
 		{
 			FlLog("cpu%u 无资源, 跳过", i);
@@ -167,6 +209,8 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObjct, PUNICODE_STRING pRegPath)
 		}
 		FlLog("cpu%u: 切换亲和性, VT环境检查+启动...", i);
 		KeSetSystemAffinityThread((KAFFINITY)1 << i);
+		//v3.32: 记录虚拟化目标核(T1心跳pend字段+签到行读它)
+		g_geptVcpuCpu = (LONG)i;
 		if (CommCheckBios() && CommCheckCpuid() && CommCheckCr4())
 		{
 			VMXInitCpuStart();
@@ -188,7 +232,35 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObjct, PUNICODE_STRING pRegPath)
 
 #if GEPT_HOOK_STAGE == 0
 	Log("stage0: virtualization only, no hook installed");
-	FlLog("stage0: DriverEntry完成, 心跳监控中(每秒1条, 卡死后最后一条=冻结时刻)");
+	FlLog("stage0: DriverEntry完成(v3.35=三重故障park化+看门狗观测t1Seq: TF→park机器存活日志落盘; 仍冻→30s→蓝屏→DMP), 心跳监控中(250ms一条)");
+#if !GEPT_PROBE_EXIT
+	//v3.19: 接管模式non-root存活签到——主线程(此刻运行于cpu0的guest里)
+	//以500ms间隔睡眠/唤醒/FlLog共8轮(4秒), 每条签到行都是"non-root下
+	//线程睡眠(时钟中断经注入唤醒)+环写入+T1协作"全链路的活体证明。
+	//冻结若发生, 最后一条签到行的时间戳把冻结窗口切成500ms粒度;
+	//8条全出后DriverEntry返回, 主线程继续活在EPT之下直至sc stop
+	{
+		//v3.25: 签到间隔500ms→100ms×20轮(2秒)——接管初期死亡窗口切到
+		//100ms粒度; 每条签到都是"guest睡眠(时钟中断经注入唤醒)+环写入
+		//+T1 write-through落盘"全链路的活体证明
+		LARGE_INTEGER tick;
+		tick.QuadPart = -1000000LL;    //100毫秒
+		//v3.23: 签到行带cpu0.g(bInGuest)实况——v3.22实测'G'逃生后f:1但签到
+		//仍打印"主线程在EPT之下"=标签失真(实际在真机); 此后按实况标注
+		for (ULONG t = 1; t <= 20; t++)
+		{
+			//v3.32: 读虚拟化目标核实况(换核后不再是硬编码cpu0)
+			LONG vc = g_geptVcpuCpu;
+			KeDelayExecutionThread(KernelMode, FALSE, &tick);
+			FlLog("[存活签到] t=%u×100ms cpu%d.g=%d (主线程%s: 睡眠+唤醒+日志全链路OK)",
+				t, (int)vc, (vc >= 0) ? g_vcpu[vc].bInGuest : 0,
+				((vc >= 0) && g_vcpu[vc].bInGuest) ? "在EPT之下" : "已回真机(逃生/失败后)");
+		}
+		FlLog("[存活签到] 签到完成(2秒), DriverEntry即将返回(此后主线程按上述状态持续运行)");
+		//v3.25: 签到阶段结束, 熄灭T1热轮询(15秒看门狗兜底, 此处主动清)
+		g_flLaunchHot = 0;
+	}
+#endif
 #elif GEPT_HOOK_STAGE == 1
 	//自测: 目标函数与跳板都在hook.asm, 前15字节指令布局完全已知
 	g_jmp_testtarget = (ULONG64)GeptTestTarget + PHGetHookLen((ULONG64)GeptTestTarget, sizeof(JMP_OPCODE64), TRUE);

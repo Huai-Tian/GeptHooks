@@ -44,6 +44,7 @@
 #define EXIT_REASON_EPT_VIOLATION       48
 #define EXIT_REASON_EPT_CONFIG          49
 #define EXIT_REASON_WBINVD              54
+#define EXIT_REASON_XSETBV              55
 #define VMX_MAX_GUEST_VMEXIT	EXIT_REASON_TPR_BELOW_THRESHOLD
 
 //vmresume失败处理(asm调用, noreturn): 'R'标记入环后逃生(vmx_off+跳回guest)
@@ -55,10 +56,28 @@ void VmxResumeFailedEntry(void);
 //tag: 'X'=violation/misconfig风暴 'A'=动态建表失败 'P'=低地址环路
 //     'D'=同(reason,rip)通用环路 'Z'=len0未知exit 'U'=len>0未知exit
 //     'R'=vmresume失败 'G'=VM-entry failure(guest状态非法, 主线程走失败分支)
-void VmxExitStormEscape(char tag, ULONG reason, ULONG64 a, ULONG64 b);
-//三重故障专用停核(noreturn): 唯一不能逃生的场景(重执行=真机三重故障
-//=直接重启且丢内存环日志), 停核留'T'标记
-void VmxTripleFaultHalt(void);
+//     'J'=v3.36: ext-int exit意外到达风暴(pin=0直投下理论不可达, 到达=
+//         配置未生效, case1防御>100次触发)
+//v3.39新增guestRegs参数: 非NULL=从exit handler的C上下文调用(帧上保存着
+//guest全部GPR), 跳回前用VmxJumGuestRegs恢复非易失GPR——旧版不恢复,
+//调用者拿handler残留垃圾寄存器继续跑(v3.38卸载蓝屏0x7E根因, 见
+//vmx-asm.asm VmxJumGuestRegs注释); NULL=寄存器已被asm pop链恢复的
+//路径(VmxResumeFailedEntry), 直接切栈跳
+void VmxExitStormEscape(char tag, ULONG reason, ULONG64 a, ULONG64 b,
+    PVOID guestRegs);
+//v3.39: C上下文vmx_off跳回guest的出口——从GuestRegs帧恢复全部非易失
+//GPR(rbx/rbp/rsi/rdi/r12-r15)后再切RSP/JMP(见vmx-asm.asm详注)
+void VmxJumGuestRegs(PVOID guestRegs, ULONG64 targetRsp, ULONG64 targetRip);
+//v3.39: lgdt/lidt——rcx=10字节描述符(WORD limit@+0, QWORD base@+2)。
+//VM-exit把GDTR/IDTR limit强制0xFFFF(host-state无limit字段), vmx_off
+//回真机前须还原guest原limit(TinyVT VmxPrepareOff/HyperPlatform同款)
+void VmxLoadGdtr(PVOID descriptor);
+void VmxLoadIdtr(PVOID descriptor);
+//三重故障专用park(v3.35, noreturn): guest不可恢复(重执行=真机三重故障
+//=重启)。vmx_off+清EOI债+sti/hlt自旋——本核继续服务中断(IPI等待者
+//解除, 级联冻结被切断), 'T'标记+环尾由T1落盘; 本核永久park, 驱动
+//不得卸载(g_geptParkedMask守卫)
+void VmxTripleFaultPark(void);
 typedef struct _VMX_VMCS
 {
     ULONG RevisionId;
@@ -78,6 +97,13 @@ typedef struct _VCPU
     volatile LONG bInGuest;     //该CPU已成功进入VMX non-root(卸载时用于判断能否vmcall)
     volatile LONG bLaunchFailed;//vmlaunch失败标志(区分fall-through路径)
     volatile LONG bVmxOn;       //该CPU的__vmx_on已成功(卸载时需vmx_off+清CR4.VMXE)
+    //v3.23: 已ack未投递的中断队列(interrupt-window模式)。exit控制bit15
+    //(ack on exit)使每个ext-int exit的中断被LAPIC ack进ISR——若guest当时
+    //不可中断(如探针IF=0窗), 暂存于此, guest开窗(sti)后经reason 7 exit逐个
+    //注入, guest ISR的EOI清掉ISR entry。256深度>>探针50ms窗内可能到达的
+    //中断数(1kHz时钟+热T1磁盘IRQ≈100)
+    volatile LONG PendingIntrCount;
+    UCHAR PendingIntrVec[256];
 } VCPU, * PVCPU;
 extern VCPU g_vcpu[128];      //定义于VMX.c, 每CPU一个虚拟CPU实例
 typedef enum _INV_TYPE
@@ -99,9 +125,10 @@ int VMXInitCpuStart();                  //串行模式(亲和性已切换到目标核, PASSIVE
 void VmxStopCpu();                      //串行模式(同上): 该核退出VT(vmcall/vmx_off+清VMXE)
 int VmxSetupVmcs();
 void VmxFillSelectorData();
-//控制字段计算: trueCtl=TRUE能力MSR(0x48D-0x490, VMX_BASIC bit55=1时)——
-//低32位语义与旧式MSR(0x481-0x484/0x48B)相反(允许为0 vs 必须为1), 见VMX.c
-ULONG VmxMsrAdjuest(ULONG64 msrNum, ULONG controlValue, BOOLEAN trueCtl);
+//控制字段计算(v3.12经典公式, 对新旧MSR均正确): (MSR低32|期望)&高32。
+//低32=必须为1的位, 高32=允许为1的位; TRUE MSR(0x48D-0x490)与旧式MSR
+//(0x481-0x484)位语义相同, 见VMX.c注释(v3.9-v3.11b曾误判语义相反→错误码7)
+ULONG VmxMsrAdjuest(ULONG64 msrNum, ULONG controlValue);
 void VmxVmexitHandler();
 void VmxExitHandler();
 void VmxJumGuest(ULONG64 targetRsp, ULONG64 targetRip);

@@ -1,4 +1,4 @@
-#include"common.h"
+ï»¿#include"common.h"
 #include"winApiDef.h"
 #include"CPU.h"
 #include"VMX.h"
@@ -31,57 +31,241 @@ BOOLEAN CommCheckCr4()
 	}
 	return FALSE;
 }
-//CommVtStart/CommVtShutDown(DPC°ü×°)ÒÑÉ¾³ı: KeGenericCallDpcÈÃÈ«ºËÍ¬Ê±½øÈë
-//DISPATCH¼¶DPC, ÆÚ¼äÈÎºÎÏß³Ì(º¬ÎÄ¼şÈÕÖ¾Ïß³Ì)¶¼²»¿ÉÄÜ±»µ÷¶È¡ª¡ªv3Á½´ÎÊµ²â
-//L26+È«²¿¶ªÊ§¼´´ËÃ¤Çø¡£¸ÄÎªmain.c´®ĞĞÖğºË(Ç×ºÍĞÔÇĞ»»)µ÷ÓÃVMXInitCpuStart/
-//VmxStopCpu, Ã¿²½FlLogÍ¬²½ÂäÅÌTemp¡£
+//CommVtStart/CommVtShutDown(DPCåŒ…è£…)å·²åˆ é™¤: KeGenericCallDpcè®©å…¨æ ¸åŒæ—¶è¿›å…¥
+//DISPATCHçº§DPC, æœŸé—´ä»»ä½•çº¿ç¨‹(å«æ–‡ä»¶æ—¥å¿—çº¿ç¨‹)éƒ½ä¸å¯èƒ½è¢«è°ƒåº¦â€”â€”v3ä¸¤æ¬¡å®æµ‹
+//L26+å…¨éƒ¨ä¸¢å¤±å³æ­¤ç›²åŒºã€‚æ”¹ä¸ºmain.cä¸²è¡Œé€æ ¸(äº²å’Œæ€§åˆ‡æ¢)è°ƒç”¨VMXInitCpuStart/
+//VmxStopCpu, æ¯æ­¥FlLogåŒæ­¥è½ç›˜Tempã€‚
 
-//==================== ¶³½á´æ»îÎÄ¼şÈÕÖ¾ v3 ====================
-//v2Êµ²âÌúÖ¤: TempÎÄ¼şÓĞµÚ3ĞĞ¶øDesktopÃ»ÓĞ -> Ö´ĞĞÁ÷ÔÚFlLogÀïĞ´ÍêTempºó
-//¿¨ËÀÔÚDesktopµÄZwWriteFile(Çı¶¯¼ÓÔØ´°¿ÚÆÚ, É±Èí/¹ıÂËÇı¶¯¿Û×¡ÓÃ»§Ä¿Â¼Ğ´ÇëÇó
-//ĞÎ³ÉÑ­»·µÈ´ı) -> DriverEntry¹ÒËÀ(sc startÎŞÊä³ö) + ĞÄÌøÏß³ÌµÈmutex¹ÒËÀ(ÎŞ[HB])¡£
-//v3ÌúÂÉ: **DriverEntry/DriverUnloadµ÷ÓÃÂ·¾¶ÉÏÁãÎÄ¼şI/O**¡£
-//  FlLog: Ö»¸ñÊ½»¯²¢ÈëĞĞ»·(ÎŞËø) + ÌßÊÂ¼ş»½ĞÑĞ´Ïß³Ì
-//  T1ºóÌ¨Ïß³Ì: ´ò¿ªTemp(ÏµÍ³Ä¿Â¼,¼ÓÔØ´°¿ÚÆÚÊµ²â¿ÉĞ´), ÅÅ¿Õ¶ş½øÖÆ»·+ĞĞ»·,
-//             1Ãë[HB]ĞÄÌø; ËüÊÇÈ¨Íş¸±±¾
-//  T2ºóÌ¨Ïß³Ì: µÈDriverEntryÍê³É(FlMarkEntryDone)ºó²Å´ò¿ªDesktopÎÄ¼ş×ö¾µÏñ,
-//             ¼´Ê¹T2±»¹ıÂËÇı¶¯¿¨ËÀÒ²²»Ó°ÏìT1/DriverEntry/ÏµÍ³ÆäÓà²¿·Ö
-//v3.1ĞŞ¶©(Á½´ÎÊµ²âL25Í£+ÎŞĞÄÌøºó): DPCÆÚ¼äÈ«ºËDISPATCH¼¶, Ïß³Ì²»¿ÉÄÜ±»µ÷¶È,
-//L26+±»À§ÔÚ»·ĞÎ»º³åÀïËæ¶³½á¶ªÊ§¡ª¡ª½á¹¹ĞÔÃ¤Çø¡£¸ÄÎªmain.c´®ĞĞÖğºËÆô¶¯¡£
-//v3.2ĞŞ¶©(v3.1Êµ²â"½öL1+sc start¹ÒÆğ+ÏµÍ³»î×Å"): DriverEntryÉÏÏÂÎÄÖ±½Ó
-//ZwWriteFileÔÚ¼ÓÔØ´°¿ÚÆÚ²»¿É¿¿(v2µÄDesktopÌúÖ¤Í¬Àí, v3.1ÎóÒÔÎªTempÃâÒß;
-//Êµ²âL1ÅöÇÉ³É¹¦ºóL2ÓëT1Ê×Ğ´Ë«Ë«¹ÒÆğ)¡£ĞŞ¶©:
-//  **ÎÄ¼şĞ´Ö»·¢ÉúÔÚT1Ïß³ÌÉÏÏÂÎÄ**(v3Êµ²âT1Ğ´µ½L25, ¿É¿¿);
-//  FlLogÈë»·ºóÂÖÑ¯µÈ´ıT1°Ñ¸ÃĞĞÂäÅÌ(10ms*50, ÉÏÏŞ500ms)¡ª¡ª±£Áô
-//  "ÏÈÂäÅÌÔÙÇ°½ø"µÄ¹Û²âĞÔ, DriverEntry×Ô¼º²»Ğ´Ò»¸ö×Ö½Ú;
-//  TempÎÄ¼ş´ò¿ªÒ²ÒÆ»ØT1(ZwCreateFileÍ¬ÓĞ¼ÓÔØ´°¿ÚÆÚ·çÏÕ)
+//==================== å†»ç»“å­˜æ´»æ–‡ä»¶æ—¥å¿— v3 ====================
+//v2å®æµ‹é“è¯: Tempæ–‡ä»¶æœ‰ç¬¬3è¡Œè€ŒDesktopæ²¡æœ‰ -> æ‰§è¡Œæµåœ¨FlLogé‡Œå†™å®ŒTempå
+//å¡æ­»åœ¨Desktopçš„ZwWriteFile(é©±åŠ¨åŠ è½½çª—å£æœŸ, æ€è½¯/è¿‡æ»¤é©±åŠ¨æ‰£ä½ç”¨æˆ·ç›®å½•å†™è¯·æ±‚
+//å½¢æˆå¾ªç¯ç­‰å¾…) -> DriverEntryæŒ‚æ­»(sc startæ— è¾“å‡º) + å¿ƒè·³çº¿ç¨‹ç­‰mutexæŒ‚æ­»(æ— [HB])ã€‚
+//v3é“å¾‹: **DriverEntry/DriverUnloadè°ƒç”¨è·¯å¾„ä¸Šé›¶æ–‡ä»¶I/O**ã€‚
+//  FlLog: åªæ ¼å¼åŒ–å¹¶å…¥è¡Œç¯(æ— é”) + è¸¢äº‹ä»¶å”¤é†’å†™çº¿ç¨‹
+//  T1åå°çº¿ç¨‹: æ‰“å¼€Temp(ç³»ç»Ÿç›®å½•,åŠ è½½çª—å£æœŸå®æµ‹å¯å†™), æ’ç©ºäºŒè¿›åˆ¶ç¯+è¡Œç¯,
+//             1ç§’[HB]å¿ƒè·³; å®ƒæ˜¯æƒå¨å‰¯æœ¬
+//  T2åå°çº¿ç¨‹: ç­‰DriverEntryå®Œæˆ(FlMarkEntryDone)åæ‰æ‰“å¼€Desktopæ–‡ä»¶åšé•œåƒ,
+//             å³ä½¿T2è¢«è¿‡æ»¤é©±åŠ¨å¡æ­»ä¹Ÿä¸å½±å“T1/DriverEntry/ç³»ç»Ÿå…¶ä½™éƒ¨åˆ†
+//v3.1ä¿®è®¢(ä¸¤æ¬¡å®æµ‹L25åœ+æ— å¿ƒè·³å): DPCæœŸé—´å…¨æ ¸DISPATCHçº§, çº¿ç¨‹ä¸å¯èƒ½è¢«è°ƒåº¦,
+//L26+è¢«å›°åœ¨ç¯å½¢ç¼“å†²é‡Œéšå†»ç»“ä¸¢å¤±â€”â€”ç»“æ„æ€§ç›²åŒºã€‚æ”¹ä¸ºmain.cä¸²è¡Œé€æ ¸å¯åŠ¨ã€‚
+//v3.2ä¿®è®¢(v3.1å®æµ‹"ä»…L1+sc startæŒ‚èµ·+ç³»ç»Ÿæ´»ç€"): DriverEntryä¸Šä¸‹æ–‡ç›´æ¥
+//ZwWriteFileåœ¨åŠ è½½çª—å£æœŸä¸å¯é (v2çš„Desktopé“è¯åŒç†, v3.1è¯¯ä»¥ä¸ºTempå…ç–«;
+//å®æµ‹L1ç¢°å·§æˆåŠŸåL2ä¸T1é¦–å†™åŒåŒæŒ‚èµ·)ã€‚ä¿®è®¢:
+//  **æ–‡ä»¶å†™åªå‘ç”Ÿåœ¨T1çº¿ç¨‹ä¸Šä¸‹æ–‡**(v3å®æµ‹T1å†™åˆ°L25, å¯é );
+//  FlLogå…¥ç¯åè½®è¯¢ç­‰å¾…T1æŠŠè¯¥è¡Œè½ç›˜(10ms*50, ä¸Šé™500ms)â€”â€”ä¿ç•™
+//  "å…ˆè½ç›˜å†å‰è¿›"çš„è§‚æµ‹æ€§, DriverEntryè‡ªå·±ä¸å†™ä¸€ä¸ªå­—èŠ‚;
+//  Tempæ–‡ä»¶æ‰“å¼€ä¹Ÿç§»å›T1(ZwCreateFileåŒæœ‰åŠ è½½çª—å£æœŸé£é™©)
 #define GEPT_LOG_PATH1 L"\\??\\C:\\Users\\User\\Desktop\\gept_log.txt"
 #define GEPT_LOG_PATH2 L"\\??\\C:\\Windows\\Temp\\gept_log.txt"
 
-static HANDLE g_flFileTemp = NULL;        //Temp¾ä±ú(½öT1´¥Åö; T1ÍË³öºóFlShutdownÊÕÎ²)
-static HANDLE g_flFileDesktop = NULL;     //½öT2Ïß³Ì´¥Åö
+static HANDLE g_flFileTemp = NULL;        //Tempå¥æŸ„(ä»…T1è§¦ç¢°; T1é€€å‡ºåFlShutdownæ”¶å°¾)
+static HANDLE g_flFileDesktop = NULL;     //ä»…T2çº¿ç¨‹è§¦ç¢°
 static PVOID g_flThreadT1 = NULL;
 static PVOID g_flThreadT2 = NULL;
-static KEVENT g_flKickT1;                 //×Ô¶¯¸´Î»: ÓĞĞÂĞĞ/ĞÂÊÂ¼şÁ¢¼´»½ĞÑT1
-static KEVENT g_flKickT2;                 //×Ô¶¯¸´Î»: ÓĞĞÂĞĞÁ¢¼´»½ĞÑT2
-static volatile LONG g_flStop = 0;        //Í£Ö¹±ê¼Ç(FlShutdownÖÃ1)
-static volatile BOOLEAN g_flEntryDone = FALSE; //DriverEntryÍê³É±ê¼Ç(·ÅĞĞT2)
-static volatile LONG g_flRingHead = 0;    //¶ş½øÖÆÊÂ¼ş»·µ¥µ÷ĞòºÅ
-static volatile LONG g_flBinFlushed = 0;  //T1ÒÑÅÅ¿ÕµÄ¶ş½øÖÆ»·ÓÎ±ê
-static volatile LONG g_flLineHead = 0;    //ĞĞ»·µ¥µ÷ĞòºÅ
-static volatile LONG g_flT1Seq = 0;       //TempÒÑĞ´ĞĞÓÎ±ê(½öT1ÍÆ½ø, FlLogÂÖÑ¯¶Á; volatile·À±àÒëÆ÷°Ñ¶ÁÈ¡Ìá³öÑ­»·)
-static LONG g_flT2Seq = 0;                //T2(Desktop)ÒÑĞ´ĞĞÓÎ±ê(½öT2´¥Åö)
+static KEVENT g_flKickT1;                 //è‡ªåŠ¨å¤ä½: æœ‰æ–°è¡Œ/æ–°äº‹ä»¶ç«‹å³å”¤é†’T1
+static KEVENT g_flKickT2;                 //è‡ªåŠ¨å¤ä½: æœ‰æ–°è¡Œç«‹å³å”¤é†’T2
+static volatile LONG g_flStop = 0;        //åœæ­¢æ ‡è®°(FlShutdownç½®1)
+static volatile BOOLEAN g_flEntryDone = FALSE; //DriverEntryå®Œæˆæ ‡è®°(æ”¾è¡ŒT2)
+static volatile LONG g_flRingHead = 0;    //äºŒè¿›åˆ¶äº‹ä»¶ç¯å•è°ƒåºå·
+static volatile LONG g_flBinFlushed = 0;  //T1å·²æ’ç©ºçš„äºŒè¿›åˆ¶ç¯æ¸¸æ ‡
+static volatile LONG g_flLineHead = 0;    //è¡Œç¯å•è°ƒåºå·
+static volatile LONG g_flT1Seq = 0;       //Tempå·²å†™è¡Œæ¸¸æ ‡(ä»…T1æ¨è¿›, FlLogè½®è¯¢è¯»; volatileé˜²ç¼–è¯‘å™¨æŠŠè¯»å–æå‡ºå¾ªç¯)
+static LONG g_flT2Seq = 0;                //T2(Desktop)å·²å†™è¡Œæ¸¸æ ‡(ä»…T2è§¦ç¢°)
 static volatile LONG g_flWriteFailsT1 = 0;
 static volatile LONG g_flWriteFailsT2 = 0;
-static volatile LONG g_flT1Lag = 0;     //v3.5: FlLogµÈ´ıT1ÂäÅÌ³¬Ê±(500ms)ÀÛ¼Æ´ÎÊı
+static volatile LONG g_flT1Lag = 0;     //v3.5: FlLogç­‰å¾…T1è½ç›˜è¶…æ—¶(500ms)ç´¯è®¡æ¬¡æ•°
+volatile LONG g_flLaunchHot = 0;        //v3.19: launchçƒ­è½®è¯¢å›å½’(è§common.h)
+volatile LONG g_flWriteGuard = 0;       //v3.28: æ¢é’ˆçª—å£å†™ç›˜æŠ¤å«(è§common.h)
+//v3.29: æŠ¤å«æ­¦è£…æ—¶åˆ»(T1ä¾§, 100nså•ä½)â€”â€”ç½®ä½æ—¶ç”±T1è®°ä¸‹, è¶…100msæœªæ¸…
+//=guestå·²æŒ‚æ­»(probeçª—å£æœ€å¤š~15ms), T1å¼ºåˆ¶è§£é™¤å¹¶è¡¥å†™(ä¿®v3.28è§‚æµ‹ç›²åŒº:
+//æŠ¤å«è§£é™¤ä¾èµ–probeè¿”å›, guestæŒ‚æ­»åˆ™T1æ´»ç€ä¹Ÿæ°¸è¿œä¸å†™ç›˜)
+volatile LONG64 g_flWriteGuardTsc = 0;
+//v3.32: å½“å‰è™šæ‹ŸåŒ–ç›®æ ‡æ ¸(-1=æœªå¯åŠ¨, main.cå¯åŠ¨å‰ç½®ä½)ã€‚T1å¿ƒè·³pendå­—æ®µ
+//ä¸main.cç­¾åˆ°è¡Œè¯»å®ƒâ€”â€”æ¢æ ¸å®éªŒåç›®æ ‡ä¸å†æ˜¯ç¡¬ç¼–ç çš„cpu0
+volatile LONG g_geptVcpuCpu = -1;
+//v3.35: ä¸‰é‡æ•…éšœparkæ ¸ä½æ©ç (bit i=cpu iå·²park)â€”â€”main.cå¸è½½å®ˆå«è¯»å®ƒ
+//(parkæ ¸çš„VMMæ ˆ/ä»£ç é¡µä»è¢«å ç”¨, é©±åŠ¨ç»ä¸èƒ½å¸è½½)
+volatile LONG g_geptParkedMask = 0;
 volatile LONG64 g_flExitCounts[GEPT_EXIT_REASON_MAX] = { 0 };
-static GEPT_RING_ENTRY g_flRing[GEPT_RING_SIZE];   //BSS: ·Ç·ÖÒ³×Ô¶¯ÇåÁã
+
+//===== v3.33/v3.34: è“å±é»‘åŒ£å­ + è‡ªæ—‹çœ‹é—¨ç‹— =====
+//(è®¾è®¡åŠ¨æœºä¸v3.33 DPCç‰ˆå¤±è´¥åˆ¤è¯»è§common.h GEPT_BLACKBOXæ³¨é‡Š)
+static GEPT_RING_ENTRY g_flRing[GEPT_RING_SIZE];   //BSS: éåˆ†é¡µè‡ªåŠ¨æ¸…é›¶
 static GEPT_LINE_ENTRY g_flLines[GEPT_LINE_RING_SIZE];
+GEPT_BLACKBOX g_flBlackBox;                    //BSSè‡ªåŠ¨æ¸…é›¶(éåˆ†é¡µ)
+static volatile LONG64 g_flWdArmed = 0;        //0=è§£é™¤æ­¦è£…, å¦åˆ™=æ­¦è£…æ—¶åˆ»(100ns)
+static volatile LONG  s_flWdFired = 0;         //v3.34: é˜²åŒè·¯åŒæ—¶å¿«ç…§çš„ç«æ€
+static PVOID g_flWdThread[2] = { NULL, NULL }; //v3.34: çœ‹é—¨ç‹—çº¿ç¨‹å¯¹è±¡(å¸è½½ç­‰å¾…)
+//v3.34: TSCé¢‘ç‡(æ ‡å®šå€¼, é»˜è®¤2GHz)â€”â€”çœ‹é—¨ç‹—è®¡æ—¶å…ç–«ä¸­æ–­æ—¶é’Ÿå†»ç»“
+volatile LONG64 g_flWdTscPerSec = 2000000000LL;
+typedef struct _GEPT_WD_TRACK {                //æ¯ä¸ªçœ‹é—¨ç‹—çº¿ç¨‹ç§æœ‰(æ— é”)
+	LONG64 lastLine;
+	LONG64 lastProgress;
+} GEPT_WD_TRACK;
 
-static HANDLE FlOpenOneFile(PCWSTR path);   //Ç°ÖÃÉùÃ÷(¶¨ÒåÔÚÏß³Ìº¯ÊıÖ®ºó)
-static VOID FlDrainTempLocked(VOID);        //Ç°ÖÃÉùÃ÷: T1(»òT1ÍË³öºóµÄFlShutdown)°ÑĞĞ»·ÍÆ½øTemp
+VOID FlWdArm(VOID)
+{
+	//T1ä¸å­˜åœ¨åˆ™ä¸æ­¦è£…: æ— å¿ƒè·³æº=çœ‹é—¨ç‹—å¿…ç„¶è¯¯è§¦å‘(å¥åº·æœºå™¨è¢«è“å±)
+	if (g_flThreadT1 == NULL)
+	{
+		return;
+	}
+	g_flWdArmed = KeQueryUnbiasedInterruptTime();
+}
 
-//ÈÎÒâIRQL(º¬VM-exit): ÎŞËøĞ´»·ĞÎ»º³å, seq×îºóĞ´×÷ÎªÌá½»±ê¼Ç
+VOID FlWdDisarm(VOID)
+{
+	g_flWdArmed = 0;
+}
+
+//è§¦å‘: å¿«ç…§é»‘åŒ£å­+ä¸»åŠ¨è“å±ã€‚çœ‹é—¨ç‹—çº¿ç¨‹ä¸Šä¸‹æ–‡(PASSIVE)æˆ–v3.33é—ç•™è¯­å¢ƒ,
+//æ— é”æ— ç­‰å¾…â€”â€”æœºå™¨æ­¤åˆ»å·²çº§è”å†»ç»“, å¸¸è§„è·¯å¾„å…¨æ­», ä½†crash dumpæ ˆæ˜¯ä¸“ç”¨
+//ä½å±‚è·¯å¾„(æ¥ç®¡ç£ç›˜å†™DMP, ä¸“ä¸ºæ­»é”è®¾è®¡), é»‘åŒ£å­å¿…ç„¶éšMEMORY.DMPè½ç›˜
+static VOID FlWdFire(ULONG trk)
+{
+	//v3.34: åŒè·¯çœ‹é—¨ç‹—å¯èƒ½å‡ ä¹åŒæ—¶æ£€æµ‹åˆ°stallâ€”â€”åªè®©ç¬¬ä¸€è·¯å¿«ç…§
+	//(ç¬¬äºŒè·¯è¿›å…¥=é»‘åŒ£å­æ­£åœ¨è¢«å†™, è‡ªæ—‹ç­‰å¾…bugcheckæ¥ç®¡å³å¯)
+	if (InterlockedCompareExchange(&s_flWdFired, 1, 0) != 0)
+	{
+		for (;;)
+		{
+			YieldProcessor();
+		}
+	}
+	PGEPT_BLACKBOX bb = &g_flBlackBox;
+	LONG rh = g_flRingHead;
+	LONG lh = g_flLineHead;
+	bb->fireTsc = __rdtsc();
+	bb->fireIntrTime = KeQueryUnbiasedInterruptTime();
+	bb->wdArmed = g_flWdArmed;
+	bb->lineHead = lh;
+	bb->ringHead = rh;
+	bb->t1Seq = g_flT1Seq;
+	bb->t2Seq = g_flT2Seq;
+	bb->writeGuard = g_flWriteGuard;
+	bb->launchHot = g_flLaunchHot;
+	bb->vcpuCpu = g_geptVcpuCpu;
+	bb->pendCount = (g_geptVcpuCpu >= 0)
+		? (ULONG64)g_vcpu[g_geptVcpuCpu].PendingIntrCount : (ULONG64)-1;
+	for (ULONG r = 0; r < GEPT_EXIT_REASON_MAX; r++)
+	{
+		bb->exitCounts[r] = g_flExitCounts[r];
+	}
+	//äº‹ä»¶ç¯å°¾48æ¡: åŸæ ·æ‹·è´, seqå­—æ®µä¾›è§£æå™¨æ ¡éªŒæœ‰æ•ˆæ€§
+	for (LONG k = 0; k < 48; k++)
+	{
+		LONG idx = rh - 48 + k;
+		if (idx < 0)
+		{
+			RtlZeroMemory(&bb->ring[k], sizeof(GEPT_RING_ENTRY));
+			continue;
+		}
+		bb->ring[k] = g_flRing[idx & (GEPT_RING_SIZE - 1)];
+	}
+	//è¡Œç¯å°¾20æ¡: seqåŒ¹é…æ‰ç®—æœ‰æ•ˆ(é˜²åŠå†™æ’•è£‚)
+	for (LONG k = 0; k < 20; k++)
+	{
+		LONG idx = lh - 20 + k;
+		if (idx < 0)
+		{
+			bb->lines[k][0] = 0;
+			continue;
+		}
+		PGEPT_LINE_ENTRY e = &g_flLines[idx & (GEPT_LINE_RING_SIZE - 1)];
+		if (e->seq == (ULONG)idx)
+		{
+			RtlStringCbCopyA(bb->lines[k], 256, e->text);
+		}
+		else
+		{
+			bb->lines[k][0] = 0;
+		}
+	}
+	//å‚æ•°1=é»‘åŒ£å­VA(DMPå¯ç›´æ¥å®šä½), å‚æ•°2="GEPTBB01"é­”æ•°(äº‹ä»¶æŸ¥çœ‹å™¨å¯è¯»)
+	KeBugCheckEx(0xDEADC0DE, (ULONG64)(ULONG_PTR)&g_flBlackBox,
+		0x3130304242504547ULL, (ULONG64)lh, (ULONG64)trk);
+}
+
+//v3.34: è‡ªæ—‹çœ‹é—¨ç‹—çº¿ç¨‹(æ›¿ä»£v3.33çš„DPCè®¡æ—¶å™¨ç‰ˆâ€”â€”å®æµ‹180sä¸å¼€ç«,
+//æ ¹å› =å®šæ—¶å™¨åˆ°æœŸä¸KeQueryUnbiasedInterruptTimeéƒ½ä¾èµ–"çº§è”ä¸­ä¼šå†»ç»“"
+//çš„å…±äº«ä¸­æ–­æ—¶é’Ÿ)ã€‚æœ¬çº¿ç¨‹çº¯rdtscè®¡æ—¶+çº¯è‡ªæ—‹: ä¸ç¡çœ (ç¡çœ è¦æ—¶é’Ÿ)ã€
+//ä¸ä¾èµ–å®šæ—¶å™¨/æ—¶é’Ÿ/è°ƒåº¦â€”â€”åªè¦æœ¬æ ¸è¿˜èƒ½æ‰§è¡ŒæŒ‡ä»¤, æ£€æµ‹å°±æ´»ç€ã€‚
+//ä¸¤è·¯ç‹¬ç«‹: W0é’‰cpu0, W1é’‰cpu1(v3.32+è™šæ‹ŸåŒ–ç›®æ ‡=æœ€åä¸€æ ¸cpu7,
+//cpu0/1éƒ½æ˜¯çœŸæœºæ ¸; è‹¥æœªæ¥æ”¹å›è™šæ‹ŸåŒ–cpu0, W0åœ¨guestå†…è‡ªæ—‹â€”â€”
+//EPTå¯¹è‡ªæ—‹é€æ˜, ä»èƒ½å¼€ç«)
+static VOID FlWdThreadProc(PVOID Context)
+{
+	ULONG idx = (ULONG)(ULONG_PTR)Context;
+	//é’‰æ ¸(æ­¤å¤„Contextåªæœ‰0/1ä¸¤å€¼, è§FlInitåˆ›å»ºå¤„)
+	KeSetSystemAffinityThread((KAFFINITY)1 << (idx == 0 ? 0 : 1));
+	//W0è´Ÿè´£TSCé¢‘ç‡æ ‡å®š: é©±åŠ¨åŠ è½½æœŸ(æ­¦è£…å‰)æ—¶é’Ÿå¥åº·, "1sç¡çœ å‰å
+	//rdtscå·®"å³çœŸå®é¢‘ç‡; èŒƒå›´åˆç†æ€§æ ¡éªŒ(0.1G-20G)é˜²æ€ªå€¼
+	if (idx == 0)
+	{
+		ULONG64 t0 = __rdtsc();
+		ULONG64 it0 = KeQueryUnbiasedInterruptTime();
+		LARGE_INTEGER one;
+		one.QuadPart = -10000000LL;    //1ç§’
+		KeDelayExecutionThread(KernelMode, FALSE, &one);
+		ULONG64 t1 = __rdtsc();
+		ULONG64 it1 = KeQueryUnbiasedInterruptTime();
+		if (it1 > it0)
+		{
+			LONG64 f = (LONG64)((t1 - t0) * 10000000ULL / (it1 - it0));
+			if (f > 100000000LL && f < 20000000000LL)
+			{
+				InterlockedExchange64(&g_flWdTscPerSec, f);
+			}
+		}
+	}
+	GEPT_WD_TRACK tr;
+	//v3.35: è§‚æµ‹å¯¹è±¡lineHeadâ†’**t1Seq**(T1å·²å†™ç›˜æ¸¸æ ‡)â€”â€”v3.34åˆ¤è¯»ä¿®æ­£:
+	//çœ‹é—¨ç‹—lineHeadç‰ˆå¯èƒ½æ°¸è¿œè§ä¸åˆ°stall: T1"å¾ªç¯æ´»ç€ä½†é˜»å¡åœ¨
+	//ZwWriteFileå†…"æ—¶å¾ªç¯åœè½¬(å…¶å®é‚£æ—¶lineHeadä¹Ÿå†»ç»“)â€”â€”çœŸæ­£çš„ç›²åŒºæ˜¯
+	//æŠ¤å«çª—: æŠ¤å«=1æœŸé—´T1æŒ‰è®¾è®¡ä¸å†™ç›˜, è‹¥guestæ­»åœ¨æŠ¤å«çª—å†…ä¸”æŠ¤å«è‡ªè§£é™¤
+	//åT1é¦–æ¬¡å†™ç›˜å³æ°¸ä¹…é˜»å¡, lineHeadå†»ç»“åœ¨æœ€åä¸€æ¡[fl]è¡Œ, çœ‹é—¨ç‹—**åº”è¯¥**
+	//å¼€ç«è€Œå®æµ‹æ²¡å¼€ç«=cpu0/1çš„Wçº¿ç¨‹ä¹Ÿè¢«çº§è”å†»ç»“(ä¸å†è°ƒåº¦PASSIVEçº¿ç¨‹)ã€‚
+	//t1Seqåªåœ¨ZwWriteFileçœŸæ­£å®Œæˆåæ¨è¿›: T1æ­»/T1å†™é˜»å¡/æŠ¤å«çª—(â‰¤1s)å…¨éƒ¨
+	//è¦†ç›–; å¥åº·æ—¶T1æ¯250mså†™ä¸€æ‰¹HBè¡Œ, 30sé˜ˆå€¼=120æ‰¹çš„è£•é‡
+	tr.lastLine = g_flT1Seq;
+	tr.lastProgress = __rdtsc();
+	ULONG64 lastPoll = tr.lastProgress;
+	while (g_flStop == 0)
+	{
+		ULONG64 now = __rdtsc();
+		//æ´»ä½“è¯æ˜: ~10Hzæ¨è¿›pollCnt(é»‘åŒ£å­é‡Œå¯åˆ¤çœ‹é—¨ç‹—æ˜¯å¦è¿˜åœ¨è·‘)
+		if (now - lastPoll >= (ULONG64)g_flWdTscPerSec / 10ULL)
+		{
+			lastPoll = now;
+			InterlockedIncrement64((volatile LONG64*)&g_flBlackBox.pollCnt);
+		}
+		if (g_flWdArmed == 0)
+		{
+			//æœªæ­¦è£…: åªè·Ÿè¸ª, ä¸åˆ¤å®š
+			tr.lastLine = g_flT1Seq;
+			tr.lastProgress = now;
+		}
+		else if (g_flT1Seq != (LONG)tr.lastLine)
+		{
+			//å†™ç›˜åœ¨æ¨è¿›=å­˜å‚¨é“¾è·¯æ´»ç€, é‡ç½®stallè®¡æ—¶
+			tr.lastLine = g_flT1Seq;
+			tr.lastProgress = now;
+		}
+		else if (now - tr.lastProgress >= (ULONG64)g_flWdTscPerSec * 30ULL)
+		{
+			//30så†™ç›˜é›¶æ¨è¿›(å¥åº·æ—¶æ¯250msä¸€æ‰¹)=T1æ­»/å†™é˜»å¡=çº§è”å†»ç»“
+			//â†’è“å±é»‘åŒ£å­(30sè£•é‡: æ¢é’ˆçª—~100ms+æ£€æŸ¥ç‚¹500ms+æŠ¤å«1sè¿œä¸åŠ)
+			FlWdFire(idx);    //noreturn
+		}
+		YieldProcessor();
+	}
+	PsTerminateSystemThread(STATUS_SUCCESS);
+}
+
+static HANDLE FlOpenOneFile(PCWSTR path);   //å‰ç½®å£°æ˜(å®šä¹‰åœ¨çº¿ç¨‹å‡½æ•°ä¹‹å)
+static VOID FlDrainTempLocked(VOID);        //å‰ç½®å£°æ˜: T1(æˆ–T1é€€å‡ºåçš„FlShutdown)æŠŠè¡Œç¯æ¨è¿›Temp
+
+//ä»»æ„IRQL(å«VM-exit): æ— é”å†™ç¯å½¢ç¼“å†², seqæœ€åå†™ä½œä¸ºæäº¤æ ‡è®°
 VOID FlRingPush(CHAR tag, ULONG cpu, ULONG reason, ULONG64 a, ULONG64 b, ULONG64 c)
 {
 	LONG idx = InterlockedIncrement(&g_flRingHead) - 1;
@@ -93,16 +277,17 @@ VOID FlRingPush(CHAR tag, ULONG cpu, ULONG reason, ULONG64 a, ULONG64 b, ULONG64
 	e->reason = reason;
 	e->cpu = (USHORT)cpu;
 	e->tag = tag;
-	MemoryBarrier();      //·ÀÖ¹±àÒëÆ÷°Ñ×Ö¶ÎstoreÖØÅÅµ½seqÖ®ºó
+	MemoryBarrier();      //é˜²æ­¢ç¼–è¯‘å™¨æŠŠå­—æ®µstoreé‡æ’åˆ°seqä¹‹å
 	e->seq = (ULONG)idx;
-	//v3.8: ÒÆ³ıKeSetEvent¡ª¡ªFlRingPush»á±»VM-exitÉÏÏÂÎÄ(VmxExitStormEscape/
-	//EptExitHandler)µ÷ÓÃ, ¶øVM-exitÊ±RFLAGS=0x2(IF=0)ÇÒ±»ÖĞ¶ÏµÄguestÉÏÏÂÎÄ
-	//¿ÉÄÜ³ÖÓĞÈÎÒâµ÷¶ÈÆ÷Ëø; KeSetEvent->KiReadyThreadÒªÄÃµ÷¶ÈÆ÷/Ïß³ÌËø,
-	//Óë±»ÖĞ¶ÏÉÏÏÂÎÄÍ¬ºËµİ¹é=ÓÀ¾Ã×ÔĞı(Ëø¼¶Áª¶³½áµÄºòÑ¡»úÀí, v3.7²ĞÁôÒş»¼)¡£
-	//ÊÂ¼şÑÓ³ÙÓÉT1µÄ250ms³¬Ê±ÂÖÑ¯¶µµ×(¶³½áÇ°×îºó¿ìÕÕ<=250ms)¡£
+	//v3.8: ç§»é™¤KeSetEventâ€”â€”FlRingPushä¼šè¢«VM-exitä¸Šä¸‹æ–‡(VmxExitStormEscape/
+	//EptExitHandler)è°ƒç”¨, è€ŒVM-exitæ—¶RFLAGS=0x2(IF=0)ä¸”è¢«ä¸­æ–­çš„guestä¸Šä¸‹æ–‡
+	//å¯èƒ½æŒæœ‰ä»»æ„è°ƒåº¦å™¨é”; KeSetEvent->KiReadyThreadè¦æ‹¿è°ƒåº¦å™¨/çº¿ç¨‹é”,
+	//ä¸è¢«ä¸­æ–­ä¸Šä¸‹æ–‡åŒæ ¸é€’å½’=æ°¸ä¹…è‡ªæ—‹(é”çº§è”å†»ç»“çš„å€™é€‰æœºç†, v3.7æ®‹ç•™éšæ‚£)ã€‚
+	//äº‹ä»¶å»¶è¿Ÿç”±T1çš„50msè¶…æ—¶è½®è¯¢å…œåº•(å†»ç»“å‰æœ€åå¿«ç…§<=50ms, v3.13ä»250mså‹ç¼©)ã€‚
 }
 
-//VM-exitÍ³Ò»²ÉÑù: ËùÓĞreason¼ÆÊı; ·Ç¸ßÆµexitÈ«²¿Èë»·, ¸ßÆµCPUIDÖ»²ÉÇ°16Ìõ
+//VM-exitç»Ÿä¸€é‡‡æ ·: æ‰€æœ‰reasonè®¡æ•°; é«˜é¢‘exitåªé‡‡æ ·å‰Næ¡å…¥ç¯
+//(è®¡æ•°å™¨ä»ç²¾ç¡®â€”â€”HBè¡Œæ˜¾ç¤ºå…¨éƒ¨æµé‡)
 VOID FlRingExit(ULONG cpu, ULONG reason, ULONG64 rip, ULONG64 qual)
 {
 	if (reason < GEPT_EXIT_REASON_MAX)
@@ -112,45 +297,89 @@ VOID FlRingExit(ULONG cpu, ULONG reason, ULONG64 rip, ULONG64 qual)
 	if (reason == EXIT_REASON_CPUID &&
 		g_flExitCounts[EXIT_REASON_CPUID] > 16)
 	{
-		return;    //CPUID²ÉÑùÉÏÏŞ: ¸´ÓÃexit¼ÆÊı, ±ÜÃâ¶îÍâ×´Ì¬±äÁ¿
+		return;    //CPUIDé‡‡æ ·ä¸Šé™: å¤ç”¨exitè®¡æ•°, é¿å…é¢å¤–çŠ¶æ€å˜é‡
+	}
+	//v3.20: vmcallç¯é‡‡æ ·ä¸Šé™64â€”â€”æ¢é’ˆæŒç»­æ‰§è¡Œå‹æµ‹å¾ªç¯(5ä¸‡æ¬¡vmcall)ä¼šæŠŠ
+	//ç¯åˆ·çˆ†(1024æ¡), [W][F][L][X]ç­‰å…³é”®æ ‡è®°ä¼šè¢«'E'æŒ¤å‡ºå»ã€‚è®¡æ•°ä»ç²¾ç¡®
+	//(HBçš„r18=å¾ªç¯è¿›åº¦), å¾ªç¯èŠ‚å¥ç”±handleré‡‡æ ·çš„'L'äº‹ä»¶æºå¸¦
+	if (reason == EXIT_REASON_VMCALL &&
+		g_flExitCounts[EXIT_REASON_VMCALL] > 64)
+	{
+		return;
+	}
+	//v3.19: ext-int exitingå¼€å¯åreason 1é«˜é¢‘(æ—¶é’Ÿ1000Hz+è®¾å¤‡)â€”â€”
+	//ç¯é‡‡æ ·é™å‰32æ¡, å¦åˆ™[W][F][K]ç­‰å…³é”®æ ‡è®°è¢«ä¸­æ–­äº‹ä»¶åˆ·å‡ºç¯;
+	//HBçš„r1è®¡æ•°ä»ç²¾ç¡®åæ˜ ä¸­æ–­æµé‡(åˆ¤è¯»"å†»ç»“å‰ä¸­æ–­æ˜¯å¦å¼‚å¸¸æ¶Œå…¥"çš„ä¾æ®)
+	if (reason == EXIT_REASON_EXTERNAL_INTERRUPT &&
+		g_flExitCounts[EXIT_REASON_EXTERNAL_INTERRUPT] > 32)
+	{
+		return;
+	}
+	//v3.23: interrupt-windowæ¨¡å¼çš„å¼€çª—æ’ç©ºä¼šæŠŠreason 7æˆä¸²æ‰“å‡º(æ¯æ¡ç§¯å‹
+	//ä¸­æ–­ä¸€ä¸ªexit)â€”â€”åŒæ ·é™å‰32æ¡, é˜²æ­¢æ’ç©ºæŠŠ[F][W][Y]ç­‰å…³é”®æ ‡è®°æŒ¤å‡ºç¯;
+	//HBçš„r7è®¡æ•°ä»ç²¾ç¡®=å¼€çª—æŠ•é€’æ€»é‡
+	if (reason == EXIT_REASON_PENDING_INTERRUPT &&
+		g_flExitCounts[EXIT_REASON_PENDING_INTERRUPT] > 32)
+	{
+		return;
+	}
+	//v3.25: å·²æ¨¡æ‹Ÿçš„must-1æŒ‡ä»¤exit(16 RDTSC/14 INVLPG/12 HLT/36 MWAIT)
+	//åœ¨OSæ¥ç®¡åæ˜¯æŒç»­é«˜é¢‘(RDTSC~1M/s)â€”â€”ç¯é‡‡æ ·å„é™32æ¡é˜²åˆ·çˆ†;
+	//HBçš„r12/r14/r16/r36è®¡æ•°ä»ç²¾ç¡®=å„æŒ‡ä»¤çœŸå®æµé‡
+	if ((reason == 16 || reason == 14 || reason == 12 || reason == 36) &&
+		g_flExitCounts[reason] > 32)
+	{
+		return;
 	}
 	FlRingPush('E', cpu, reason, rip, qual, 0);
 }
 
-//Èë»·Ò»ĞĞ(ÒÑ¸ñÊ½»¯): ÎŞËø, ĞĞºÅ=Èë»·ĞòºÅ(Á½ÎÄ¼ş±àºÅÒ»ÖÂ)
+//å…¥ç¯ä¸€è¡Œ(å·²æ ¼å¼åŒ–): æ— é”, è¡Œå·=å…¥ç¯åºå·(ä¸¤æ–‡ä»¶ç¼–å·ä¸€è‡´)
 static LONG FlEnqueueLine(const char* text)
 {
 	LONG idx = InterlockedIncrement(&g_flLineHead) - 1;
 	PGEPT_LINE_ENTRY e = &g_flLines[idx & (GEPT_LINE_RING_SIZE - 1)];
-	RtlStringCbCopyA(e->text, GEPT_LINE_TEXT, text);   //³¬³¤½Ø¶Ï
-	MemoryBarrier();      //·ÀÖ¹storeÖØÅÅµ½seqÖ®ºó
+	RtlStringCbCopyA(e->text, GEPT_LINE_TEXT, text);   //è¶…é•¿æˆªæ–­
+	MemoryBarrier();      //é˜²æ­¢storeé‡æ’åˆ°seqä¹‹å
 	e->seq = (ULONG)idx;
-	KeSetEvent(&g_flKickT1, IO_NO_INCREMENT, FALSE);   //Á¢¼´»½ĞÑĞ´Ïß³Ì
+	KeSetEvent(&g_flKickT1, IO_NO_INCREMENT, FALSE);   //ç«‹å³å”¤é†’å†™çº¿ç¨‹
 	KeSetEvent(&g_flKickT2, IO_NO_INCREMENT, FALSE);
 	return idx;
 }
 
-//T1Ïß³Ì(»òT1ÍË³öºóµÄFlShutdown): °ÑĞĞ»·ĞÂĞĞÍÆ½øTempÎÄ¼ş
-//µ¥Ğ´ÕßÄ£ĞÍÎŞĞèËø; g_flT1SeqÍÆ½øºó, µÈ´ıÖĞµÄFlLog(ÂÖÑ¯)¼´±»·ÅĞĞ
+//T1çº¿ç¨‹(æˆ–T1é€€å‡ºåçš„FlShutdown): æŠŠè¡Œç¯æ–°è¡Œæ¨è¿›Tempæ–‡ä»¶
+//å•å†™è€…æ¨¡å‹æ— éœ€é”; g_flT1Seqæ¨è¿›å, ç­‰å¾…ä¸­çš„FlLog(è½®è¯¢)å³è¢«æ”¾è¡Œ
+//v3.16: å†™ç›˜åˆå¹¶+flushé™æµã€‚v3.14/v3.15é—´æ­‡æ€§è“å±(PAGE_FAULT_IN_NONPAGED_AREA,
+//win32kfull.sys/æœ¬æ¬¡cpu5çª—å£)çš„å¤´å·å«Œç–‘=è¿‡æ»¤é©±åŠ¨è·¯å¾„ä¸Šçš„I/Oå‹åŠ›:
+//æœ¬æœºè£…ç€ç«ç»’(sysdiag.sys+hrwfpdrv.sys)+é›·ç”µæ¨¡æ‹Ÿå™¨(LdV*.sys), æ—¥å¿—æ–‡ä»¶
+//æ˜¯FILE_WRITE_THROUGHâ€”â€”æ—§å®ç°**æ¯è¡Œä¸€æ¬¡ZwWriteFile**=DriverEntryçš„800è¡Œ
+//çªå‘=800æ¬¡ç©¿é€æ•´ä¸ªè¿‡æ»¤æ ˆçš„åŒæ­¥å†™IRP, ä¸v3.4æ—¶ä»£"å¯†é›†write-throughå´©æºƒ"
+//åŒæ„(v3.4åŠ 20msé™é€Ÿåæ¶ˆå¤±; v3.14èµ·ç³»ç»Ÿæ´»å¾—å¤Ÿä¹…+å¾ªç¯æµ‹è¯•è®©å®ƒå¤å‘)ã€‚
+//v3.16: â‘ åˆå¹¶ç¼“å†²4KB, ä¸€æ‰¹ä¸€æ¬¡ZwWriteFile(IRPæ•°é‡é™ä¸€ä¸ªæ•°é‡çº§)
+//       â‘¡å¼ºflushå›ºå®š250msæœ€å¤šä¸€æ¬¡(å†»ç»“/è“å±è‡³å¤šä¸¢250mså°¾éƒ¨, å¯æ¥å—)
+static ULONG64 s_flLastFlushT = 0;
 static VOID FlDrainTempLocked(VOID)
 {
-	char buf[GEPT_LINE_TEXT + 32];
+	char buf[4096];
 	IO_STATUS_BLOCK iosb = { 0 };
 	LONG head = g_flLineHead;
 	LONG c = g_flT1Seq;
+	ULONG used = 0;
 	BOOLEAN wrote = FALSE;
 	if (g_flFileTemp == NULL)
 	{
-		g_flT1Seq = head;    //Temp²»¿ÉÓÃ: Ö»ÍÆ½øÓÎ±ê(Desktop¾µÏñÓÉT2¸ºÔğ)
+		g_flT1Seq = head;    //Tempä¸å¯ç”¨: åªæ¨è¿›æ¸¸æ ‡(Desktopé•œåƒç”±T2è´Ÿè´£)
 		return;
 	}
 	if (head - c > GEPT_LINE_RING_SIZE)
 	{
 		RtlStringCbPrintfA(buf, sizeof(buf),
-			"...ĞĞ»·Òç³ö%dÌõ, ´Ó×îĞÂ´¦¼ÌĞø...\r\n",
+			"...è¡Œç¯æº¢å‡º%dæ¡, ä»æœ€æ–°å¤„ç»§ç»­...\r\n",
 			head - c - GEPT_LINE_RING_SIZE);
+		used = (ULONG)strlen(buf);
 		ZwWriteFile(g_flFileTemp, NULL, NULL, NULL, &iosb,
-			buf, (ULONG)strlen(buf), NULL, NULL);
+			buf, used, NULL, NULL);
+		used = 0;
 		c = head - GEPT_LINE_RING_SIZE;
 		wrote = TRUE;
 	}
@@ -159,30 +388,50 @@ static VOID FlDrainTempLocked(VOID)
 		PGEPT_LINE_ENTRY e = &g_flLines[c & (GEPT_LINE_RING_SIZE - 1)];
 		if (e->seq != (ULONG)c)
 		{
-			continue;    //°ëĞ´, Ìø¹ı
+			continue;    //åŠå†™, è·³è¿‡
 		}
-		RtlStringCbPrintfA(buf, sizeof(buf), "L%05u %s\r\n", c + 1, e->text);
+		RtlStringCbPrintfA(buf + used, sizeof(buf) - used,
+			"L%05u %s\r\n", c + 1, e->text);
+		used += (ULONG)strlen(buf + used);
+		if (used >= sizeof(buf) - (GEPT_LINE_TEXT + 32))
+		{
+			//ç¼“å†²å°†æ»¡(æ”¾ä¸ä¸‹ä¸‹ä¸€è¡Œ): å…ˆå†™å‡ºè¿™æ‰¹
+			if (!NT_SUCCESS(ZwWriteFile(g_flFileTemp, NULL, NULL, NULL, &iosb,
+				buf, used, NULL, NULL)))
+			{
+				g_flWriteFailsT1++;
+			}
+			used = 0;
+			wrote = TRUE;
+		}
+	}
+	if (used > 0)
+	{
 		if (!NT_SUCCESS(ZwWriteFile(g_flFileTemp, NULL, NULL, NULL, &iosb,
-			buf, (ULONG)strlen(buf), NULL, NULL)))
+			buf, used, NULL, NULL)))
 		{
 			g_flWriteFailsT1++;
 		}
 		wrote = TRUE;
 	}
 	g_flT1Seq = head;
-	//v3.4: Ã¿ÅúĞ´ÍêÁ¢¼´Ç¿Ë¢´ÅÅÌ¡£ZwWriteFileÖ»½ø»º´æ¹ÜÀíÆ÷, À¶ÆÁ²»»ØĞ´ÔàÒ³
-	//=±ÀÀ£Ç°×îºó1-2ÃëµÄÈÕÖ¾Õô·¢(v3.2Êµ²âÍ£ÔÚL30, ÕæÊµ±ÀÀ£µã¿ÉÄÜÍíÊıÃë)
-	//Ç¿Ë¢ºóÃ¿ĞĞ¶¼ÊÇ"ÒÑÔÚÅÌÉÏ", À¶ÆÁÁã¶ªÊ§; µ÷ÊÔÆÚÃ¿ĞĞÒ»´Î´ÅÅÌĞ´ÍêÈ«¿É½ÓÊÜ
+	//v3.4å¼ºåˆ·çš„æœ¬æ„: è“å±ä¸¢ç¼“å­˜é¡µ(v3.2å®æµ‹å´©æºƒå‰1-2ç§’æ—¥å¿—è’¸å‘)ã€‚
+	//v3.16æ”¹ä¸º250msæœ€å¤šä¸€æ¬¡: å´©æºƒè‡³å¤šä¸¢250mså°¾éƒ¨, æ¢å–è¿‡æ»¤æ ˆå‹åŠ›å¤§å¹…ä¸‹é™
 	if (wrote)
 	{
-		ZwFlushBuffersFile(g_flFileTemp, &iosb);
+		ULONG64 nowT = KeQueryUnbiasedInterruptTime();
+		if (nowT - s_flLastFlushT >= 2500000LL)
+		{
+			ZwFlushBuffersFile(g_flFileTemp, &iosb);
+			s_flLastFlushT = nowT;
+		}
 	}
 }
 
-//½öPASSIVE_LEVEL: Àï³Ì±®ÈÕÖ¾ÈëĞĞ»·ºó**µÈ´ıT1ÂäÅÌ**(10msÂÖÑ¯, ÉÏÏŞ500ms)¡£
-//ÎÄ¼şĞ´Ö»·¢ÉúÔÚT1Ïß³Ì(v3Êµ²â¿É¿¿µ½L25); DriverEntryÉÏÏÂÎÄ²»Ğ´ÎÄ¼ş
-//(v3.1Êµ²â: ¼ÓÔØ´°¿ÚÆÚDriverEntryÖ±½ÓZwWriteFile=L2¹ÒÆğ+T1Ê×Ğ´¹ÒÆğ=Ë«ËÀËø)¡£
-//T1Òì³£Ê±500ms³¬Ê±·ÅĞĞ(¹Û²âĞÔ½µ¼¶µ«¼ÓÔØÁ÷³Ì²»ËÀ)
+//ä»…PASSIVE_LEVEL: é‡Œç¨‹ç¢‘æ—¥å¿—å…¥è¡Œç¯å**ç­‰å¾…T1è½ç›˜**(10msè½®è¯¢, ä¸Šé™500ms)ã€‚
+//æ–‡ä»¶å†™åªå‘ç”Ÿåœ¨T1çº¿ç¨‹(v3å®æµ‹å¯é åˆ°L25); DriverEntryä¸Šä¸‹æ–‡ä¸å†™æ–‡ä»¶
+//(v3.1å®æµ‹: åŠ è½½çª—å£æœŸDriverEntryç›´æ¥ZwWriteFile=L2æŒ‚èµ·+T1é¦–å†™æŒ‚èµ·=åŒæ­»é”)ã€‚
+//T1å¼‚å¸¸æ—¶500msè¶…æ—¶æ”¾è¡Œ(è§‚æµ‹æ€§é™çº§ä½†åŠ è½½æµç¨‹ä¸æ­»)
 VOID FlLog(const char* fmt, ...)
 {
 	char buf[512];
@@ -204,19 +453,69 @@ VOID FlLog(const char* fmt, ...)
 	}
 	if (g_flT1Seq <= idx)
 	{
-		//T1Î´ÄÜÔÚ500msÄÚÂäÅÌ´ËĞĞ: ÎÄ¼ş×îºóÒ»ĞĞÖ®ºóµÄÄÚÈİ²»¿ÉĞÅ(¿ÉÄÜÔÚ»·ÀïÃ»Ğ´³ö)
+		//T1æœªèƒ½åœ¨500mså†…è½ç›˜æ­¤è¡Œ: æ–‡ä»¶æœ€åä¸€è¡Œä¹‹åçš„å†…å®¹ä¸å¯ä¿¡(å¯èƒ½åœ¨ç¯é‡Œæ²¡å†™å‡º)
 		InterlockedIncrement(&g_flT1Lag);
 	}
 }
 
-//DriverEntryÄ©Î²µ÷ÓÃ: ·ÅĞĞT2µÄDesktop¾µÏñ(±Ü¿ª¼ÓÔØ´°¿ÚÆÚµÄ¹ıÂËÇı¶¯ËÀËø)
+//v3.31: è‡ªæ—‹ç­‰å¾…ç‰ˆFlLog(ä»…PASSIVE_LEVEL, IF=0ä¸‹å®‰å…¨â€”â€”FlLogçš„10msç¡çœ 
+//ä¾èµ–æ—¶é’Ÿä¸­æ–­, IF=0çš„guestæ ¸ä¸Šä¼šæ°¸ä¹…ç¡æ­»)ã€‚ç”¨é€”: KEEPæ£€æŸ¥ç‚¹â€”â€”stiäº¤ä»˜
+//ä¸­æ–­(EPTä¸‹é¦–ä¸ªISRæ‰§è¡Œ=å†»ç»“é£é™©ç‚¹)ä¹‹å‰, å¼ºåˆ¶T1æŠŠæ¢é’ˆäº‹ä»¶+ä¸­æ–­é˜Ÿåˆ—èº«ä»½
+//å…¨éƒ¨è½ç›˜ã€‚è‡ªæ—‹ç”¨rdtscé™ç•Œ(500ms), ä¸ä¾èµ–ä»»ä½•ä¸­æ–­ç»´æŠ¤çš„æ—¶é’Ÿæº;
+//T1åœ¨çœŸæœºæ ¸(cpu1-7)ä¸Šå†™ç›˜, å­˜å‚¨æ­¤åˆ»å¥åº·(vmntå†»ç»“å°šæœªå‘ç”Ÿ)
+VOID FlLogSpin(const char* fmt, ...)
+{
+	char buf[512];
+	va_list args;
+	if (KeGetCurrentIrql() != PASSIVE_LEVEL)
+	{
+		return;
+	}
+	va_start(args, fmt);
+	RtlStringCbVPrintfA(buf, sizeof(buf), fmt, args);
+	va_end(args);
+	LONG idx = FlEnqueueLine(buf);
+	UINT64 t0 = __rdtsc();
+	//~2GHzÃ—0.5sâ‰ˆ1e9 tick; è¶…æ—¶æ”¾è¡Œ(è§‚æµ‹æ€§é™çº§ä½†æµç¨‹ä¸æ­»), lagç•™ç—•
+	while (g_flT1Seq <= idx)
+	{
+		if (__rdtsc() - t0 > 1000000000ULL)
+		{
+			InterlockedIncrement(&g_flT1Lag);
+			break;
+		}
+		YieldProcessor();
+	}
+}
+
+//v3.22: launchè§‚æµ‹é¢„çƒ­(ä»…PASSIVE_LEVEL, VmxSetupVmcsåœ¨vmlaunchå‰è°ƒç”¨;
+//v3.25èµ·launchå…¨ç¨‹IF=1, æ— _disableå‰æ)ã€‚
+//v3.19çƒ­è½®è¯¢æœ‰ä¸¤é‡å¤±æ•ˆâ€”â€”å››æ¬¡å†»ç»“(v3.17/18/19/21)é›¶[F][W][L]è½ç›˜çš„ç»“æ„æ€§æ ¹å› :
+//  â‘ g_flLaunchHotç½®1æ—¶T1æ­£ç¡åœ¨250msè¶…æ—¶ç­‰å¾…é‡Œ, è€ŒFlRingPushä¸è¸¢äº‹ä»¶
+//    (v3.8è£å†³: VM-exitä¸Šä¸‹æ–‡ç¦KeSetEvent), T1æ ¹æœ¬ä¸çŸ¥é“è¦è¿›çƒ­æ¨¡å¼;
+//    æ¢é’ˆçš„[W][L]äº‹ä»¶åªè¿›äºŒè¿›åˆ¶ç¯, T1ç¡åˆ°å†»ç»“å‘ç”Ÿéƒ½ä¸ä¼šé†’
+//  â‘¡å³ä½¿T1é†’æ¥çœ‹åˆ°hot=1, å¾ªç¯å¤´ç­‰å¾…timeoutæ’250ms(v3.22å·²æ”¹hotWaitä¿®å¤)
+//æœ¬å‡½æ•°ä¿®å¤â‘ : ç½®hot+è¸¢T1+ç¡5msâ€”â€”æ­¤åˆ»ä¸»çº¿ç¨‹IF=1(PASSIVEçº§), å»¶æ—¶å¯è¢«
+//æ—¶é’Ÿå”¤é†’, T1å¾—ä»¥ç«‹å³é†’æ¥çœ‹åˆ°hot=1è¿›å…¥1msçƒ­èŠ‚å¥, ä¹‹åçš„launchçª—å£
+//(vmlaunch+æ¢é’ˆå¾ªç¯+æ¥ç®¡åˆæœŸ)å…¨ç¨‹æ¯«ç§’çº§è½ç›˜ã€‚å†»ç»“æ—¶æœ€åè½ç›˜çš„[L]çš„
+//aå€¼/æœ€å[HB]çš„r18è®¡æ•°=ç²¾ç¡®æ­»äº¡è¿­ä»£å·
+VOID FlArmLaunchWatch(VOID)
+{
+	g_flLaunchHot = 1;
+	KeSetEvent(&g_flKickT1, IO_NO_INCREMENT, FALSE);
+	LARGE_INTEGER warm;
+	warm.QuadPart = -50000LL;    //5ms
+	KeDelayExecutionThread(KernelMode, FALSE, &warm);
+}
+
+//DriverEntryæœ«å°¾è°ƒç”¨: æ”¾è¡ŒT2çš„Desktopé•œåƒ(é¿å¼€åŠ è½½çª—å£æœŸçš„è¿‡æ»¤é©±åŠ¨æ­»é”)
 VOID FlMarkEntryDone(VOID)
 {
 	g_flEntryDone = TRUE;
 	KeSetEvent(&g_flKickT2, IO_NO_INCREMENT, FALSE);
 }
 
-//T1: °Ñ¶ş½øÖÆÊÂ¼ş»·([E][V][H][S][R])¸ñÊ½»¯³ÉĞĞÈëĞĞ»·(ÏŞÁ÷¹æÔòÔÚFlRingExitÀï)
+//T1: æŠŠäºŒè¿›åˆ¶äº‹ä»¶ç¯([E][V][H][S][R])æ ¼å¼åŒ–æˆè¡Œå…¥è¡Œç¯(é™æµè§„åˆ™åœ¨FlRingExité‡Œ)
 static VOID FlDrainBinRing(VOID)
 {
 	char buf[512];
@@ -225,7 +524,7 @@ static VOID FlDrainBinRing(VOID)
 	if (head - s > GEPT_RING_SIZE)
 	{
 		RtlStringCbPrintfA(buf, sizeof(buf),
-			"[ring] Òç³ö%dÌõ(exit·ç±©), Ö»±£Áô×î½ü%dÌõ",
+			"[ring] æº¢å‡º%dæ¡(exité£æš´), åªä¿ç•™æœ€è¿‘%dæ¡",
 			head - s - GEPT_RING_SIZE, GEPT_RING_SIZE);
 		FlEnqueueLine(buf);
 		s = head - GEPT_RING_SIZE;
@@ -235,7 +534,7 @@ static VOID FlDrainBinRing(VOID)
 		PGEPT_RING_ENTRY e = &g_flRing[s & (GEPT_RING_SIZE - 1)];
 		if (e->seq != (ULONG)s)
 		{
-			continue;    //°ëĞ´, Ìø¹ı
+			continue;    //åŠå†™, è·³è¿‡
 		}
 		RtlStringCbPrintfA(buf, sizeof(buf),
 			"[%c] s=%ld cpu=%u rsn=%u a=%p b=%p c=%p",
@@ -246,26 +545,30 @@ static VOID FlDrainBinRing(VOID)
 	g_flBinFlushed = head;
 }
 
-//µ¥ÎÄ¼şË³ĞòĞ´: pCursorÊÇ¸ÃÎÄ¼şÒÑĞ´µ½µÄĞĞºÅ(½öÊôÖ÷Ïß³Ì´¥Åö)
+//å•æ–‡ä»¶é¡ºåºå†™: pCursoræ˜¯è¯¥æ–‡ä»¶å·²å†™åˆ°çš„è¡Œå·(ä»…å±ä¸»çº¿ç¨‹è§¦ç¢°)
+//v3.16: å†™ç›˜åˆå¹¶(åŒFlDrainTempLocked)â€”â€”Desktopæ˜¯ç”¨æˆ·è·¯å¾„=è¿‡æ»¤æœ€é‡,
+//æ¯è¡Œä¸€æ¬¡å†™IRPåœ¨T2æ”¾è¡Œåçš„é•œåƒæœŸåŒæ ·å‹è¿‡æ»¤æ ˆ
 static VOID FlDrainLines(HANDLE hFile, PLONG pCursor, volatile LONG* pFails)
 {
-	char buf[GEPT_LINE_TEXT + 32];
+	char buf[4096];
 	IO_STATUS_BLOCK iosb = { 0 };
 	LONG head = g_flLineHead;
 	LONG c = *pCursor;
+	ULONG used = 0;
 	if (hFile == NULL)
 	{
-		*pCursor = head;    //ÎÄ¼ş²»¿ÉÓÃ: Ö»ÍÆ½øÓÎ±ê
+		*pCursor = head;    //æ–‡ä»¶ä¸å¯ç”¨: åªæ¨è¿›æ¸¸æ ‡
 		return;
 	}
 	if (head - c > GEPT_LINE_RING_SIZE)
 	{
-		//ĞĞ»·±»Ğ´´©: Ìøµ½×îĞÂÒ»È¦²¢Áô±ê¼Ç
+		//è¡Œç¯è¢«å†™ç©¿: è·³åˆ°æœ€æ–°ä¸€åœˆå¹¶ç•™æ ‡è®°
 		RtlStringCbPrintfA(buf, sizeof(buf),
-			"...ĞĞ»·Òç³ö%dÌõ, ´Ó×îĞÂ´¦¼ÌĞø...\r\n",
+			"...è¡Œç¯æº¢å‡º%dæ¡, ä»æœ€æ–°å¤„ç»§ç»­...\r\n",
 			head - c - GEPT_LINE_RING_SIZE);
-		ZwWriteFile(hFile, NULL, NULL, NULL, &iosb,
-			buf, (ULONG)strlen(buf), NULL, NULL);
+		used = (ULONG)strlen(buf);
+		ZwWriteFile(hFile, NULL, NULL, NULL, &iosb, buf, used, NULL, NULL);
+		used = 0;
 		c = head - GEPT_LINE_RING_SIZE;
 	}
 	for (; c < head; c++)
@@ -273,11 +576,25 @@ static VOID FlDrainLines(HANDLE hFile, PLONG pCursor, volatile LONG* pFails)
 		PGEPT_LINE_ENTRY e = &g_flLines[c & (GEPT_LINE_RING_SIZE - 1)];
 		if (e->seq != (ULONG)c)
 		{
-			continue;    //°ëĞ´, Ìø¹ı
+			continue;    //åŠå†™, è·³è¿‡
 		}
-		RtlStringCbPrintfA(buf, sizeof(buf), "L%05u %s\r\n", c + 1, e->text);
+		RtlStringCbPrintfA(buf + used, sizeof(buf) - used,
+			"L%05u %s\r\n", c + 1, e->text);
+		used += (ULONG)strlen(buf + used);
+		if (used >= sizeof(buf) - (GEPT_LINE_TEXT + 32))
+		{
+			if (!NT_SUCCESS(ZwWriteFile(hFile, NULL, NULL, NULL, &iosb,
+				buf, used, NULL, NULL)))
+			{
+				(*pFails)++;
+			}
+			used = 0;
+		}
+	}
+	if (used > 0)
+	{
 		if (!NT_SUCCESS(ZwWriteFile(hFile, NULL, NULL, NULL, &iosb,
-			buf, (ULONG)strlen(buf), NULL, NULL)))
+			buf, used, NULL, NULL)))
 		{
 			(*pFails)++;
 		}
@@ -285,44 +602,74 @@ static VOID FlDrainLines(HANDLE hFile, PLONG pCursor, volatile LONG* pFails)
 	*pCursor = head;
 }
 
-//T1Ïß³Ì: ÅÅ¿Õ¶ş½øÖÆ»·([E][V][H][S][R]¡úĞĞ»·) + 1ÃëĞÄÌø + TempÅÅ¿Õ
-//ÎÄ¼şÓÉT1×Ô¼º´ò¿ª(v3.2: DriverEntryÉÏÏÂÎÄµÄZwCreateFileÍ¬ÓĞ¼ÓÔØ´°¿ÚÆÚ·çÏÕ)
+//T1çº¿ç¨‹: æ’ç©ºäºŒè¿›åˆ¶ç¯([E][W][K][F][f][V][H]...â†’è¡Œç¯) + 250mså¿ƒè·³(v3.16)
+//+ Tempæ’ç©ºã€‚æ–‡ä»¶ç”±T1è‡ªå·±æ‰“å¼€(v3.2: DriverEntryä¸Šä¸‹æ–‡çš„ZwCreateFile
+//åŒæœ‰åŠ è½½çª—å£æœŸé£é™©)ã€‚v3.16: çƒ­è½®è¯¢æœºåˆ¶(1msèŠ‚å¥)å·²éšä½¿å‘½å®Œæˆè€Œç§»é™¤â€”â€”
+//launchçª—å£çš„è§‚æµ‹ä»»åŠ¡å·²ç”±v3.14/v3.15å®Œæˆ, 1msçº§çº¿ç¨‹å”¤é†’+å†™ç›˜æŠ–åŠ¨
+//åè€Œæ˜¯é—´æ­‡æ€§å´©æºƒçš„å«Œç–‘ç¯å¢ƒ
 static VOID FlThreadProcT1(PVOID Context)
 {
 	LARGE_INTEGER timeout;
 	LARGE_INTEGER rest;
 	ULONG64 hb = 0;
 	UNREFERENCED_PARAMETER(Context);
-	//v3.7: T1ÌÓÀëcpu0¡ª¡ªcpu0ÊÇÊ×¸ö±»ĞéÄâ»¯µÄºË, ÍòÒ»guest²àËÀÑ­»·, µ÷¶ÈÔÚ
-	//cpu0ÉÏµÄT1Í¬¹éÓÚ¾¡, ÈÕÖ¾È«Ã¤(v3.6Êµ²â: L233ºóÁã[HB]ÁãÊÂ¼ş)¡£¶¤ÔÚ
-	//cpu1..NÉÏ, cpu0Ö®ËÀ²»ÔÙÓ°ÏìÈÕÖ¾Í¨µÀ(T2Í¬Àí)¡£´®ĞĞÆô¶¯Èô¿¨ÔÚcpu0,
-	//ÆäÓàºËÎ´ĞéÄâ»¯, T1ÔÚ½¡¿µºËÉÏ¼ÌĞø¼ÇÂ¼
-	if (KeQueryActiveProcessorCount(NULL) > 1)
+	//v3.7: T1é€ƒç¦»cpu0â€”â€”cpu0æ˜¯é¦–ä¸ªè¢«è™šæ‹ŸåŒ–çš„æ ¸, ä¸‡ä¸€guestä¾§æ­»å¾ªç¯, è°ƒåº¦åœ¨
+	//cpu0ä¸Šçš„T1åŒå½’äºå°½, æ—¥å¿—å…¨ç›²(v3.6å®æµ‹: L233åé›¶[HB]é›¶äº‹ä»¶)ã€‚é’‰åœ¨
+	//cpu1..Nä¸Š, cpu0ä¹‹æ­»ä¸å†å½±å“æ—¥å¿—é€šé“(T2åŒç†)ã€‚ä¸²è¡Œå¯åŠ¨è‹¥å¡åœ¨cpu0,
+	//å…¶ä½™æ ¸æœªè™šæ‹ŸåŒ–, T1åœ¨å¥åº·æ ¸ä¸Šç»§ç»­è®°å½•
+	//v3.32: å†æ’é™¤æœ€åä¸€æ ¸(è™šæ‹ŸåŒ–ç›®æ ‡, å®‰é™æ ¸)â€”â€”T1å¿…é¡»åœ¨"ç»“æ„æ€§ä¸ä¾èµ–
+	//ä»»ä½•è™šæ‹ŸåŒ–æ ¸"çš„ä½ç½®: v3.30/31çš„T1æ­»å› =è¡¥å†™æ‰¹æ¬¡ZwWriteFileçš„å®Œæˆ
+	//ä¸­æ–­/DPCè·¯ç”±ç»è¢«è™šæ‹ŸåŒ–æ ¸, I/Oæ°¸å®Œä¸æˆâ†’T1å¡æ­»â†’é›¶è½ç›˜ã€‚æ’é™¤åT1çš„
+	//å†™ç›˜å®Œæˆèµ°çœŸæœºæ ¸çš„DPCé˜Ÿåˆ—, ç›®æ ‡æ ¸å†»ç»“æ—¶è§‚æµ‹é€šé“å­˜æ´»=æ­»äº¡ç°åœºè½ç›˜
 	{
-		KeSetSystemAffinityThread(~(ULONG_PTR)1);
+		ULONG nCpu = KeQueryActiveProcessorCount(NULL);
+		if (nCpu > 2)
+		{
+			ULONG_PTR avoid = (ULONG_PTR)1 | ((ULONG_PTR)1 << (nCpu - 1));
+			KeSetSystemAffinityThread(~avoid);
+		}
+		else if (nCpu > 1)
+		{
+			KeSetSystemAffinityThread(~(ULONG_PTR)1);
+		}
 	}
+	//v3.34: çœ‹é—¨ç‹—æ”¹è‡ªæ—‹çº¿ç¨‹(è§FlWdThreadProc)â€”â€”T1/T2ä¸å†æŒ‚DPCè®¡æ—¶å™¨
 	g_flFileTemp = FlOpenOneFile(GEPT_LOG_PATH2);
 	if (g_flFileTemp == NULL)
 	{
-		DbgPrint("[fl]T1: TempÎÄ¼ş´ò¿ªÊ§°Ü, TempÂäÅÌ½ûÓÃ(½öDbgView)\n");
+		DbgPrint("[fl]T1: Tempæ–‡ä»¶æ‰“å¼€å¤±è´¥, Tempè½ç›˜ç¦ç”¨(ä»…DbgView)\n");
 	}
-	FlEnqueueLine("T1Ïß³ÌÆô¶¯(Temp+ĞÄÌø, ÒÑ¶¤Àëcpu0)");
+	FlEnqueueLine("T1çº¿ç¨‹å¯åŠ¨(Temp+å¿ƒè·³, å·²é’‰ç¦»cpu0)");
 	FlDrainTempLocked();
-	//v3.8: ĞÄÌø1Ãë->250ms¡£v3.7Êµ²â¶³½á·¢ÉúÔÚ×îºóÂäÅÌĞĞÖ®ºó<1ÃëÄÚ,
-	//1ÃëÁ£¶ÈµÄĞÄÌøÒ»Ìõ¶¼À´²»¼°·¢Éä(¶³½áÊ±[HB]ÍêÈ«È±Ï¯)¡£250ms±£Ö¤
-	//¶³½áÇ°×îºóÒ»Ìõ[HB]¾àÀë¶³½áÊ±¿Ì<=250ms, ÆäĞ¯´øµÄvcpu¿ìÕÕ+exit¼ÆÊı
-	//¼´Îª¶³½áÏÖ³¡
-	timeout.QuadPart = -2500000LL;     //250ºÁÃë
-	rest.QuadPart = -200000LL;         //20ms
-	//v3.7: ĞÄÌø°´Ç½ÖÓÇ¿ÖÆ·¢Éä¡ª¡ªÔ­Éè¼ÆÓëkickÊÂ¼ş¹²ÓÃÒ»´ÎµÈ´ı, ÈÕÖ¾ÃÜ¼¯Ê±
-	//kick²»¶ÏÖØÖÃµÈ´ı, timeoutÓÀ²»´¥·¢, ĞÄÌø±»»î»î¶öËÀ(Êµ²â: Ä£¿éÇåµ¥
-	//190ĞĞÂäÅÌÆÚ¼äÒ»Ìõ[HB]¶¼Ã»ÓĞ)¡£¸ÄÎªÃ¿´ÎĞÑÀ´²éÇ½ÖÓ, ¾àÉÏ´ÎĞÄÌø>=¼ä¸ô
-	//¾ÍÎŞÌõ¼ş·¢Éä
+	//v3.8: å¿ƒè·³1ç§’->250ms; v3.13: 250ms->50ms; v3.16: 50ms->250msã€‚
+	//50msç²’åº¦çš„ä½¿å‘½(launchçª—å£è§‚æµ‹)å·²ç”±[F]/[f]ç¯äº‹ä»¶+æ¢é’ˆå®Œæˆ; ç¨³æ€ä¸‹
+	//20æ¡/ç§’å¿ƒè·³=æ¯ç§’20æ¬¡å†™IRP+flush, æ˜¯è¿‡æ»¤æ ˆä¸Šæ— æ„ä¹‰çš„æŒç»­å‹åŠ›
+	//(v3.14/v3.15é—´æ­‡è“å±çš„ç¯å¢ƒå› ç´ )ã€‚250msè¶³å¤Ÿå†»ç»“æ£€æµ‹(æœ€åä¸€æ¡[HB]
+	//è·ç¦»å†»ç»“æ—¶åˆ»<=250ms, [F]/[f]ç¯äº‹ä»¶æä¾›çª—å£è¾¹ç•Œ)
+	timeout.QuadPart = -2500000LL;     //250æ¯«ç§’
+	rest.QuadPart = -200000LL;         //20æ¯«ç§’
+	//v3.19: launchçƒ­è½®è¯¢èŠ‚å¥(1ms)ä¸çœ‹é—¨ç‹—èµ·ç‚¹(è§å¾ªç¯å°¾)ã€‚å›å½’ç†ç”±:
+	//v3.17/v3.18å†»ç»“çš„<20msç›²åŒºåæ‰[F][W]; ç§»é™¤åŸå› (I/Oå‹åŠ›)å·²è¢«v3.16
+	//åˆå¹¶å†™ç›˜è§£å†³â€”â€”çƒ­æ¨¡å¼æ¯è½®è½ç›˜ä»æ˜¯æ‰¹é‡ä¸€æ¬¡å†™, flushä»é™250ms
+	LARGE_INTEGER hotRest;
+	ULONG64 hotSince = 0;
+	hotRest.QuadPart = -10000LL;       //1æ¯«ç§’
+	//v3.22: çƒ­æ¨¡å¼ä¸»ç­‰å¾…è¶…æ—¶(1ms)ã€‚v3.19çš„hotReståªç¼©çŸ­å¾ªç¯å°¾çš„é™„åŠ å»¶æ—¶,
+	//å¾ªç¯å¤´KeWaitForSingleObjectçš„timeoutæ’250msâ€”â€”T1é†’æ¥ä¸€æ¬¡åä¸‹ä¸€è½®åˆ
+	//ç¡æ»¡250ms, 1msèŠ‚å¥ä»æœªç”Ÿæ•ˆ(v3.17/18/19/21å››æ¬¡å†»ç»“é›¶[F][W][L]è½ç›˜çš„
+	//ç»“æ„æ€§æ ¹å› ä¹‹ä¸€)ã€‚çƒ­æ¨¡å¼=ç­‰å¾…ä¸é™„åŠ å»¶æ—¶éƒ½1ms, çœŸæ­£æ¯«ç§’çº§è§‚æµ‹
+	LARGE_INTEGER hotWait;
+	hotWait.QuadPart = -10000LL;       //1æ¯«ç§’
+	//v3.7: å¿ƒè·³æŒ‰å¢™é’Ÿå¼ºåˆ¶å‘å°„â€”â€”åŸè®¾è®¡ä¸kickäº‹ä»¶å…±ç”¨ä¸€æ¬¡ç­‰å¾…, æ—¥å¿—å¯†é›†æ—¶
+	//kickä¸æ–­é‡ç½®ç­‰å¾…, timeoutæ°¸ä¸è§¦å‘, å¿ƒè·³è¢«æ´»æ´»é¥¿æ­»(å®æµ‹: æ¨¡å—æ¸…å•
+	//190è¡Œè½ç›˜æœŸé—´ä¸€æ¡[HB]éƒ½æ²¡æœ‰)ã€‚æ”¹ä¸ºæ¯æ¬¡é†’æ¥æŸ¥å¢™é’Ÿ, è·ä¸Šæ¬¡å¿ƒè·³>=é—´éš”
+	//å°±æ— æ¡ä»¶å‘å°„
 	ULONG64 lastHb = KeQueryUnbiasedInterruptTime();
 	for (;;)
 	{
+		//v3.22: çƒ­æ¨¡å¼ç­‰å¾…è¶…æ—¶1ms(è§hotWaitæ³¨é‡Š), å¸¸è§„250ms
 		KeWaitForSingleObject(&g_flKickT1, Executive,
-			KernelMode, FALSE, &timeout);
+			KernelMode, FALSE, g_flLaunchHot ? &hotWait : &timeout);
 		if (g_flStop)
 		{
 			break;
@@ -330,10 +677,10 @@ static VOID FlThreadProcT1(PVOID Context)
 		FlDrainBinRing();
 		if (KeQueryUnbiasedInterruptTime() - lastHb >= 2500000LL)
 		{
-			//ĞÄÌøĞĞ: ÏµÍ³´æ»îÖ¤Ã÷ + vcpu×´Ì¬¿ìÕÕ + exit¼ÆÊı
-			//g/f/oÑÚÂë: bit i = cpu i µÄ bInGuest/bLaunchFailed/bVmxOn
-			//(v3.8: ¶³½áÊ±×îºóÒ»Ìõ[HB]Ö±½ÓÅĞ¶Á¡ª¡ªgÑÚÂë=1µÄºËvmlaunch³É¹¦,
-			// fÑÚÂë=1µÄºËÆô¶¯Ê§°Ü, exitsÁĞ³ö¶³½áÇ°È«²¿exitÀàĞÍÍ³¼Æ)
+			//å¿ƒè·³è¡Œ: ç³»ç»Ÿå­˜æ´»è¯æ˜ + vcpuçŠ¶æ€å¿«ç…§ + exitè®¡æ•°
+			//g/f/oæ©ç : bit i = cpu i çš„ bInGuest/bLaunchFailed/bVmxOn
+			//(v3.8: å†»ç»“æ—¶æœ€åä¸€æ¡[HB]ç›´æ¥åˆ¤è¯»â€”â€”gæ©ç =1çš„æ ¸vmlaunchæˆåŠŸ,
+			// fæ©ç =1çš„æ ¸å¯åŠ¨å¤±è´¥, exitsåˆ—å‡ºå†»ç»“å‰å…¨éƒ¨exitç±»å‹ç»Ÿè®¡)
 			char hbb[512];
 			ULONG guestMsk = 0, failMsk = 0, onMsk = 0;
 			ULONG cpuCnt = KeQueryActiveProcessorCount(NULL);
@@ -348,10 +695,12 @@ static VOID FlThreadProcT1(PVOID Context)
 				if (g_vcpu[c].bVmxOn)       onMsk |= (1UL << c);
 			}
 			RtlStringCbPrintfA(hbb, sizeof(hbb),
-				"[HB%llu] up=%us lag=%ld wf=%ld/%ld g:%X f:%X o:%X exits:",
+				"[HB%llu] up=%us lag=%ld wf=%ld/%ld g:%X f:%X o:%X p:%X vcpu=%d pend=%d exits:",
 				++hb, (ULONG)(KeQueryUnbiasedInterruptTime() / 10000000ULL),
 				g_flT1Lag, g_flWriteFailsT1, g_flWriteFailsT2,
-				guestMsk, failMsk, onMsk);
+				guestMsk, failMsk, onMsk, g_geptParkedMask,
+				(int)g_geptVcpuCpu,
+				(g_geptVcpuCpu >= 0) ? (int)g_vcpu[g_geptVcpuCpu].PendingIntrCount : 0);
 			{
 				char one[40];
 				for (ULONG r = 0; r < GEPT_EXIT_REASON_MAX; r++)
@@ -367,28 +716,87 @@ static VOID FlThreadProcT1(PVOID Context)
 			FlEnqueueLine(hbb);
 			lastHb = KeQueryUnbiasedInterruptTime();
 		}
-		FlDrainTempLocked();
-		//v3.5ÏŞËÙ: ÏàÁÚÁ½ÅúÂäÅÌ¼ä¸ô>=20ms, ±ÜÃâÃÜ¼¯write-through+flush
-		//´¥·¢¹ıÂËÇı¶¯/ÎÄ¼şÏµÍ³¾ºÌ¬
-		KeDelayExecutionThread(KernelMode, FALSE, &rest);
+		//v3.28/v3.29: å†™ç›˜æŠ¤å«â€”â€”æŠ¤å«æœŸé—´é›¶ZwWriteFile(HB/ç¯äº‹ä»¶ç…§å¸¸å…¥è¡Œç¯
+		//ç¼“å†², å®¹é‡1024è¡Œ>>æŠ¤å«çª—äº§é‡), æ¸…æŠ¤å«åä¸‹è½®(â‰¤1ms)ä¸€æ¬¡è¡¥å†™ã€‚
+		//v3.29è¶…æ—¶è‡ªè§£é™¤ã€‚v3.29å®æµ‹ä¿®æ­£: æ¢é’ˆå®é™…è€—æ—¶~100ms(æ¯æ¬¡exitå¾€è¿”
+		//â‰ˆ12ÂµsÃ—8192æ¬¡, éä¼°ç®—çš„8ms)â€”â€”100msé˜ˆå€¼è¢«æ­£å¸¸è¿è¡Œè§¦å‘(æ— å®³ä½†ç•™ç—•
+		//è¯¯å¯¼åˆ¤è¯»)ã€‚v3.30é˜ˆå€¼100msâ†’1000ms: åªåœ¨çœŸæŒ‚æ­»(probeæœ€é•¿~150ms+
+		//KEEPæ¥ç®¡åˆæœŸ)æ—¶è§¦å‘; è§¦å‘æ—¶T1å¼ºåˆ¶è§£é™¤+è¡¥å†™â€”â€”guestæŒ‚æ­»æ—¶è‹¥T1
+		//æ´»ç€, æŠ¤å«æœŸäº‹ä»¶1ç§’åå¿…ç„¶ä¸Šç›˜(æ­»äº¡ç°åœº!)
+		if (g_flWriteGuard)
+		{
+			if (g_flWriteGuardTsc == 0)
+			{
+				g_flWriteGuardTsc = KeQueryUnbiasedInterruptTime();
+			}
+			else if (KeQueryUnbiasedInterruptTime() - g_flWriteGuardTsc > 10000000LL)
+			{
+				g_flWriteGuard = 0;
+				g_flWriteGuardTsc = 0;
+				FlEnqueueLine("[fl]æŠ¤å«è¶…æ—¶1000msæœªæ¸…(guestæŒ‚æ­»?), T1å¼ºåˆ¶è§£é™¤å¹¶è¡¥å†™");
+			}
+		}
+		else
+		{
+			g_flWriteGuardTsc = 0;
+		}
+		if (!g_flWriteGuard)
+		{
+			FlDrainTempLocked();
+		}
+		//v3.19: launchçƒ­è½®è¯¢â€”â€”g_flLaunchHotç½®ä½æœŸé—´(vmlaunchå‰ç½®1, ç»“æœè¡Œ
+		//è½ç›˜åæ¸…0), T1ç¡çœ é—´éš”20msâ†’1ms: å†»ç»“å‰çš„[F][W][E]ç¯äº‹ä»¶æ¯«ç§’çº§ä¸Šç›˜,
+		//ç›²åŒºä»20mså‹åˆ°1msã€‚v3.25çœ‹é—¨ç‹—3ç§’â†’15ç§’: ç­¾åˆ°é˜¶æ®µ(2ç§’)ä¹Ÿåœ¨
+		//çƒ­è§‚æµ‹è¦†ç›–å†…; ä¸»çº¿ç¨‹è‹¥æ­»åœ¨guesté‡Œæ²¡æ¸…æ ‡å¿—, T1ä»¥1msèŠ‚å¥ç»§ç»­
+		//è§‚æµ‹å†»ç»“å¦‚ä½•æ€æ­»å…¨æœº, 15ç§’åè‡ªåŠ¨é™æ¸©
+		if (g_flLaunchHot)
+		{
+			if (hotSince == 0)
+			{
+				hotSince = KeQueryUnbiasedInterruptTime();
+			}
+			else if (KeQueryUnbiasedInterruptTime() - hotSince > 150000000LL)
+			{
+				g_flLaunchHot = 0;
+				hotSince = 0;
+				FlEnqueueLine("[fl]launchçƒ­è½®è¯¢15ç§’è¶…æ—¶(ä¸»çº¿ç¨‹æœªæ¸…æ ‡å¿—, ç–‘å¡æ­»), æ¢å¤å¸¸è§„èŠ‚å¥");
+			}
+		}
+		else
+		{
+			hotSince = 0;
+		}
+		//v3.5é™é€Ÿ(çƒ­çª—å£ä¾‹å¤–): å¸¸è§„æ¨¡å¼ç›¸é‚»ä¸¤æ‰¹è½ç›˜é—´éš”>=20ms
+		KeDelayExecutionThread(KernelMode, FALSE,
+			g_flLaunchHot ? &hotRest : &rest);
 	}
-	//ÊÕÎ²: ÅÅ¿ÕÈ«²¿Ê£Óà(¹ØÎÄ¼şÓÉFlShutdown×ö, T1ÍË³öºóÎŞ²¢·¢)
+	//æ”¶å°¾: æ’ç©ºå…¨éƒ¨å‰©ä½™(å…³æ–‡ä»¶ç”±FlShutdownåš, T1é€€å‡ºåæ— å¹¶å‘)
 	FlDrainBinRing();
 	FlDrainTempLocked();
 	PsTerminateSystemThread(STATUS_SUCCESS);
 }
 
-//T2Ïß³Ì: Desktop¾¡Á¦¾µÏñ; µÈDriverEntryÍê³É²Å¿ªÎÄ¼ş(±Ü¿ª¼ÓÔØ´°¿ÚÆÚ)
+//T2çº¿ç¨‹: Desktopå°½åŠ›é•œåƒ; ç­‰DriverEntryå®Œæˆæ‰å¼€æ–‡ä»¶(é¿å¼€åŠ è½½çª—å£æœŸ)
 static VOID FlThreadProcT2(PVOID Context)
 {
 	LARGE_INTEGER timeout;
 	UNREFERENCED_PARAMETER(Context);
-	//v3.7: T2Í¬Ñù¶¤Àëcpu0(ÀíÓÉÍ¬T1)
-	if (KeQueryActiveProcessorCount(NULL) > 1)
+	//v3.7: T2åŒæ ·é’‰ç¦»cpu0(ç†ç”±åŒT1)
+	//v3.32: åŒT1å†æ’é™¤æœ€åä¸€æ ¸(è™šæ‹ŸåŒ–ç›®æ ‡)â€”â€”è§T1å¤„æ³¨é‡Š
 	{
-		KeSetSystemAffinityThread(~(ULONG_PTR)1);
+		ULONG nCpu = KeQueryActiveProcessorCount(NULL);
+		if (nCpu > 2)
+		{
+			ULONG_PTR avoid = (ULONG_PTR)1 | ((ULONG_PTR)1 << (nCpu - 1));
+			KeSetSystemAffinityThread(~avoid);
+		}
+		else if (nCpu > 1)
+		{
+			KeSetSystemAffinityThread(~(ULONG_PTR)1);
+		}
 	}
-	timeout.QuadPart = -30000000LL;    //3Ãë
+	//v3.34: çœ‹é—¨ç‹—æ”¹è‡ªæ—‹çº¿ç¨‹â€”â€”T2åŒæ ·ä¸å†æŒ‚DPCè®¡æ—¶å™¨
+	timeout.QuadPart = -30000000LL;    //3ç§’
 	for (;;)
 	{
 		KeWaitForSingleObject(&g_flKickT2, Executive, KernelMode, FALSE, &timeout);
@@ -401,16 +809,16 @@ static VOID FlThreadProcT2(PVOID Context)
 		{
 			break;
 		}
-		g_flT2Seq = g_flLineHead;    //¾µÏñÎ´·ÅĞĞ: Ö»ÍÆ½øÓÎ±ê
+		g_flT2Seq = g_flLineHead;    //é•œåƒæœªæ”¾è¡Œ: åªæ¨è¿›æ¸¸æ ‡
 	}
 	g_flFileDesktop = FlOpenOneFile(GEPT_LOG_PATH1);
 	if (g_flFileDesktop == NULL)
 	{
-		DbgPrint("[fl]T2: DesktopÎÄ¼ş´ò¿ªÊ§°Ü, Desktop¾µÏñ½ûÓÃ(TempÎª×¼)\n");
+		DbgPrint("[fl]T2: Desktopæ–‡ä»¶æ‰“å¼€å¤±è´¥, Desktopé•œåƒç¦ç”¨(Tempä¸ºå‡†)\n");
 		PsTerminateSystemThread(STATUS_SUCCESS);
 		return;
 	}
-	FlEnqueueLine("T2: DriverEntryÒÑÍê³É, Desktop¾µÏñ¿ªÊ¼(´ËÇ°ĞĞ½ö´æÔÚÓÚTemp)");
+	FlEnqueueLine("T2: DriverEntryå·²å®Œæˆ, Desktopé•œåƒå¼€å§‹(æ­¤å‰è¡Œä»…å­˜åœ¨äºTemp)");
 	for (;;)
 	{
 		KeWaitForSingleObject(&g_flKickT2, Executive, KernelMode, FALSE, &timeout);
@@ -426,7 +834,7 @@ static VOID FlThreadProcT2(PVOID Context)
 	PsTerminateSystemThread(STATUS_SUCCESS);
 }
 
-//½öT1/T2Ïß³ÌÄÚµ÷ÓÃ: ´ò¿ªÈÕÖ¾ÎÄ¼ş(×·¼Ó+Ğ´Ö±´ï)
+//ä»…T1/T2çº¿ç¨‹å†…è°ƒç”¨: æ‰“å¼€æ—¥å¿—æ–‡ä»¶(è¿½åŠ +å†™ç›´è¾¾)
 static HANDLE FlOpenOneFile(PCWSTR path)
 {
 	UNICODE_STRING ustr;
@@ -436,8 +844,8 @@ static HANDLE FlOpenOneFile(PCWSTR path)
 	RtlInitUnicodeString(&ustr, path);
 	InitializeObjectAttributes(&oa, &ustr,
 		OBJ_CASE_INSENSITIVE | OBJ_KERNEL_HANDLE, NULL, NULL);
-	//FILE_OPEN_IF×·¼Ó: ±£ÁôÀúÊ·(¶³½áÖØÆôºó¾ÉÈÕÖ¾²»±»¸²¸Ç)
-	//FILE_WRITE_THROUGH: writeÍê³É¼´ÂäÅÌ
+	//FILE_OPEN_IFè¿½åŠ : ä¿ç•™å†å²(å†»ç»“é‡å¯åæ—§æ—¥å¿—ä¸è¢«è¦†ç›–)
+	//FILE_WRITE_THROUGH: writeå®Œæˆå³è½ç›˜
 	NTSTATUS st = ZwCreateFile(&hFile,
 		FILE_APPEND_DATA | SYNCHRONIZE, &oa, &iosb, NULL,
 		FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_OPEN_IF,
@@ -445,11 +853,16 @@ static HANDLE FlOpenOneFile(PCWSTR path)
 	return NT_SUCCESS(st) ? hFile : NULL;
 }
 
-//DriverEntry×îÏÈµ÷ÓÃ: Ö»³õÊ¼»¯Í¬²½¶ÔÏó+´´½¨Á½¸öĞ´Ïß³Ì, ÁãÎÄ¼şI/O
-//(v3.2: TempÎÄ¼şÓÉT1Ïß³Ì×Ô¼º´ò¿ª)
+//DriverEntryæœ€å…ˆè°ƒç”¨: åªåˆå§‹åŒ–åŒæ­¥å¯¹è±¡+åˆ›å»ºä¸¤ä¸ªå†™çº¿ç¨‹, é›¶æ–‡ä»¶I/O
+//(v3.2: Tempæ–‡ä»¶ç”±T1çº¿ç¨‹è‡ªå·±æ‰“å¼€)
 VOID FlInit(VOID)
 {
 	HANDLE hThread = NULL;
+	//v3.33: é»‘åŒ£å­é™æ€å­—æ®µ(åŠ¨æ€å­—æ®µç”±çœ‹é—¨ç‹—DPCåœ¨è§¦å‘æ—¶å¿«ç…§)
+	RtlCopyMemory(g_flBlackBox.magic, "GEPTBB01", 8);
+	RtlStringCbCopyA(g_flBlackBox.build, sizeof(g_flBlackBox.build),
+		g_geptBuildTag);
+	g_flBlackBox.bbVer = 1;
 	KeInitializeEvent(&g_flKickT1, SynchronizationEvent, FALSE);
 	KeInitializeEvent(&g_flKickT2, SynchronizationEvent, FALSE);
 	NTSTATUS st = PsCreateSystemThread(&hThread, THREAD_ALL_ACCESS,
@@ -462,7 +875,7 @@ VOID FlInit(VOID)
 	}
 	else
 	{
-		DbgPrint("[fl]T1Ïß³Ì´´½¨Ê§°Ü=0x%x(ÎŞĞÄÌø/»·ÅÅ¿Õ)\n", st);
+		DbgPrint("[fl]T1çº¿ç¨‹åˆ›å»ºå¤±è´¥=0x%x(æ— å¿ƒè·³/ç¯æ’ç©º)\n", st);
 	}
 	st = PsCreateSystemThread(&hThread, THREAD_ALL_ACCESS,
 		NULL, NULL, NULL, FlThreadProcT2, NULL);
@@ -474,24 +887,45 @@ VOID FlInit(VOID)
 	}
 	else
 	{
-		DbgPrint("[fl]T2Ïß³Ì´´½¨Ê§°Ü=0x%x(ÎŞDesktop¾µÏñ)\n", st);
+		DbgPrint("[fl]T2çº¿ç¨‹åˆ›å»ºå¤±è´¥=0x%x(æ— Desktopé•œåƒ)\n", st);
+	}
+	//v3.34: åŒè‡ªæ—‹çœ‹é—¨ç‹—çº¿ç¨‹(W0=cpu0, W1=cpu1)â€”â€”å†»ç»“æ£€æµ‹çš„æ—¶åŸºæ˜¯
+	//rdtsc(çº¯ç¡¬ä»¶), ä¸ä¸­æ–­æ—¶é’Ÿ/å®šæ—¶å™¨/è°ƒåº¦å®Œå…¨è§£è€¦(v3.33 DPCç‰ˆå®æµ‹
+	//180sä¸å¼€ç«çš„æ ¹å› ä¿®å¤); çº¿ç¨‹åˆ›å»ºå¤±è´¥ä»…DbgPrint(é»‘åŒ£å­é™çº§, ä¸è‡´å‘½)
+	for (ULONG w = 0; w < 2; w++)
+	{
+		st = PsCreateSystemThread(&hThread, THREAD_ALL_ACCESS,
+			NULL, NULL, NULL, FlWdThreadProc, (PVOID)(ULONG_PTR)w);
+		if (NT_SUCCESS(st))
+		{
+			ObReferenceObjectByHandle(hThread, THREAD_ALL_ACCESS,
+				*PsThreadType, KernelMode, &g_flWdThread[w], NULL);
+			ZwClose(hThread);
+		}
+		else
+		{
+			DbgPrint("[fl]W%uçœ‹é—¨ç‹—çº¿ç¨‹åˆ›å»ºå¤±è´¥=0x%x(é»‘åŒ£å­æ— çœ‹é—¨ç‹—)\n", w, st);
+		}
 	}
 }
 
-//DriverUnload×îºóµ÷ÓÃ: Í£Ïß³Ì+×îÖÕÅÅ¿Õ+¹ØTemp(T2ÓĞ½çµÈ´ı, ¿ÉÄÜ¿¨ËÀÔÚDesktopĞ´)
+//DriverUnloadæœ€åè°ƒç”¨: åœçº¿ç¨‹+æœ€ç»ˆæ’ç©º+å…³Temp(T2æœ‰ç•Œç­‰å¾…, å¯èƒ½å¡æ­»åœ¨Desktopå†™)
 VOID FlShutdown(VOID)
 {
+	//v3.33: æœ€å…ˆè§£é™¤çœ‹é—¨ç‹—â€”â€”å¸è½½æœŸé—´HBå¯èƒ½åœé¡¿(çº¿ç¨‹é€€å‡º/æœ€ç»ˆæ’ç©º),
+	//ä¸è§£é™¤=å¯èƒ½æŠŠå¥åº·å¸è½½è¯¯åˆ¤æˆå†»ç»“è“å±
+	FlWdDisarm();
 	g_flStop = 1;
 	KeSetEvent(&g_flKickT1, IO_NO_INCREMENT, FALSE);
 	KeSetEvent(&g_flKickT2, IO_NO_INCREMENT, FALSE);
 	if (g_flThreadT1 != NULL)
 	{
-		//T1Ö»Ğ´Temp(ÏµÍ³Ä¿Â¼): ÎŞ¹ıÂËÇı¶¯ËÀËø·çÏÕ, ÎŞ½çµÈ´ı
+		//T1åªå†™Temp(ç³»ç»Ÿç›®å½•): æ— è¿‡æ»¤é©±åŠ¨æ­»é”é£é™©, æ— ç•Œç­‰å¾…
 		KeWaitForSingleObject(g_flThreadT1, Executive, KernelMode, FALSE, NULL);
 		ObDereferenceObject(g_flThreadT1);
 		g_flThreadT1 = NULL;
 	}
-	//×îÖÕÅÅ¿Õ(²¶»ñT1ÍË³öºóµ½´Ë¿ÌÖ®¼äµÄĞÂĞĞ; T1ÒÑÍË³ö, ÎŞ²¢·¢)
+	//æœ€ç»ˆæ’ç©º(æ•è·T1é€€å‡ºååˆ°æ­¤åˆ»ä¹‹é—´çš„æ–°è¡Œ; T1å·²é€€å‡º, æ— å¹¶å‘)
 	FlDrainTempLocked();
 	if (g_flFileTemp != NULL)
 	{
@@ -501,17 +935,37 @@ VOID FlShutdown(VOID)
 	if (g_flThreadT2 != NULL)
 	{
 		LARGE_INTEGER t2;
-		t2.QuadPart = -20000000LL;    //×î¶à2Ãë
+		t2.QuadPart = -20000000LL;    //æœ€å¤š2ç§’
 		if (KeWaitForSingleObject(g_flThreadT2, Executive, KernelMode,
 			FALSE, &t2) == STATUS_TIMEOUT)
 		{
-			//T2¿¨ËÀÔÚDesktopĞ´(¹ıÂËÇı¶¯ËÀËø): Ğ¹Â©Ïß³ÌÓë¾ä±ú, ½öµ÷ÊÔ½×¶Î¿É½ÓÊÜ
-			DbgPrint("[fl]T2¿¨ËÀÔÚDesktopĞ´! ¾ä±úĞ¹Â©, ½¨ÒéÖØÆô¶øÎğ·´¸´Ğ¶ÔØ\n");
+			//T2å¡æ­»åœ¨Desktopå†™(è¿‡æ»¤é©±åŠ¨æ­»é”): æ³„æ¼çº¿ç¨‹ä¸å¥æŸ„, ä»…è°ƒè¯•é˜¶æ®µå¯æ¥å—
+			DbgPrint("[fl]T2å¡æ­»åœ¨Desktopå†™! å¥æŸ„æ³„æ¼, å»ºè®®é‡å¯è€Œå‹¿åå¤å¸è½½\n");
 		}
 		else
 		{
 			ObDereferenceObject(g_flThreadT2);
 			g_flThreadT2 = NULL;
+		}
+	}
+	//v3.34: ç­‰çœ‹é—¨ç‹—çº¿ç¨‹é€€å‡º(è‡ªæ—‹å¾ªç¯å¤´æ£€æŸ¥g_flStop, å¾®ç§’çº§é€€å‡º;
+	//æœ‰ç•Œç­‰å¾…é˜²å¼‚å¸¸å¡æ­»å¸è½½)
+	for (ULONG w = 0; w < 2; w++)
+	{
+		if (g_flWdThread[w] != NULL)
+		{
+			LARGE_INTEGER tw;
+			tw.QuadPart = -20000000LL;    //æœ€å¤š2ç§’
+			if (KeWaitForSingleObject(g_flWdThread[w], Executive,
+				KernelMode, FALSE, &tw) == STATUS_TIMEOUT)
+			{
+				DbgPrint("[fl]W%uçœ‹é—¨ç‹—çº¿ç¨‹æœªé€€å‡º! æ³„æ¼\n", w);
+			}
+			else
+			{
+				ObDereferenceObject(g_flWdThread[w]);
+				g_flWdThread[w] = NULL;
+			}
 		}
 	}
 }

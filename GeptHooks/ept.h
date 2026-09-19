@@ -154,6 +154,11 @@ typedef union _EPT_EXITDATA
 }EPT_EXITDATA, * PEPT_EXITDATA;
 
 NTSTATUS EptInitEptData(ULONG cpuNumber);
+//v3.18: 释放共享高区页表(512GB-256TB预建页, DriverUload/回滚调用, 幂等)
+VOID EptShutdownHighMappings(VOID);
+//v3.13: vmlaunch前EPT软件自检门(PASSIVE级, FlLog逐项落盘)。
+//返回失败项数(0=通过)。VmxSetupVmcs据此决定是否放弃vmlaunch
+ULONG EptVerifyTables(ULONG cpuNumber, ULONG64 guestRspVa);
 void EptExitHandler(PGUEST_REGS GuestRegs);
 void EptSetHook(ULONG64 orginalPagePFN, ULONG64 codePagePFN);
 PEPT_PDE_2M EptGetPde2B(ULONG64 PFN);

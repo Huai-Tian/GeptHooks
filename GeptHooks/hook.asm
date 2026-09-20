@@ -34,44 +34,51 @@ HVM_RESTORE_ALL_NOSEGREGS MACRO
         pop r14
         pop r15
 ENDM
-EXTERN	 HookNtClose:PROC
-EXTERN g_jmp_ntclose:DQ
 EXTERN	 HookTestTarget:PROC
 EXTERN g_jmp_testtarget:DQ
 EXTERN	 GeptCallbackDispatch:PROC   ;v3.50: API detour分发器(GeptApi.c)
 EXTERN	 GeptViewSwitch:PROC         ;v3.50: 带VT开关检查的视图切换(GeptApi.c)
 .CODE
-AsmHookNtClose proc
-    HVM_SAVE_ALL_NOSEGREGS
-    ;v3.43: 20h→28h——x64 ABI要求call指令执行前RSP%16==0。入口RSP%16==8
-    ;(call压入返回地址后), 16个push(128B)不改奇偶, 20h(32B)也不改→call时
-    ;RSP%16==8=错8字节! HookNtClose及整棵子树全部错位运行, 直到某处
-    ;编译器按ABI假设发出的movaps(16字节对齐SSE)打到未对齐栈槽→#GP(0)
-    ;(v3.41/v3.42b蓝屏0x1E@(C0000005,nt+0x405B4F,0,-1)即此: nt的上下文
-    ;切换shell在错位栈上保存xmm6触发)。28h=32B影子空间+8B对齐补偿
-    sub rsp,28h
-    call HookNtClose
-    add rsp,28h
-    HVM_RESTORE_ALL_NOSEGREGS
-    ;以下重放NtClose原始prologue——**必须与本机ntoskrnl逐字节一致**
-    ;v3.45: 2026-09-19实测反汇编适配(tools/nt_ntclose_check.py, 测试机
-    ;同构建SizeOfImage=1046000): 本机NtClose前22字节=
-    ;  push rbx(40 53)/push rdi(57)/push r13(41 55)/push r14(41 56)/
-    ;  push r15(41 57)/sub rsp,40h(48 83 EC 40)/mov rax,gs:[188h](9B)
-    ;旧版重放(mov[rsp+8],rbx/push rdi/sub rsp,20h/mov rax,gs:[188h]=19B)
-    ;绑定作者2022 Win10——在本机上重放指令序列错误+PHGetHookLen算出
-    ;跳回NtClose+22而重放只复刻19B=跳进mov rax,gs:指令中间执行垃圾
-    ;字节=必然蓝屏(main.c的STAGE2安装校验会拒绝不匹配的prologue)
-    ;g_jmp_ntclose=NtClose+22(main.c动态计算, 与本重放严格配套)
-    push    rbx
-    push    rdi
-    push    r13
-    push    r14
-    push    r15
-    sub     rsp, 40h
-    mov     rax, gs:[188h]
-   jmp qword ptr[g_jmp_ntclose]
-AsmHookNtClose endp
+;==== v3.51 Phase4/6: API detour stub(统一版, VMFUNC核+fallback核共用) ====
+;进入链: hooked视图hook页(=CodePage)目标偏移处的14B绝对跳转
+;  → 本hook独享trampoline槽(GeptApi.c生成: mov r10,entry; jmp GeptStubEntry)
+;  → 此处。r10=API条目(trampoline写入); 栈顶=原调用者返回地址
+;  (PHInitJmpCode的push+ret净值0=纯jmp语义); 原函数参数rcx/rdx/r8/r9原封未动
+;流程: GeptViewSwitch(0)切clean(VMFUNC核; fallback核自动no-op)
+;  → SAVE_ALL → 分发器(设置每核当前hook+调用户回调, 返回值=新函数返回值)
+;  → GeptViewSwitch(1)归位hooked → 回调返回值写帧rax槽
+;  → RESTORE_ALL → ret回调用者(rax=回调返回值=detour完整控制权)
+;v3.51统一化(Phase 6): 原版入口处裸vmfunc(仅VMFUNC核合法, fallback核
+;=#UD蓝屏)改调GeptViewSwitch——C侧按bVmfuncOn按核判定, fallback核
+;自动no-op=同一stub服务两类核(混合机器正确)
+;v3.51顺带修复两处latent bug(裸vmfunc版靠运气通过v3.50b实测):
+;  ①retval曾存r10/r11跨call GeptViewSwitch——volatile寄存器跨C调用
+;    不保证保存(当前编译器恰好没占用纯属运气); 现改为**立即落帧**
+;    (mov [rsp+28h],rax后不再跨call持有)
+;  ②API条目曾假定r10跨call存活——同理不可靠; 现从帧的r10槽重取
+;    ([rsp+78h]: SAVE_ALL后r10槽=槽写入的entry值, 偏移28h+50h)
+;帧布局(push序=HVM_SAVE_ALL_NOSEGREGS, rax最低): rax@0 rcx@8 rdx@10h
+;rbx@18h rbp@20h rsi@30h rdi@38h r8@40h r9@48h r10@50h r11@58h...
+;sub 28h后帧基=rsp+28h, 故r10槽=rsp+28h+50h=rsp+78h
+GeptStubEntry PROC
+    HVM_SAVE_ALL_NOSEGREGS    ;先保存全部(含槽写入的r10=API条目)
+    sub rsp, 28h              ;入口RSP%16==8(jmp到函数入口语义)+16push
+                              ;(128B)不改奇偶→此处%16==8; sub 28h(40B)
+                              ;→call点%16==0, x64 ABI正确(v3.43裁决同款)
+    xor ecx, ecx              ;arg1=0(clean视图)
+    call GeptViewSwitch       ;VMFUNC核: vmfunc切clean; fallback核: no-op
+                              ;(rcx/rdx/r8-r11可能被clobber——无妨)
+    mov rcx, [rsp+78h]        ;arg1=API条目(从帧r10槽重取, 不依赖volatile存活)
+    lea rdx, [rsp+28h]        ;arg2=GUEST_REGS帧基(回调取原始rcx/rdx/r8/r9)
+    call GeptCallbackDispatch ;rax=用户回调返回值=hook函数的新返回值
+    mov [rsp+28h], rax        ;**retval立即落帧的rax槽**(不跨下个call持有
+                              ;volatile; RESTORE的pop rax=新返回值)
+    mov ecx, 1                ;arg1=1(hooked视图)
+    call GeptViewSwitch       ;VMFUNC核: vmfunc归位; fallback核: no-op
+    add rsp, 28h
+    HVM_RESTORE_ALL_NOSEGREGS ;rax=回调返回值, 其余全部=原始值(detour语义)
+    ret                       ;回原调用者(栈顶=其返回地址, jmp进入未压新帧)
+GeptStubEntry ENDP
 
 ;==== 自测目标: 指令布局完全自控, 不依赖任何Windows版本 ====
 ;前5条mov共15字节(>=14字节跳板), 无相对寻址指令, 可被安全跳板化
@@ -100,44 +107,8 @@ GeptTestTarget ENDP
 GEPTTGT ENDS
 
 ;独立section天然把跳板隔到不同页(.code), 无需align(v3.42b)
-.code
-;==== v3.50 Phase4: API detour stub(VMFUNC双EPT, 零VM-Exit) ====
-;进入链: hooked视图hook页(=CodePage)目标偏移处的14B绝对跳转
-;  → 本hook独享trampoline槽(GeptApi.c生成: mov r10,entry; jmp GeptStubEntry)
-;  → 此处。r10=API条目(trampoline写入, r10/r11为volatile=函数入口clobber
-;  ABI合法); 栈顶=原调用者返回地址(PHInitJmpCode的push+ret净值0=纯jmp语义);
-;  原函数参数rcx/rdx/r8/r9原封未动
-;流程: vmfunc(0,0)切clean(原函数字节完好=回调/GeptCallOriginal直接可用)
-;  → SAVE_ALL → 分发器(设置每核当前hook+调用户回调, 返回值=新函数返回值)
-;  → GeptViewSwitch(1)切回hooked(VT已关则安全跳过, GeptApi.c检查)
-;  → 回调返回值写进帧的rax槽 → RESTORE → ret回原调用者
-;机器码VMFUNC=0F 01 D4(SDM指令表, v3.47c裁决; vmfunc不改任何寄存器/标志
-;——SDM §28.5.7.3 "does not modify the state of any registers")
-GeptStubEntry PROC
-    HVM_SAVE_ALL_NOSEGREGS    ;先保存全部(含原始rax/rcx..r15); r10仍=API条目
-    xor eax, eax              ;EAX=0: function 0=EPTP switching
-    xor ecx, ecx              ;ECX=0: 切到EPTP-list[0]=clean! **必须显式清零**:
-                              ;此刻ECX=原函数rcx参数(句柄等任意值)——vmfunc
-                              ;会把ECX当list索引(<512切错视图/≥512走rsn59
-                              ;跳过指令=视图未切), 两者都是静默语义破坏
-    db 0Fh, 01h, 0D4h         ;vmfunc(0,0)→clean视图(零VM-Exit)
-    mov rcx, r10              ;arg1=API条目
-    mov rdx, rsp              ;arg2=GUEST_REGS帧(回调取原始rcx/rdx/r8/r9)
-    sub rsp, 28h              ;入口RSP%16==8(jmp到函数入口语义)+16push(128B)
-                              ;不改奇偶→此处%16==8; sub 28h(40B)→call点%16==0
-                              ;ABI正确(与AsmHookNtClose的v3.43裁决同款)
-    call GeptCallbackDispatch ;rax=用户回调返回值=hook函数的新返回值
-    mov r10, rax              ;retval暂存r10(RESTORE稍后从帧还原r10原值, 先用无妨)
-    add rsp, 28h
-    sub rsp, 28h              ;影子空间: 保护帧上保存的寄存器不被callee的
-                              ;参数区[rcx]写覆盖
-    mov ecx, 1                ;arg=1(hooked视图)
-    call GeptViewSwitch       ;C: 检查bInGuest后vmfunc(0,1)(VT已关=no-op)
-    add rsp, 28h
-    mov [rsp], r10            ;帧的rax槽←retval(RESTORE首个pop rax=新返回值)
-    HVM_RESTORE_ALL_NOSEGREGS ;rax=回调返回值, 其余全部=原始值(detour语义)
-    ret                       ;回原调用者(栈顶=其返回地址, jmp进入未压新帧)
-GeptStubEntry ENDP
+;(v3.51: GeptStubEntry已移至文件头部统一版; 旧版裸vmfunc stub与
+; AsmHookNtClose硬编码重放随Phase 6动态化一并退役删除)
 
 ;==== 自测跳板: 重放被跳板覆盖的5条mov, 然后跳回 原函数+15 ====
 ;v3.43**根因修复**: call HookTestTarget前的sub rsp,20h→28h。

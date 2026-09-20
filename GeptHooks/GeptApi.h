@@ -26,12 +26,16 @@
 //  3. 已知限制(文档化): 回调执行期间本核处于clean视图——回调里调用
 //     的其他hook目标(或原函数内部调用的其他hook目标)不被拦截;
 //     回调阻塞=本核hook持续失效直到返回
-//  4. 第5+参数(stack参数)v1不转发(GeptCallOriginal只转发rcx/rdx/r8/r9
+// 4. 第5+参数(stack参数)v1不转发(GeptCallOriginal只转发rcx/rdx/r8/r9
 //     四个寄存器参数)——覆盖绝大多数内核函数; 全参数转发留待增强
 //
-//硬件要求: 全部in-guest核VMFUNC+双EPT自测通过(Haswell+, 本路线v3.48
-//起全绿); 不满足GeptHookInstall返回STATUS_NOT_SUPPORTED, 调用方退化
-//到violation方案(v3.46跳板重放, Phase 6动态化)
+//硬件要求(v3.51 Phase6起): 至少一核VT in-guest即可安装——
+//  VMFUNC核(Haswell+): 双EPT零VM-Exit detour(隐藏性最优)
+//  无VMFUNC核(老CPU/降级): violation降级——API语义完全等价, 只是
+//    每次触发产生1+次VM-Exit(隐藏性降级); CallOriginal自动走LDE
+//    重定位跳板(版本无关, 无prologue硬编码)
+//  目标prologue含相对分支/RIP-relative超±2GB=Install拒绝(极罕见,
+//  日志[Reloc]行留痕, 绝不带病上机)
 //====================================================================
 
 //detour回调: 返回值=hook函数的返回值; Context=安装时原样传入;
@@ -59,7 +63,8 @@ NTSTATUS GeptHookRemove(PVOID Target);
 NTSTATUS GeptHookEnumerate(GEPT_HOOK* Buffer, ULONG* InOutCount);
 
 //回调内调用原函数(仅回调上下文有效, 其他上下文返回0):
-//确保clean视图→直接call Target(原始字节)→视图归位hooked
+//VMFUNC核: 切clean视图→直接call Target(原始字节)→归位hooked;
+//fallback核: 经LDE重定位跳板(版本无关, 无prologue硬编码)
 ULONG64 GeptCallOriginal(ULONG64 Arg1, ULONG64 Arg2, ULONG64 Arg3, ULONG64 Arg4);
 
 //高级: 手动切换EPT视图(0=clean原始字节/1=hooked)。
@@ -70,5 +75,10 @@ VOID GeptViewSwitch(ULONG eptpIndex);
 //安全完成); 关VT之后调用GeptApiFreeMemory释放内存
 VOID GeptApiRemoveAll(VOID);
 VOID GeptApiFreeMemory(VOID);
+
+//v3.51: replay自测(仅调试/演示用)——直接调用指定hook的LDE重定位跳板,
+//执行副本prologue后进入原函数体并正常返回。上机验证重定位生成器:
+//传伪句柄NtCurrentProcess()给NtClose的replay→应返回STATUS_INVALID_HANDLE
+NTSTATUS GeptApiSelfTestReplay(PVOID Target, ULONG64 Arg1);
 
 #endif // GEPTAPI_H

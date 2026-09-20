@@ -183,3 +183,135 @@ VOID PHHookCallBackDpc(_In_ struct _KDPC* Dpc, _In_opt_ PVOID DeferredContext, _
 		KeSignalCallDpcSynchronize(SystemArgument2);
 	}
 }
+
+//v3.51 Phase6: LDE重定位生成器实现(接口契约见PageHook.h头注释)。
+//保守策略逐条:
+//  ①ldasm逐指令解码, F_INVALID/超长=拒
+//  ②相对分支(F_IMM+F_RELATIVE: E8/E9/EB/jcc/loop)=拒——prologue按编译器
+//    惯例不该有分支; rel8物理上无法跨页重定位(±127B装不下页间距),
+//    rel8/rel32统一拒绝(需求出现再扩展rel32调整)
+//  ③RIP-relative数据寻址(F_DISP+F_RELATIVE: lea/mov/call[rsp+X]等):
+//    按绝对有效地址重算disp32(公式: 新disp=有效地址-新RIP_after);
+//    新旧指令位置差使disp超±2GB=拒(disp32装不下)
+//  ④尾接 FF 25 00000000 + <Target+Len>(与API trampoline槽同款位置无关
+//    绝对跳转, v3.50b off-by-2教训: 指针落在指令RIP_after处)
+//  ⑤回扫自检: 生成后**按CPU视角**重新解码——逐指令长度与原始序列一致+
+//    字节比对(disp区4字节除外)+边界精确==Len+尾跳转6字节码核对——
+//    生成器自身回归当场拦截(v3.50b铁律: 运行时生成的机器码必须回读自检)
+PVOID PHBuildRelocTrampoline(ULONG64 Target, ULONG MinLen, PULONG OutLen)
+{
+	if (OutLen != NULL)
+	{
+		*OutLen = 0;
+	}
+	//缓冲: 最坏prologue=MinLen+14(单条15B跨界)+尾跳14B=42B; 96B留足余量
+	PUCHAR buf = (PUCHAR)ExAllocatePoolWithTag(NonPagedPool, 96, 'tpeG');
+	if (buf == NULL)
+	{
+		FlLog("[Reloc] 拒绝: 跳板缓冲分配失败");
+		return NULL;
+	}
+	RtlZeroMemory(buf, 96);
+	ULONG total = 0;
+	ULONG64 src = Target;
+	BOOLEAN bad = FALSE;
+	while (total < MinLen)
+	{
+		ldasm_data ld = { 0 };
+		ULONG len = ldasm((PVOID)src, &ld, TRUE);
+		if (len == 0 || (ld.flags & F_INVALID) || total + len > 80)
+		{
+			FlLog("[Reloc] 拒绝: 偏移+%u处指令解码失败/超长(len=%u flags=%02X)",
+				total, len, (ULONG)ld.flags);
+			bad = TRUE;
+			break;
+		}
+		//②相对分支=拒(F_IMM+F_RELATIVE: LDasm对E8/E9/EB/jcc/loop置位)
+		if ((ld.flags & F_IMM) && (ld.flags & F_RELATIVE))
+		{
+			FlLog("[Reloc] 拒绝: 偏移+%u处相对分支指令(%02X %02X...)——prologue不可重定位",
+				total, *(PUCHAR)src, *((PUCHAR)src + 1));
+			bad = TRUE;
+			break;
+		}
+		RtlCopyMemory(buf + total, (PVOID)src, len);
+		//③RIP-relative数据寻址: 重算disp32
+		if ((ld.flags & F_DISP) && (ld.flags & F_RELATIVE) && ld.disp_size == 4)
+		{
+			LONG64 oldDisp = *(LONG*)(buf + total + ld.disp_offset);
+			//原指令的绝对有效地址: 原RIP_after + 原disp
+			ULONG64 effective = src + len + (ULONG64)oldDisp;
+			//新disp: 保持同一绝对有效地址——有效地址 - 跳板内RIP_after
+			LONG64 newDisp = (LONG64)effective - (LONG64)(buf + total + len);
+			if (newDisp < -0x80000000LL || newDisp > 0x7FFFFFFFLL)
+			{
+				FlLog("[Reloc] 拒绝: 偏移+%u处RIP-relative目标超±2GB(disp需%llX)",
+					total, (long long)newDisp);
+				bad = TRUE;
+				break;
+			}
+			*(LONG*)(buf + total + ld.disp_offset) = (LONG)newDisp;
+		}
+		total += len;
+		src += len;
+	}
+	if (!bad)
+	{
+		//④尾接位置无关绝对跳转 → Target+total
+		buf[total] = 0xFF;
+		buf[total + 1] = 0x25;
+		*(ULONG32*)(buf + total + 2) = 0;
+		*(ULONG64*)(buf + total + 6) = Target + total;
+		//⑤回扫自检: 按CPU视角重新解码生成物, 与原始指令序列逐条比对
+		ULONG chk = 0;
+		ULONG64 ori = Target;
+		while (chk < total && !bad)
+		{
+			ldasm_data ldNew = { 0 };
+			ldasm_data ldOld = { 0 };
+			ULONG lNew = ldasm(buf + chk, &ldNew, TRUE);
+			ULONG lOld = ldasm((PVOID)ori, &ldOld, TRUE);
+			if (lNew == 0 || lNew != lOld || (ldNew.flags & F_INVALID))
+			{
+				FlLog("[Reloc] 回扫自检FAIL: 生成物偏移+%u解码异常(新len=%u 旧len=%u)",
+					chk, lNew, lOld);
+				bad = TRUE;
+				break;
+			}
+			//字节比对: 除被调整的disp32区(4字节)外逐字节必须一致
+			for (ULONG k = 0; k < lNew; k++)
+			{
+				BOOLEAN skip = ((ldOld.flags & F_DISP) && (ldOld.flags & F_RELATIVE) &&
+					ldOld.disp_size == 4 &&
+					k >= ldOld.disp_offset && k < ldOld.disp_offset + 4);
+				if (!skip && buf[chk + k] != ((PUCHAR)ori)[k])
+				{
+					FlLog("[Reloc] 回扫自检FAIL: 生成物偏移+%u第%u字节不符(%02X≠%02X)",
+						chk, k, buf[chk + k], ((PUCHAR)ori)[k]);
+					bad = TRUE;
+					break;
+				}
+			}
+			chk += lNew;
+			ori += lOld;
+		}
+		if (!bad && (buf[total] != 0xFF || buf[total + 1] != 0x25 ||
+			*(ULONG64*)(buf + total + 6) != Target + total))
+		{
+			FlLog("[Reloc] 回扫自检FAIL: 尾跳转码/目标不符");
+			bad = TRUE;
+		}
+	}
+	if (bad)
+	{
+		ExFreePool(buf);
+		return NULL;
+	}
+	if (OutLen != NULL)
+	{
+		*OutLen = total;
+	}
+	FlLog("[Reloc] 跳板就绪: 目标=%llX len=%uB(回扫自检逐条通过, 尾跳→%llX)",
+		(unsigned long long)Target, total, (unsigned long long)(Target + total));
+	return buf;
+}

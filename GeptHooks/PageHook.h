@@ -52,4 +52,11 @@ VOID KeGenericCallDpc(_In_ PKDEFERRED_ROUTINE Routine, _In_opt_ PVOID Context);
 VOID KeSignalCallDpcDone(_In_ PVOID SystemArgument1);
 LOGICAL KeSignalCallDpcSynchronize(_In_ PVOID SystemArgument2);
 
+//v3.51 Phase6(fallback动态化): LDE重定位生成器——把目标函数前≥MinLen字节
+//的prologue复制到可执行缓冲并重定位RIP-relative, 尾接jmp回Target+Len。
+//violation方案"版本无关化"的核心(旧22B重放硬编码绑定本机构建)。失败返回
+//NULL(保守策略: 相对分支/RIP-relative超±2GB/回扫自检不符=拒绝, 绝不带病
+//上机)。调用它=执行原prologue后进入原函数体并正常返回(经典Detours语义)
+PVOID PHBuildRelocTrampoline(ULONG64 Target, ULONG MinLen, PULONG OutLen);
+
 #endif // PAGEHOOK_H

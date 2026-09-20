@@ -12,17 +12,26 @@
 //v3.41: 0→1——v3.40全核KEEP闭环(8核inGuest+11min稳定+干净卸载)授权
 #define GEPT_HOOK_STAGE 1
 
-//构建标签(v3.43): 每次改动代码必须同步修改! 会打进日志第一行,
+//构建标签(v3.44): 每次改动代码必须同步修改! 会打进日志第一行,
 //用于核对测试机跑的是不是本次编译的二进制(见DriverEntry横幅)
 //v3.42: hook页隔离; b: ml64拒绝段内align 1000h, 改SEGMENT ALIGN(4096)段
-//v3.43: **蓝屏根因修复**——0x1E@(C0000005,nt+0x405B4F,0,-1)两连(v3.41/
-//v3.42b同RVA): ntoskrnl反汇编裁决=KiSwapContext入口shell的movaps xmm6,
-//[rsp+30h]未16字节对齐触发#GP(0)(内核构造AV记录时info[1]填哨兵-1,
-//"读-1"实为对齐违例签名)。错位源头=hook.asm两个跳板的sub rsp,20h:
-//call C函数时RSP%16==8违反ABI→HookTestTarget整树错8字节运行→FlLog
-//阻塞→调度器在错位栈上movaps→#GP。修复: 20h→28h(影子空间+对齐补偿)。
-//另附全程插桩: PHHook三锚点/EptSetHook三步'S'(21/22/23)/视图切换'x'
-#define GEPT_BUILD_TAG "v3.43"
+//v3.43: 0x1E蓝屏根因修复——hook跳板sub rsp,20h违反x64 ABI(→28h),
+//KiSwapContext movaps #GP两连蓝屏终结; STAGE1全链路实测打通
+//v3.44: **卸载0x50蓝屏根因修复**——v3.43卸载中段蓝屏0x50@(用户VA,3,
+//nt+0x2044BE,0xF): p4=0xF=NONPAGED_BUGCHECK_USER_VA_ACCESS_INCONSISTENT
+//(微软文档: "内核态在不允许时访问用户VA")。nt反汇编: nt+0x2044BE=LPC/
+//等待结果回写函数(状态码0x101/0x102/0xC0/0x80+32B条目), 调用者紧邻
+//LpcRequestPort。DMP v6.2裁决: 行环到L861"cpu5: 已退出guest"(cpu5的
+//vmcall退出本身成功, 排除退出路径), 崩在FlLog等T1的500ms睡眠窗内,
+//受害者=另一线程(services.exe的LPC等待完成回写)。根因=vmx_off回真机
+//不恢复CR3: VM-exit硬件加载HOST_CR3(System进程DTB, launch时快照),
+//vmresume会恢复GUEST_CR3但vmx_off路径没有vmresume——卸载线程带着
+//System页表跑(内核半区共享=看似正常), FlLog睡眠让出CPU后同进程线程
+//切换不重载CR3, 下一个services.exe线程的系统调用写用户缓冲→用户VA
+//在System页表下零映射→#PF→MmAccessFault判0xF→蓝屏。
+//修复: 三处vmx_off路径(rcx==1卸载/逃生/rcx==3探针)vmread GUEST_CR3
+//后立即__writecr3恢复触发线程自己的地址空间
+#define GEPT_BUILD_TAG "v3.44"
 
 //v3.33: 构建标签全局副本——黑匣子(common.h GEPT_BLACKBOX)在FlInit时
 //拷入, 蓝屏DMP解析时自证二进制版本

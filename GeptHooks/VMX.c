@@ -583,7 +583,23 @@ void VmxExitHandler(PGUEST_REGS GuestRegs)
 			//同款修复)。vmread必须在vmx_off之前(退出VMX operation后
 			//vmread非法), 故整个块前置
 			VmxRestoreDtrLimits();
+			//v3.44: 卸载路径CR3恢复(根因修复)——VM-exit硬件加载HOST_CR3
+			//(=vmlaunch时System进程的页表基址, VMX.c填充时快照, launch后
+			//永不更新)。vmresume路径每次都会重载GUEST_CR3, 但vmx_off路径
+			//没有vmresume: 跳回后本线程(services.exe的SCM线程)带着System
+			//页表继续跑——内核半区全进程共享所以FlLog/CR4/亲和切换全部正常
+			//(v3.39-3.43五版"干净退出"的假象来源), 但同进程线程切换
+			//(KiSwapContext只在进程变化时重载CR3)会把错误页表传播给本核
+			//后续调度的同进程线程; 其系统调用写用户缓冲(LPC应答/等待结果,
+			//nt+0x2044BE写32B)时用户VA在System页表下零映射→#PF→
+			//MmAccessFault判"内核态访问用户VA不允许"(p4=0xF)→蓝屏0x50。
+			//v3.43实测: cpu0-4五次退出赌赢, cpu5退出后<500ms赌输。
+			//修复=vmx_off后立即写回触发线程自己的CR3(=GUEST_CR3快照,
+			//即vmcall时该线程所属进程的DTB)。vmread必须在vmx_off前。
+			ULONG64 unloadCr3 = 0;
+			__vmx_vmread(GUEST_CR3, &unloadCr3);
 			__vmx_off();
+			__writecr3(unloadCr3);
 			if (vmcallFlags & 0x200)
 			{
 				_enable();
@@ -658,7 +674,12 @@ void VmxExitHandler(PGUEST_REGS GuestRegs)
 			}
 			//v3.39: vmx_off前还原GDTR/IDTR limit(同rcx==1路径)
 			VmxRestoreDtrLimits();
+			//v3.44: CR3恢复(同rcx==1卸载路径, 见其注释; vmread必须在
+			//vmx_off前)
+			ULONG64 probeExitCr3 = 0;
+			__vmx_vmread(GUEST_CR3, &probeExitCr3);
 			__vmx_off();
+			__writecr3(probeExitCr3);
 			ULONG64 probeCr4 = __readcr4();
 			probeCr4 &= ~0x2000;              //清CR4.VMXE, 干净回真机
 			__writecr4(probeCr4);
@@ -961,7 +982,14 @@ void VmxExitStormEscape(char tag, ULONG reason, ULONG64 a, ULONG64 b,
 	//v3.39: vmx_off前还原GDTR/IDTR limit(VM-exit强制0xFFFF, 见
 	//VmxRestoreDtrLimits注释; 同样必须前置=vmread依赖VMX operation)
 	VmxRestoreDtrLimits();
+	//v3.44: CR3恢复(同rcx==1卸载路径, 见其注释)——逃生=随机guest线程
+	//执行中vmx_off回真机, VM-exit加载的HOST_CR3(System进程DTB)同样
+	//残留; 逃逸线程带着System页表继续跑OS代码, 其任何用户VA访问
+	//(系统调用写用户缓冲)都会蓝屏0x50/0xF。vmread必须在vmx_off前。
+	ULONG64 escapeCr3 = 0;
+	__vmx_vmread(GUEST_CR3, &escapeCr3);
 	__vmx_off();
+	__writecr3(escapeCr3);
 	ULONG64 cr4 = __readcr4();
 	cr4 &= ~0x2000;              //清CR4.VMXE, 干净回真机
 	__writecr4(cr4);

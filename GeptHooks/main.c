@@ -76,9 +76,20 @@
 //    写兜底(hook页W=0)与fallback核的v3.46互切共用骨架
 //  ⑤case 59(VMFUNC失败exit): 推RIP跳过+自测判FAIL降级, 绝不走'U'逃生
 //    (真机重执行vmfunc=#UD蓝屏, rsn59绝非#UD——SDM裁决)
-//  ⑥EPT自检新增[7][8][9](hooked表结构/标记remap/高区共享链), launch前
+// ⑥EPT自检新增[7][8][9](hooked表结构/标记remap/高区共享链), launch前
 //    软件走查把黑盒死亡变成精确报错
-#define GEPT_BUILD_TAG "v3.48"
+//v3.49: **Phase 3——隐藏**(看雪图谱4.4: CPUID伪装+TSC补偿)。全部语义
+//对SDM核对(Table 27-6页27-11 + §28.3页28-11原文, 见NOTES Phase3节):
+//  ①TSC补偿: procCtl+bit3(use TSC offsetting)→guest的RDTSC/RDTSCP/
+//    RDMSR(0x10)硬件自动返回 真TSC+TSC_OFFSET; asm exit handler每exit
+//    调VmxTscCompensate把root驻留时长从offset中扣除=guest时间线上
+//    "exit从未发生"。IA32_TSC_DEADLINE(0x6E0)不受offset影响(SDM原文)
+//    =LAPIC定时器/时钟中断零扰动。欠补偿方向安全(绝不倒退)
+//  ②CPUID伪装: 0x40000000-0x4000000F全0(无hypervisor签名)+leaf0
+//    maxleaf>0x1F收敛(防嵌套泄漏; 本机0x16不触发)+leaf1 bit31清0(已有)
+//  ③自测: 逐核rdtsc环绕CPUID(单次+1000次平均)落盘+CPUID伪装值自证;
+//    卸载't'环事件=最终TSC_OFFSET(累计隐藏总时长的负值)
+#define GEPT_BUILD_TAG "v3.49"
 
 //v3.33: 构建标签全局副本——黑匣子(common.h GEPT_BLACKBOX)在FlInit时
 //拷入, 蓝屏DMP解析时自证二进制版本
@@ -414,6 +425,64 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObjct, PUNICODE_STRING pRegPath)
 		}
 		FlLog("[双EPT] Phase2标记自测汇总: 通过%u核, FAIL降级%u核(hook安装按核分派VMFUNC/violation)",
 			dualOk, dualFail);
+	}
+
+	//v3.49 Phase3(隐藏): TSC补偿+CPUID伪装自测——逐核钉核测量(钉核=每核
+	//VMCS独立TSC_OFFSET, 迁移会混核)。本块全程运行于guest(non-root):
+	//__rdtsc读数已被硬件加offset, CPUID走我们的exit handler=自证闭环
+	//  ①基线: 相邻rdtsc对(纯guest执行零exit)≈几十cycle
+	//  ②单次CPUID环绕(1次VM-exit): 补偿生效=只剩asm测不到的硬件exit/
+	//    entry转换(百cycle级); 补偿失效(offset未应用)=全exit成本千cycle级
+	//  ③1000次CPUID平均: 放大信号(顺带走0x40000000伪造分支=一举两得)
+	//  ④CPUID.0x40000000返回值(应全0)+CPUID.1.ECX.bit31(应0)
+	{
+		ULONG hideOk = 0;
+		for (ULONG i = 0; i < cpuCount; i++)
+		{
+			if (!g_vcpu[i].bInGuest)
+			{
+				continue;
+			}
+			KeSetSystemAffinityThread((KAFFINITY)1 << i);
+			//①基线: 相邻rdtsc(纯guest执行)
+			ULONG64 b0 = __rdtsc();
+			ULONG64 b1 = __rdtsc();
+			//②单次CPUID环绕(1次exit; 测量窗口两端的硬件转换+补偿扣除
+			//都在窗口内, 读数=补偿后guest可见成本)
+			int ci[4] = { 0 };
+			ULONG64 t0 = __rdtsc();
+			__cpuidex(ci, (int)0x40000000, 0);
+			ULONG64 t1 = __rdtsc();
+			//③1000次平均(leaf=0x40000000=伪造分支+exit, 信号放大)
+			ULONG64 l0 = __rdtsc();
+			for (volatile LONG n = 0; n < 1000; n++)
+			{
+				__cpuidex(ci, (int)0x40000000, 0);
+			}
+			ULONG64 l1 = __rdtsc();
+			//④CPUID伪装值(读取经我们的handler=伪造结果的自证)
+			int hv[4] = { 0 };
+			__cpuidex(hv, (int)0x40000000, 0);
+			int f1[4] = { 0 };
+			__cpuidex(f1, 1, 0);
+			ULONG hvZero = (hv[0] == 0 && hv[1] == 0 && hv[2] == 0 && hv[3] == 0);
+			ULONG bit31 = (f1[2] >> 31) & 1;
+			hideOk += (hvZero && !bit31) ? 1 : 0;
+			FlLog("[隐藏] cpu%u TSC补偿: 基线=%llu cyc 单次CPUID(1exit)=%llu cyc "
+				"1000次均=%llu cyc | CPUID.0x40000000=%08X %08X %08X %08X(全0=%s) "
+				"CPUID.1.ECX.bit31=%lu(应0)",
+				i,
+				(unsigned long long)(b1 - b0),
+				(unsigned long long)(t1 - t0),
+				(unsigned long long)((l1 - l0) / 1000),
+				hv[0], hv[1], hv[2], hv[3], hvZero ? "OK" : "FAIL",
+				bit31);
+			KeSetSystemAffinityThread(allCpus);
+		}
+		FlLog("[隐藏] Phase3自测汇总: %u核CPUID伪装全绿(TSC判读: 单次exit成本"
+			"=残留硬件转换~1-2k cyc(SDM: 无法软件扣除); 若offset未被应用"
+			"=全成本2.5k+且卸载't'事件=0; 最终裁决看卸载't'=累计隐藏总时长)",
+			hideOk);
 	}
 
 #if GEPT_HOOK_STAGE == 0

@@ -475,7 +475,9 @@ void VmxCpuidHandler(PGUEST_REGS GuestRegs)
 	//所有leaf先透传真实硬件结果
 	int cpuinfo[4] = { 0 };
 	__cpuidex(cpuinfo, (int)GuestRegs->rax, (int)GuestRegs->rcx);
-	if (GuestRegs->rax == 1)
+	//v3.49: CPUID输入leaf取低32位(EAX语义; 高位垃圾不参与匹配)
+	ULONG leaf = (ULONG)GuestRegs->rax;
+	if (leaf == 1)
 	{
 		//只清ECX bit31(hypervisor present), 隐藏"运行在VT之上"这一事实
 		//原版直接返回全零是致命的: CPUID.1携带FPU/SSE2/XSAVE/APIC-ID(EBX 31:24)等
@@ -483,11 +485,59 @@ void VmxCpuidHandler(PGUEST_REGS GuestRegs)
 		//新进程特性探测/多线程库的核映射全部行为未定义 -> 运行期整机卡死
 		cpuinfo[2] &= ~(1 << 31);
 	}
+	//v3.49 Phase3(隐藏, 看雪图谱4.4): hypervisor专用leaf(0x40000000-0x4000000F)
+	//全部归零——EAX=0即"无hypervisor leaf", EBX/ECX/EDX=0即无vendor签名
+	//(Hyper-V="Microsoft Hv"/KVM="KVMKVMKVM"/VMware...全不泄漏)。
+	//裸金属上该区间本就返回0(保留给hypervisor), 归零是纯防御: 若未来
+	//嵌套在下层hypervisor之下运行, 其0x40000000+签名不会穿透
+	else if (leaf >= 0x40000000 && leaf <= 0x4000000F)
+	{
+		cpuinfo[0] = 0;
+		cpuinfo[1] = 0;
+		cpuinfo[2] = 0;
+		cpuinfo[3] = 0;
+	}
+	//v3.49: leaf0 maxleaf防御收敛——真实硬件基本max leaf恒<0x40000000
+	//(0x40000000+区间保留给hypervisor), 但嵌套场景下层hypervisor可能
+	//把maxleaf抬到0x40000000+; >0x1F时收敛到0x1F(本机i7-6700HQ=0x16,
+	//本分支纯防御不触发)。不做过低收敛: 比开机时(未虚拟化)读到的
+	//真实值还小=另一种检测特征(内核启动时已缓存过原始maxleaf)
+	else if (leaf == 0 && (ULONG)cpuinfo[0] > 0x1F)
+	{
+		cpuinfo[0] = 0x1F;
+	}
 	GuestRegs->rax = cpuinfo[0];
 	GuestRegs->rbx = cpuinfo[1];
 	GuestRegs->rcx = cpuinfo[2];
 	GuestRegs->rdx = cpuinfo[3];
 }
+
+//v3.49 Phase3(隐藏, 看雪图谱4.4): TSC补偿——每次VM-exit的root驻留时间
+//从guest可读TSC中永久扣除(TSC_OFFSET累计向负)。开启use TSC offsetting
+//(procCtl bit3, SDM Table 27-6)后, guest内RDTSC/RDTSCP/RDMSR(0x10)硬件
+//自动返回 真TSC+TSC_OFFSET(SDM §28.3)——offset越来越负=exit从未发生的
+//时间伪装。**IA32_TSC_DEADLINE(0x6E0)不受offset影响**(SDM §28.3原文)
+//=LAPIC定时器/时钟中断零扰动, 这是不敢做补偿时的头号顾虑, 已被裁决排除。
+//测算边界: 入口rdtsc在HVM_SAVE之后/出口rdtsc在vmresume之前——两端各漏
+//~百cycle级(硬件exit转换+16push/16pop+vmresume转换), 欠补偿是**安全方向**:
+//guest只会看到略多于真实的时间(正常), 绝不会倒退; 过补偿才有风险(紧邻
+//两次RDTSC之间TSC倒退=可检测特征)。测量窗口覆盖了C handler全部+call
+//开销=主要成本已扣除
+//仅VMX root+VMCS已加载上下文可调(vmx-asm.asm VmxVmexitHandler专用;
+//vmread/vmwrite均作用于当前VMCS)。若bit3未存活(极老CPU), offset写入
+//无害只是不被硬件使用(直通RDTSC本就读裸TSC)
+void VmxTscCompensate(ULONG64 entryTsc, ULONG64 exitTsc)
+{
+	if (exitTsc <= entryTsc)
+	{
+		return;    //rdtsc同值/乱序(理论不可能, 防御)
+	}
+	ULONG64 offset = 0;
+	__vmx_vmread(TSC_OFFSET, &offset);
+	offset -= (exitTsc - entryTsc);
+	__vmx_vmwrite(TSC_OFFSET, offset);
+}
+
 void VmxMsrReadHandler(PGUEST_REGS GuestRegs)
 {
 	//v3.8: 移除DbgPrint——本函数在VM-exit上下文执行, DbgPrint内部锁与被中断
@@ -598,6 +648,17 @@ void VmxExitHandler(PGUEST_REGS GuestRegs)
 			//=静默错译的经典源)
 			//v3.46: 统一入口(能力探测+VMfail留痕, 见ept.c实现)
 			EptInveptBothViews();
+			//v3.49: 卸载前记录最终TSC_OFFSET('t'环事件)——本核整个生命
+			//周期累计隐藏的exit驻留总时长(负值, 单位TSC cycle)。offset
+			//显著非0=补偿循环(asm每exit调用VmxTscCompensate)全程在跑的
+			//直接证据; 恒0=补偿未生效(bit3未开/asm改动回归)。vmread必须
+			//在vmx_off前(退出VMX operation后vmread非法)
+			{
+				ULONG64 tscOffFinal = 0;
+				__vmx_vmread(TSC_OFFSET, &tscOffFinal);
+				FlRingPush('t', KeGetCurrentProcessorNumber(), 0,
+					tscOffFinal, 0, 0);
+			}
 			//v3.39: 状态一致性——bInGuest清零(旧版漏: KEEP卸载路径
 			//从不复位, 卸载流程虽不再读它, 但保持语义正确)
 			g_vcpu[KeGetCurrentProcessorNumber()].bInGuest = 0;
@@ -1274,20 +1335,32 @@ int VmxSetupVmcs(PVOID GuestRsp)
 	//VMM零参与零状态机零EOI债——这也是v3.16全绿成功(8核+干净卸载)时的
 	//隐式配置(当时EXIT模式无KEEP, 中断路径从未被VMM触碰)。
 	ULONG pinCtl = VmxMsrAdjuest(pinMsr, 0);
-	ULONG procCtl = VmxMsrAdjuest(procMsr, 0X10000000 | 0X80000000);
+	//v3.49 Phase3(隐藏): 期望值+0x8(**bit3=use TSC offsetting**, SDM
+	//Table 27-6页27-11原文裁决: "executions of RDTSC, RDTSCP, RDMSR
+	//(IA32_TIME_STAMP_COUNTER) return a value modified by the TSC
+	//offset field")——TSC补偿的硬件基础。RDTSC exiting(bit12)保持0:
+	//指令直通+硬件自动加offset=零exit成本的读TSC。
+	//bit28(0x10000000)/bit31(0x80000000)=myVt原值(已在v3.38实测存活)
+	ULONG procCtl = VmxMsrAdjuest(procMsr, 0X8 | 0X10000000 | 0X80000000);
 	//exitCtl期望去掉bit15(0x8000=acknowledge interrupt on exit, v3.x起
 	//误开至今), 只留bit9(0x200=host address-space size, 64位host必须)
 	ULONG exitCtl = VmxMsrAdjuest(exitMsrNum, 0x200);
 	ULONG entryCtl = VmxMsrAdjuest(entryMsrNum, 0x200);
-	//控制字段留痕(v3.36期望): pin=00000016(直投模式, 原0x17去bit0),
-	//proc=94006172, exit=00036FFB(原0x3EFFB去bit15), entry=000013FB。
-	//偏离期望=公式/MSR又被改
-	FlLog("cpu%u 控制字段(v3.36直投): pin=%08X proc=%08X exit=%08X entry=%08X",
+	//控制字段留痕(v3.49期望): pin=00000016(直投), proc=9400617A(原
+	//94006172+bit3 TSC offsetting), exit=00036FFB, entry=000013FB。
+	//偏离期望=公式/MSR又被改; proc=94006172(bit3=0)=极老CPU无TSC
+	//offsetting, 补偿自动无效(直通RDTSC读裸TSC, 无害降级)
+	FlLog("cpu%u 控制字段(v3.49直投+TSCoff): pin=%08X proc=%08X exit=%08X entry=%08X",
 		cpuNumber, pinCtl, procCtl, exitCtl, entryCtl);
 	__vmx_vmwrite(VM_ENTRY_CONTROLS, entryCtl);
 	__vmx_vmwrite(VM_EXIT_CONTROLS, exitCtl);
 	__vmx_vmwrite(PIN_BASED_VM_EXEC_CONTROL, pinCtl);
 	__vmx_vmwrite(CPU_BASED_VM_EXEC_CONTROL, procCtl);
+	//v3.49: TSC_OFFSET初始化为0(累计负偏移的起点)。bit3未存活时该
+	//字段不被硬件咨询(vmwrite无害)。此后VmxTscCompensate(每次exit,
+	//vmx-asm.asm调用)把它单调向负推——guest的TSC时间线=真TSC减去
+	//全部已发生exit的驻留时长
+	__vmx_vmwrite(TSC_OFFSET, 0);
 	PHYSICAL_ADDRESS msrPhyAddr = MmGetPhysicalAddress(currentCpu->MsrBitMap);
 	__vmx_vmwrite(MSR_BITMAP, msrPhyAddr.QuadPart);
 	__vmx_vmwrite(VM_EXIT_MSR_STORE_COUNT, 0);

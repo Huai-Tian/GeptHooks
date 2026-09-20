@@ -147,6 +147,9 @@ void VmxFillSelectorData();
 //低32=必须为1的位, 高32=允许为1的位; TRUE MSR(0x48D-0x490)与旧式MSR
 //(0x481-0x484)位语义相同, 见VMX.c注释(v3.9-v3.11b曾误判语义相反→错误码7)
 ULONG VmxMsrAdjuest(ULONG64 msrNum, ULONG controlValue);
+//v3.49 Phase3(隐藏): TSC补偿(vmx-asm.asm VmxVmexitHandler每exit调用)
+//——TSC_OFFSET -= exit驻留时长, guest的RDTSC/RDTSCP读数扣掉exit时间
+void VmxTscCompensate(ULONG64 entryTsc, ULONG64 exitTsc);
 void VmxVmexitHandler();
 void VmxExitHandler();
 void VmxJumGuest(ULONG64 targetRsp, ULONG64 targetRip);

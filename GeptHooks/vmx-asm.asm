@@ -36,12 +36,33 @@ HVM_RESTORE_ALL_NOSEGREGS MACRO
 ENDM
 EXTERN	 VmxExitHandler:PROC
 EXTERN	 VmxResumeFailedEntry:PROC
+EXTERN	 VmxTscCompensate:PROC    ;v3.49 Phase3: TSC补偿(exit驻留时长扣除)
 .CODE
 VmxVmexitHandler PROC
 	HVM_SAVE_ALL_NOSEGREGS
+	;v3.49 Phase3(隐藏, 看雪图谱4.4 TSC补偿): exit入口rdtsc——必须在
+	;HVM_SAVE之后(易失寄存器此时可自由用, guest值已在栈帧上)。
+	;rdtsc在root模式读裸TSC(无offset语义, offset只作用于non-root)
+	rdtsc
+	shl	rdx, 20h        ;edx:eax→rax全64位(标准序列: shl rdx,32; or)
+	or	rax, rdx
+	mov	r10, rax         ;r10暂存entryTsc
 	mov 	rcx, rsp
 	sub	rsp, 0100h    ;100h(非108h): VM-exit入口RSP=HOST_RSP(页对齐,%16==0,无返回地址),
+	mov	[rsp+0F8h], r10 ;entryTsc藏进100h scratch顶部: callee只碰[+0..28h](Win64
+	                 ;影子空间/返回地址/其自身帧在更低处), [+28h,+100h)永不触碰
 	call	VmxExitHandler   ;16个push(128B)不变, sub 100h(256B,%16==0)后调用点RSP%16==0正确
+	;正常路径=即将vmresume回guest。逃生/卸载/vmx_off路径已从C内部
+	;VmxJumGuestRegs跳走永不返回此处(补偿代码不执行=vmx_off后vmwrite
+	;TSC_OFFSET会#UD, 结构上不可能到达)
+	mov	rcx, [rsp+0F8h] ;entryTsc(rcx=第1参数)
+	rdtsc             ;exit出口rdtsc——紧贴vmresume, 测量窗口最大化
+	shl	rdx, 20h
+	or	rax, rdx
+	mov	rdx, rax         ;exitTsc(rdx=第2参数); 此点RSP与上个call相同
+	                 ;(%16==0), call VmxTscCompensate对齐合法
+	call	VmxTscCompensate ;C: TSC_OFFSET -= (exitTsc-entryTsc)——本exit的
+	                 ;root驻留时间从guest可读TSC中永久扣除
 	add	rsp, 0100h
 	HVM_RESTORE_ALL_NOSEGREGS
 	vmresume ;non-root guest

@@ -104,7 +104,13 @@
 //    +2s宽限+GeptApiFreeMemory(关VT后)
 //  ⑤STAGE2=API demo三段式: 装观测2s→移除冻结2s→重装恢复2s=生命周期
 //    闭环证据(旧AsmHookNtClose路径保留为无VMFUNC机器的fallback)
-#define GEPT_BUILD_TAG "v3.50"
+//**v3.50b: trampoline编码off-by-2修复**——GeptStubEntry指针曾写t+18,
+//而jmp[rip+0]从t+16读(RIP_after=t+16)→读出[00 00+地址低6B]=非规范
+//地址→#GP(0)于jmp指令本身→蓝屏0x3B@C0000005@槽+0x0A, Install后首次
+//hook触发即崩(日志铁证: 跳板槽=...A000/蓝屏RIP=...A00A)。修复=指针
+//改写t+16+回读自检(t+16读回≠GeptStubEntry=拒绝该槽, 编码回归当场
+//拦截而非上机蓝屏)
+#define GEPT_BUILD_TAG "v3.50b"
 
 //v3.33: 构建标签全局副本——黑匣子(common.h GEPT_BLACKBOX)在FlInit时
 //拷入, 蓝屏DMP解析时自证二进制版本

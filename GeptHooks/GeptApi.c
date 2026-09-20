@@ -127,6 +127,11 @@ ULONG64 GeptCallOriginal(ULONG64 Arg1, ULONG64 Arg2, ULONG64 Arg3, ULONG64 Arg4)
 //  49 BA <entry64>       mov r10, imm64   (r10=volatile, 函数入口clobber合法)
 //  FF 25 00 00 00 00     jmp [rip+0]
 //  <GeptStubEntry64>                      (位置无关, 不依赖±2GB邻近)
+//槽布局(24B/64B): [0..9]=mov r10 | [10..15]=jmp | [16..23]=8B目标指针。
+//**指针必须落t+16**: 指令在t+10长6B→RIP_after=t+16, disp32=0→CPU从
+//t+16读操作数。v3.50b教训: 曾误写t+18→CPU读出[00 00+地址低6B]=非规范
+//地址→#GP(0)于jmp指令本身→蓝屏0x3B@C0000005@槽+0x0A(Install后首次
+//hook触发即崩; 日志铁证: 跳板槽=...A000, 蓝屏RIP=...A00A)
 static PVOID GeptAllocTrampoline(PGEPT_API_ENTRY entry)
 {
 	if (s_trampUsed >= (LONG)(sizeof(s_trampPool) / sizeof(s_trampPool[0]) * GEPT_TRAMP_PER_PAGE))
@@ -151,7 +156,14 @@ static PVOID GeptAllocTrampoline(PGEPT_API_ENTRY entry)
 	*(ULONG64*)(t + 2) = (ULONG64)entry;
 	t[10] = 0xFF; t[11] = 0x25;                       //jmp [rip+0]
 	*(ULONG32*)(t + 12) = 0;
-	*(ULONG64*)(t + 18) = (ULONG64)&GeptStubEntry;
+	*(ULONG64*)(t + 16) = (ULONG64)&GeptStubEntry;
+	//回读自检: 按**CPU实际读取路径**(t+16)验证目标指针——编码偏移
+	//回归当场拦截(Install失败留痕)而非上机蓝屏
+	if (*(volatile ULONG64*)(t + 16) != (ULONG64)&GeptStubEntry)
+	{
+		FlLog("[API] trampoline编码自检FAIL(t+16读回≠GeptStubEntry)——拒绝该槽(编码回归?)");
+		return NULL;
+	}
 	return t;
 }
 

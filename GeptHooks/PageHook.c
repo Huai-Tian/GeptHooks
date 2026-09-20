@@ -96,12 +96,21 @@ void PHInitJmpCode(PJMP_OPCODE64 pjmpCode, ULONG64 jmpTo)
 
 ULONG PHGetHookLen(ULONG64 codeAddr, ULONG codeSize, BOOLEAN is64)
 {
+	//v3.46根因修复(v3.45蓝屏0x3B@nt!NtClose+0xE的裁决): 旧版
+	//ldasm(codeAddr,...)永远解码**第一条指令**(src推进了却没用上),
+	//返回值=ceil(codeSize/首指令长)×首指令长:
+	//  GeptTestTarget: 首条mov(3B)×5=15, 恰好等于真实整指令边界(前5条
+	//    指令全是3B)——STAGE1毕业全靠这个巧合掩盖了bug
+	//  NtClose: 首条push rbx(2B)×7=14, 真实边界=22(2+1+2+2+2+4+9)
+	//    →g_jmp_ntclose=NtClose+14≠asm重放22B→跳板重放22B后jmp+14
+	//    落进mov rax,gs:[188h]指令中间(第2字节48)→错误解码
+	//    mov rax,[0x188](绝对地址,丢GS前缀)→#PF→0x3B
 	ULONG64 src = codeAddr;
 	ULONG all_len = 0;
 	ldasm_data ldData = { 0 };
 	do
 	{
-		ULONG len = ldasm(codeAddr, &ldData, is64);
+		ULONG len = ldasm(src, &ldData, is64);
 		src += len;
 		all_len += len;
 	} while (all_len < codeSize);

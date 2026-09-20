@@ -571,8 +571,8 @@ void VmxExitHandler(PGUEST_REGS GuestRegs)
 			//TLB表项(EPTP标签组合翻译)全部作废, 卸载后真机翻译零残留
 			//(sc start/stop循环测试时, 上一轮残留+下一轮同物理页重用
 			//=静默错译的经典源)
-			EPT_CTX invCtx = { 0 };
-			VmxInvept(2, &invCtx);
+			//v3.46: 统一入口(能力探测+VMfail留痕, 见ept.c实现)
+			EptInveptCurrent();
 			//v3.39: 状态一致性——bInGuest清零(旧版漏: KEEP卸载路径
 			//从不复位, 卸载流程虽不再读它, 但保持语义正确)
 			g_vcpu[KeGetCurrentProcessorNumber()].bInGuest = 0;
@@ -650,8 +650,8 @@ void VmxExitHandler(PGUEST_REGS GuestRegs)
 			//派生TLB表项全部作废。v3.14的4次测试中2次间歇性死亡
 			//(win32kfull蓝屏/冻结), TLB残留(尤其sc start/stop循环时
 			//下轮重用同物理页)是候选根因之一, 此处彻底排除
-			EPT_CTX invCtx = { 0 };
-			VmxInvept(2, &invCtx);
+			//v3.46: 统一入口(能力探测+VMfail留痕)
+			EptInveptCurrent();
 			//v3.26: vmx_off前排空积压in-service债(与VmxExitStormEscape
 			//同款)——v3.25起IF=1, 探针窗内注入的ISR运行时(IF=0中断门)
 			//到达的ext-int会入队; 'K'直接vmx_off=队列vector永卡LAPIC
@@ -977,8 +977,8 @@ void VmxExitStormEscape(char tag, ULONG reason, ULONG64 a, ULONG64 b,
 		}
 	}
 	//v3.15: vmx_off前invept全上下文(EPT派生TLB零残留, 同[K]路径理由)
-	EPT_CTX invCtx = { 0 };
-	VmxInvept(2, &invCtx);
+	//v3.46: 统一入口(能力探测+VMfail留痕)
+	EptInveptCurrent();
 	//v3.39: vmx_off前还原GDTR/IDTR limit(VM-exit强制0xFFFF, 见
 	//VmxRestoreDtrLimits注释; 同样必须前置=vmread依赖VMX operation)
 	VmxRestoreDtrLimits();
@@ -1057,8 +1057,8 @@ void VmxTripleFaultPark(void)
 		g_vcpu[cpu].PendingIntrCount = 0;
 	}
 	//脱离VMX(此刻仍在exit上下文/VMM栈, host状态合法)
-	EPT_CTX invCtx = { 0 };
-	VmxInvept(2, &invCtx);                        //EPT派生TLB残留全作废(同'K')
+	//v3.46: 统一入口(能力探测+VMfail留痕)——EPT派生TLB残留全作废(同'K')
+	EptInveptCurrent();
 	__vmx_off();
 	ULONG64 cr4 = __readcr4();
 	cr4 &= ~0x2000;                               //清CR4.VMXE, 干净回真机

@@ -642,8 +642,8 @@ void EptExitHandler(PGUEST_REGS GuestRegs)
 				pde2M->fileds.execute = 1;
 			}
 			//必须刷新EPT缓存, 否则旧翻译仍在, 同一指令继续violation
-			EPT_CTX ctx = { 0 };
-			VmxInvept(2, &ctx);
+			//v3.46: 统一入口(能力探测+VMfail留痕, 见EptInveptCurrent注释)
+			EptInveptCurrent();
 			//'P'环路检测: 无hook时该分支恢复的是本就全权限的PDE/PTE——若同一
 			//gpa反复走到这里(>100), 说明violation根源不在权限(结构性bug:
 			//如pdpte与pde数组不一致/硬件走的页表与软件写的不是同一份),
@@ -667,8 +667,8 @@ void EptExitHandler(PGUEST_REGS GuestRegs)
 			if (EptBuildHighMapping(gpa))
 			{
 				//映射已建立, 刷新EPT缓存后重执行同一指令(此次能通过)
-				EPT_CTX ctx = { 0 };
-				VmxInvept(2, &ctx);
+				//v3.46: 统一入口(能力探测+VMfail留痕)
+				EptInveptCurrent();
 				//风暴检测: 同一gpa建好映射后仍反复violation=页表结构性bug
 				//(如对齐错误/硬件读到错位页表)。正常流程建好一次后不再violation;
 				//阈值1000次(~毫秒级)后停本核自毁, 避免持锁线程在exit循环里
@@ -707,8 +707,9 @@ void EptExitHandler(PGUEST_REGS GuestRegs)
 		EptUpdatePageAcess(gpa, 3, pageEntry);
 	}
 	//刷新页表缓存TLB
-	EPT_CTX ctx = { 0 };
-	VmxInvept(2, &ctx);
+	//v3.46: 统一入口(能力探测+VMfail留痕)——视图切换后若invept无效,
+	//vmresume重取指仍命中旧TLB条目=同一条指令再violation=本核活锁
+	EptInveptCurrent();
 
 	__vmx_vmwrite(GUEST_RIP, guestRip);
 	__vmx_vmwrite(GUEST_RSP, guestRsp);
@@ -772,8 +773,10 @@ void EptSetHook(ULONG64 orginalPagePFN, ULONG64 codePagePFN)
 	}
 	pte->fileds.execute = 0;
 	//刷新页表缓存TLB
-	EPT_CTX ctx = { 0 };
-	VmxInvept(2, &ctx);
+	//v3.46: 统一入口(能力探测+VMfail留痕)——布防后若invept无效, 热函数
+	//的旧exec TLB条目继续存活=hook对TLB常驻函数(NtClose)数小时不触发
+	//(v3.45蓝屏的延迟根源); 留痕'e'事件可判读
+	EptInveptCurrent();
 	//v3.42: **布防完成标记**(每核一条, DMP解析判别: 8×S rsn=23=全核armed,
 	//<8=有核死在EptSetHook路径=拆页/分配问题; 与'n'互斥)
 	//v3.43: rsn从2改为23(21/22/23=拆原页/拆Code页/清execute三步)
@@ -850,6 +853,43 @@ PEPT_PTE EptGetPte(ULONG64 PFN)
 	pttPhAddress.QuadPart = (pde->fileds.physicalAddr) * PAGE_SIZE;
 	PEPT_PTE ptt = (PEPT_PTE)MmGetVirtualForPhysical(pttPhAddress);
 	return &ptt[pteIndex];
+}
+
+//v3.46: 统一invept入口(替代裸VmxInvept(2,&ctx))——能力探测+正确EPTP
+//+VMfail留痕。v3.45蓝屏的**延迟根源**: 旧代码invept type2(all-context)
+//不检查VMfail——CPU若不支持all-context(EPT_VPID_CAP bit26=0, 仅支持
+//single-context bit25=1), invept静默VMfail=什么都没失效: 已布防hook
+//对热函数(NtClose等TLB常驻函数)数小时不触发(旧exec条目存活), 直到
+//TLB自然逐出才第一次走进跳板(撞上PHGetHookLen的hookLen bug蓝屏
+//0x3B@NtClose+0xE)。STAGE1冷函数(GeptTestTarget首次调用, 无TLB条目,
+//靠walk触发violation)从未暴露此问题。invept类型(SDM): 1=single-
+//context(desc的EPTP字段匹配失效), 2=all-context(全失效, desc忽略)
+VOID EptInveptCurrent(VOID)
+{
+	EPT_CTX ctx = { 0 };
+	ULONG64 cap = __readmsr(MSR_IA32_VMX_EPT_VPID_CAP);
+	if (cap & (1ULL << 26))
+	{
+		if (!VmxInvept(2, &ctx))
+		{
+			return;    //all-context成功(最彻底)
+		}
+		//bit26在却VMfail(异常): 落到single-context重试
+	}
+	if (cap & (1ULL << 25))
+	{
+		//single-context: 必须填当前VMCS的EPTP(desc.EPTP匹配失效,
+		//ctx全零=EPTP 0匹配不到任何缓存=静默no-op, v3.45旧代码同款陷阱)
+		__vmx_vmread(EPT_POINTER, &ctx.PEPT);
+		if (!VmxInvept(1, &ctx))
+		{
+			return;
+		}
+	}
+	//两种类型都VMfail/都不支持(理论不可能: 支持INVEPT则至少其一)——
+	//'e'环事件留痕(a=EPT_VPID_CAP): 此时EPT TLB无法软件失效, hook
+	//生效时点退化为"TLB自然逐出后"(v3.45的延迟形态), DMP可判读
+	FlRingPush('e', KeGetCurrentProcessorNumber(), 0, cap, 0, 0);
 }
 
 void EptUpdatePageAcess(ULONG64 gpa, UCHAR acess, PPAGE_HOOK_ENTRY pageEntry)

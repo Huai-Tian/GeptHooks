@@ -165,6 +165,7 @@ PEPT_PDE_2M EptGetPde2B(ULONG64 PFN);
 BOOLEAN EptPdeToPte(PEPT_PDE_2M pde2M);
 PEPT_PTE EptGetPte(ULONG64 PFN);
 void EptUpdatePageAcess(ULONG64 gpa, UCHAR acess, PPAGE_HOOK_ENTRY pageEntry);
+VOID EptInveptCurrent(VOID);   //v3.46: 统一invept入口(能力探测+EPTP填充+VMfail留痕)
 BOOLEAN EptBuildHighMapping(ULONG64 gpa);
 extern BOOLEAN g_bEpt1GbPage;
 

@@ -51,10 +51,22 @@ AsmHookNtClose proc
     call HookNtClose
     add rsp,28h
     HVM_RESTORE_ALL_NOSEGREGS
-    ;以下重放NtClose原始prologue(与原指令逐字节一致, RSP语义必须相同)
-    mov     [rsp+8], rbx
+    ;以下重放NtClose原始prologue——**必须与本机ntoskrnl逐字节一致**
+    ;v3.45: 2026-09-19实测反汇编适配(tools/nt_ntclose_check.py, 测试机
+    ;同构建SizeOfImage=1046000): 本机NtClose前22字节=
+    ;  push rbx(40 53)/push rdi(57)/push r13(41 55)/push r14(41 56)/
+    ;  push r15(41 57)/sub rsp,40h(48 83 EC 40)/mov rax,gs:[188h](9B)
+    ;旧版重放(mov[rsp+8],rbx/push rdi/sub rsp,20h/mov rax,gs:[188h]=19B)
+    ;绑定作者2022 Win10——在本机上重放指令序列错误+PHGetHookLen算出
+    ;跳回NtClose+22而重放只复刻19B=跳进mov rax,gs:指令中间执行垃圾
+    ;字节=必然蓝屏(main.c的STAGE2安装校验会拒绝不匹配的prologue)
+    ;g_jmp_ntclose=NtClose+22(main.c动态计算, 与本重放严格配套)
+    push    rbx
     push    rdi
-    sub     rsp, 20h
+    push    r13
+    push    r14
+    push    r15
+    sub     rsp, 40h
     mov     rax, gs:[188h]
    jmp qword ptr[g_jmp_ntclose]
 AsmHookNtClose endp

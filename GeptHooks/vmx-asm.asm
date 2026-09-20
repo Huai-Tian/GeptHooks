@@ -107,8 +107,14 @@ invd
 ret
 VmxInvd ENDP
 
+;v3.46: 返回VMfail标志——invept执行后RFLAGS.ZF=1表示VMfail(指令无效,
+;什么都没失效), sete al→TRUE=失败, FALSE=成功。此前裸ret不检查:
+;CPU只支持single-context(EPT_VPID_CAP bit26=0)时type2(all-context)
+;VMfail被静默吞掉, EPT TLB从未失效——已布防hook对热函数(NtClose等
+;TLB常驻)数小时不触发, 直到TLB自然逐出才生效(v3.45蓝屏延迟根源)
 VmxInvept PROC
     invept rcx, OWORD PTR [rdx]
+    sete al
     ret
 VmxInvept ENDP
 END

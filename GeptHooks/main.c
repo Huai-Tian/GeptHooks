@@ -8,30 +8,40 @@
 //分阶段联调开关:
 //0 = 仅开启虚拟化(vmlaunch+EPT恒等映射), 用于先验证VT层稳定
 //1 = 自测Hook: hook本驱动内的GeptTestTarget并调用一次, 指令布局自控不依赖系统版本
-//2 = 正式Hook NtClose(危险: 需先确认本机NtClose前19字节prologue与hook.asm重放一致)
-//v3.41: 0→1——v3.40全核KEEP闭环(8核inGuest+11min稳定+干净卸载)授权
-#define GEPT_HOOK_STAGE 1
+//2 = 正式Hook NtClose(全系统高频监控; prologue逐字节校验不过=拒绝安装)
+//v3.41: 0→1——v3.40全核KEEP闭环授权
+//v3.45: 1→2——v3.44 STAGE1毕业(3.1h稳定+干净卸载)授权。STAGE2分支
+//=先跑STAGE1自测(机制前置验证)再装NtClose hook; 本机prologue已实测
+//适配(hook.asm 22B重放+main.c安装校验双保险, 旧19B重放在本机会蓝屏)
+#define GEPT_HOOK_STAGE 2
 
-//构建标签(v3.44): 每次改动代码必须同步修改! 会打进日志第一行,
+//构建标签(v3.46): 每次改动代码必须同步修改! 会打进日志第一行,
 //用于核对测试机跑的是不是本次编译的二进制(见DriverEntry横幅)
 //v3.42: hook页隔离; b: ml64拒绝段内align 1000h, 改SEGMENT ALIGN(4096)段
-//v3.43: 0x1E蓝屏根因修复——hook跳板sub rsp,20h违反x64 ABI(→28h),
-//KiSwapContext movaps #GP两连蓝屏终结; STAGE1全链路实测打通
-//v3.44: **卸载0x50蓝屏根因修复**——v3.43卸载中段蓝屏0x50@(用户VA,3,
-//nt+0x2044BE,0xF): p4=0xF=NONPAGED_BUGCHECK_USER_VA_ACCESS_INCONSISTENT
-//(微软文档: "内核态在不允许时访问用户VA")。nt反汇编: nt+0x2044BE=LPC/
-//等待结果回写函数(状态码0x101/0x102/0xC0/0x80+32B条目), 调用者紧邻
-//LpcRequestPort。DMP v6.2裁决: 行环到L861"cpu5: 已退出guest"(cpu5的
-//vmcall退出本身成功, 排除退出路径), 崩在FlLog等T1的500ms睡眠窗内,
-//受害者=另一线程(services.exe的LPC等待完成回写)。根因=vmx_off回真机
-//不恢复CR3: VM-exit硬件加载HOST_CR3(System进程DTB, launch时快照),
-//vmresume会恢复GUEST_CR3但vmx_off路径没有vmresume——卸载线程带着
-//System页表跑(内核半区共享=看似正常), FlLog睡眠让出CPU后同进程线程
-//切换不重载CR3, 下一个services.exe线程的系统调用写用户缓冲→用户VA
-//在System页表下零映射→#PF→MmAccessFault判0xF→蓝屏。
-//修复: 三处vmx_off路径(rcx==1卸载/逃生/rcx==3探针)vmread GUEST_CR3
-//后立即__writecr3恢复触发线程自己的地址空间
-#define GEPT_BUILD_TAG "v3.44"
+//v3.43: 0x1E蓝屏根因修复——hook跳板sub rsp,20h违反x64 ABI(→28h)
+//v3.44: 卸载0x50蓝屏根因修复——vmx_off后__writecr3恢复GUEST_CR3
+//(HOST_CR3=System DTB残留→同进程线程继承错误页表→LPC写用户缓冲
+//0xF蓝屏); 实测STAGE1毕业(3.1h稳定+8核干净卸载)
+//v3.45: **STAGE 2(NtClose)上电**——①hook.asm重放适配本机prologue
+//(实测22B: push rbx/rdi/r13/r14/r15+sub rsp,40h+mov rax,gs:[188h];
+//旧19B重放绑定作者2022 Win10, 在本机会跳进指令中间=蓝屏) ②安装前
+//逐字节校验NtClose前22B, 不一致拒绝安装(版本漂移防蓝屏) ③STAGE2=
+//先跑STAGE1自测再装NtClose hook ④HookNtClose监控模式: 原子计数+
+//每65536次采样'N'环事件(绝不FlLog/DbgPrint: 前者任意线程上下文死锁
+//风险, 后者性能风暴), 返回值被丢弃=原函数照常执行 ⑤卸载打印总计数
+//**v3.45实测蓝屏0x3B@nt+0x63E0AE=NtClose+0xE**(mov rax,gs:[188h]指令
+//中间), 三缺陷叠加的裁决:
+//  a) PHGetHookLen的ldasm旧bug(重复解码第一条指令): NtClose首条
+//     push rbx(2B)×7=14≠重放22B→跳回落指令中间→错误解码
+//     mov rax,[0x188]→#PF。STAGE1碰巧全3B指令(3×5=15=真边界)毕业
+//     掩盖了它。**v3.46修复: ldasm(src)顺序解码**
+//  b) VmxInvept裸ret不查VMfail: CPU若不支持all-context(EPT_VPID_CAP
+//     bit26=0)则invept全静默无效→NtClose热路径TLB旧exec条目存活
+//     数小时→hook"已布防未触发"→TLB自然逐出后第一次走进跳板才撞上
+//     a)蓝屏(布防到蓝屏隔了数小时的原因)。STAGE1冷函数(无TLB条目,
+//     靠walk触发)从未暴露。**v3.46修复: asm返回ZF+能力探测+EPTP填充**
+//  c) hookLen与重放无交叉校验(防御缺失)。**v3.46修复: 强校验≠22拒绝安装**
+#define GEPT_BUILD_TAG "v3.46"
 
 //v3.33: 构建标签全局副本——黑匣子(common.h GEPT_BLACKBOX)在FlInit时
 //拷入, 蓝屏DMP解析时自证二进制版本
@@ -43,9 +53,27 @@ NTSTATUS AsmHookNtClose(HANDLE hanle);
 VOID GeptTestTarget();
 VOID AsmHookTestTarget();
 
-NTSTATUS HookNtClose()
+//v3.45: NtClose拦截计数器(HookNtClose每调用+1; 卸载时落盘总结)
+LONG g_geptNtCloseCount = 0;
+
+NTSTATUS HookNtClose(HANDLE handle)
 {
-	Log("NtClose hooked!");
+	//v3.45: STAGE 2监控模式——只观测不改变行为(返回值被asm的
+	//HVM_RESTORE_ALL丢弃, 重放prologue后jmp原函数体, 原NtClose
+	//照常执行并返回)。rcx=原始句柄(HVM_SAVE_ALL只push不改写,
+	//call HookNtClose时rcx仍=NtClose入口值)
+	//频率纪律(血泪预判): 全系统NtClose每秒上千次——
+	//  绝不FlLog: 任意线程上下文调用, 调用者可能持文件系统锁,
+	//    FlLog等T1落盘(500ms)而T1写文件要同一把锁=死锁
+	//  绝不DbgPrint: 高频=性能风暴
+	//只做原子计数+每65536次采样1条'N'环事件(无锁, 任意IRQL安全,
+	//T1异步格式化成"[N] s=.. cpu=.. a=计数"行落盘temp日志)
+	LONG n = InterlockedIncrement(&g_geptNtCloseCount);
+	if (n == 1 || (n & 0xFFFF) == 0)
+	{
+		FlRingPush('N', KeGetCurrentProcessorNumber(), 0,
+			(ULONG64)(ULONG)n, (ULONG64)handle, 0);
+	}
 	return 0;
 }
 
@@ -93,6 +121,13 @@ void DriverUload(PDRIVER_OBJECT pDriverObjct)
 	}
 	//v3.18: 释放共享高区页表(8核EPT共用的511个pdpt, 幂等)
 	EptShutdownHighMappings();
+	//v3.45: STAGE 2总结——此时全核vmx_off已完成(EPT失效=NtClose hook
+	//自动解除, 全系统回到原函数), 计数器定格
+	if (g_geptNtCloseCount > 0)
+	{
+		FlLog("Unload: [STAGE2总结] NtClose共拦截%ld次(hook已随EPT解除, 系统回到原生NtClose)",
+			g_geptNtCloseCount);
+	}
 	FlLog("Unload: 完成, 关闭文件日志");
 	FlShutdown();
 }
@@ -283,8 +318,10 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObjct, PUNICODE_STRING pRegPath)
 		g_flLaunchHot = 0;
 	}
 #endif
-#elif GEPT_HOOK_STAGE == 1
+#elif GEPT_HOOK_STAGE >= 1
 	//自测: 目标函数与跳板都在hook.asm, 前15字节指令布局完全已知
+	//v3.45: 条件==1改>=1——STAGE2也先跑自测(机制前置验证: 8核EPT
+	//hook链路确认无恙后再碰系统函数NtClose)
 	//v3.42: 页隔离验证——被hook页只允许GeptTestTarget自己(v3.41实测教训:
 	//目标曾与CmVmCall/common-asm机器码同页, DPC的vmcall返回路径自己卷进
 	//双视图切换→蓝屏0x1E@nt)。同页=拒绝安装(防止链接器布局回归)
@@ -311,12 +348,60 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObjct, PUNICODE_STRING pRegPath)
 	GeptTestTarget();
 	FlLog("[STAGE1] 自测调用返回(未死机未蓝屏), EPT hook全链路打通");
 	Log("stage1: self-test hook done");
-#else
-	//NtClose: +19及hook.asm重放的prologue绑定特定Windows版本,
-	//换系统前必须先反汇编本机NtClose确认一致, 否则会跳进指令中间导致卡死/蓝屏
-	g_jmp_ntclose = (ULONG64)NtClose + PHGetHookLen((ULONG64)NtClose, sizeof(JMP_OPCODE64), TRUE);
-	PHHook(NtClose, AsmHookNtClose);
-	Log("stage2: NtClose hook installed");
+#if GEPT_HOOK_STAGE >= 2
+	//v3.45: STAGE 2——hook ntoskrnl!NtClose(全系统高频系统服务)。
+	//**安装校验(安全锁)**: hook.asm的22字节重放绑定本机prologue,
+	//逐字节比对NtClose实际指令——不一致(Windows版本变化/补丁)=
+	//重放错误+跳错位=蓝屏, 坚决拒绝安装走干净卸载
+	{
+		//本机实测(nt_ntclose_check.py, 2026-09-19, 同构建1046000):
+		//push rbx/push rdi/push r13/push r14/push r15/sub rsp,40h/
+		//mov rax,gs:[188h] = 22字节(PHGetHookLen算出的跳回偏移)
+		static const UCHAR geptNtClosePrologue[22] = {
+			0x40, 0x53,                                   //push rbx
+			0x57,                                         //push rdi
+			0x41, 0x55,                                   //push r13
+			0x41, 0x56,                                   //push r14
+			0x41, 0x57,                                   //push r15
+			0x48, 0x83, 0xEC, 0x40,                       //sub rsp, 40h
+			0x65, 0x48, 0x8B, 0x04, 0x25, 0x88, 0x01, 0x00, 0x00 //mov rax, gs:[188h]
+		};
+		if (RtlCompareMemory(NtClose, geptNtClosePrologue, sizeof(geptNtClosePrologue))
+			!= sizeof(geptNtClosePrologue))
+		{
+			FlLog("[STAGE2] **NtClose prologue校验FAIL**: 本机前22字节与hook.asm重放不一致"
+				"(Windows版本变化?)——拒绝安装NtClose hook(防重放错位蓝屏), STAGE1自测已过, 走干净卸载");
+			FlMarkEntryDone();
+			return STATUS_UNSUCCESSFUL;
+		}
+		ULONG hookLen = PHGetHookLen((ULONG64)NtClose, sizeof(JMP_OPCODE64), TRUE);
+		//v3.46: hookLen强校验——重放(hook.asm固定22B)与跳回(PHGetHookLen
+		//动态计算)必须严格配套。v3.45实测教训: PHGetHookLen的ldasm旧bug
+		//(永远重复解码第一条指令)算出14≠22, 跳板重放22B后jmp NtClose+14
+		//落进mov rax,gs:[188h]指令中间(第2字节48)→错误解码mov rax,[0x188]
+		//绝对地址→#PF→蓝屏0x3B@nt+0x63E0AE(bugcheck参数2逐字节吻合)。
+		//此校验=LDE与asm重放的强绑定锁: 任何一侧失配=拒绝安装, 绝不让
+		//"跳回落点≠重放长度"的错误组合上机
+		if (hookLen != sizeof(geptNtClosePrologue))
+		{
+			FlLog("[STAGE2] **hookLen校验FAIL**: PHGetHookLen=%lu != 重放%uB"
+				"(LDE与hook.asm重放不配套, 跳回落点将错位=蓝屏风险)——拒绝安装"
+				" NtClose hook, 走干净卸载",
+				hookLen, (ULONG)sizeof(geptNtClosePrologue));
+			FlMarkEntryDone();
+			return STATUS_UNSUCCESSFUL;
+		}
+		g_jmp_ntclose = (ULONG64)NtClose + hookLen;
+		FlLog("[STAGE2] 安装NtClose hook: 目标=%p 跳回=%llx(+%lu) 重放22B校验OK"
+			"(全系统高频监控: 'N'环事件每65536次采样, 卸载时打印总计数)",
+			NtClose, (unsigned long long)g_jmp_ntclose, hookLen);
+		PHHook(NtClose, AsmHookNtClose);
+		FlLog("[STAGE2] NtClose hook已布防(DPC广播返回), 此后全系统NtClose调用"
+			"经跳板→HookNtClose(计数+采样)→重放→原函数; 系统存活的每一秒"
+			"都是监控模式正确的证据");
+		Log("stage2: NtClose hook installed");
+	}
+#endif
 #endif
 	//放行T2的Desktop镜像: 到此驱动加载窗口期结束, 用户目录文件操作不再有死锁风险
 	FlMarkEntryDone();

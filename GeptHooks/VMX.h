@@ -135,7 +135,7 @@ void VmxJumGuest(ULONG64 targetRsp, ULONG64 targetRip);
 void VmxFreeCpuResources(ULONG cpuNumber);  //PASSIVE_LEVEL: 释放指定CPU的全部VT资源
 void VmxInvd();
 void VmxSetMsrRw(ULONG64 msrNum, UCHAR rw, BOOLEAN flag);
-void VmxInvept(INVEPT_TYPE type, PEPT_CTX ctx);
+BOOLEAN VmxInvept(INVEPT_TYPE type, PEPT_CTX ctx);  //v3.46: 返回TRUE=VMfail(失败)
 
 #endif // VMX_H
 

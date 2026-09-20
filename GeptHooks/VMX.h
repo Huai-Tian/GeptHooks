@@ -45,7 +45,10 @@
 #define EXIT_REASON_EPT_CONFIG          49
 #define EXIT_REASON_WBINVD              54
 #define EXIT_REASON_XSETBV              55
-#define VMX_MAX_GUEST_VMEXIT	EXIT_REASON_TPR_BELOW_THRESHOLD
+//v3.48: VMFUNC失败exit(SDM §28.5.7.2/28.5.7.3: 函数未启用/EAX无效/EPTP-list
+//项非法/ECX>=512 → VM-exit reason 59, **绝非#UD**——见NOTES Phase2设计依据)
+#define EXIT_REASON_VMFUNC              59
+#define VMX_MAX_GUEST_VMEXIT	EXIT_REASON_VMFUNC
 
 //vmresume失败处理(asm调用, noreturn): 'R'标记入环后逃生(vmx_off+跳回guest)
 void VmxResumeFailedEntry(void);
@@ -92,11 +95,26 @@ typedef struct _VCPU
     PVOID MsrBitMap;
     PEPT_DATA PeptData;
     EPT_EPTP Eptp;
+    //v3.48 Phase2(双EPT): hooked视图EPT(clean=PeptData保持violation方案
+    //兼容/兜底)。guest默认在clean视图; hook安装时VMM在exit上下文
+    //vmwrite(EPT_POINTER, EptpHooked)切入hooked视图(SDM §28.5.7.3裁决:
+    //VMFUNC切换会写回EPT_POINTER字段=两通道同义), hook页在hooked EPT里
+    //PTE→CodePage(X=1,R=1,W=0)=执行零VM-Exit; clean视图下原页字节
+    //完好(读/写看到的都是原始字节, 隐蔽性根基)。深拷贝时pdpte/pde
+    //自指物理地址全部重指hooked自己的表(ept.c EptInitHookedEptData)
+    PEPT_DATA PeptDataHooked;
+    EPT_EPTP EptpHooked;
+    //v3.47 Phase1(VMFUNC EPTP switching): EPTP-list页(4KB物理连续+对齐,
+    //MmAllocateContiguousMemory保证)。v3.48 Phase2拆分: list[0]=clean
+    //EPTP, list[1]=hooked EPTP。VMFUNC(0,idx)在guest内切换EPTP=零VM-Exit
+    //的视图切换(隐藏性最优hook的基石)
+    PVOID VmfuncEptpList;
     PVOID HighPdptVa[512];      //动态建立的pml4[i>0]对应pdpt页的虚拟地址(>512GB MMIO区)
     PVOID HighPdptRawVa[512];   //上述pdpt的原始pool指针(4KB对齐后无法反推raw, 卸载时用它ExFreePool)
     volatile LONG bInGuest;     //该CPU已成功进入VMX non-root(卸载时用于判断能否vmcall)
     volatile LONG bLaunchFailed;//vmlaunch失败标志(区分fall-through路径)
     volatile LONG bVmxOn;       //该CPU的__vmx_on已成功(卸载时需vmx_off+清CR4.VMXE)
+    volatile LONG bVmfuncOn;    //v3.47: 该核VMFUNC已启用(ctls2 bit13实际写入成功); guest内执行vmfunc的前提, 否则#UD蓝屏
     //v3.23: 已ack未投递的中断队列(interrupt-window模式)。exit控制bit15
     //(ack on exit)使每个ext-int exit的中断被LAPIC ack进ISR——若guest当时
     //不可中断(如探针IF=0窗), 暂存于此, guest开窗(sti)后经reason 7 exit逐个

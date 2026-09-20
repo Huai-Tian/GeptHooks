@@ -67,6 +67,8 @@ extern "C" {
 	void CmGuestProbe();
 	void CmVmCall(ULONG opcode, ULONG64 arg2, ULONG64 arg3, ULONG64 arg4);
 	void CmTripleFaultPark();    //v3.35: 三重故障park本体(asm, sti+hlt自旋, 永不返回)
+	void CmVmfuncTest();         //v3.47 Phase1: guest内VMFUNC(0,1)/(0,0)裸往返自测(v3.48起=真实双EPT切换环); 仅bVmfuncOn核可调, 否则#UD蓝屏
+	void CmVmfuncSwitch(ULONG eptpIndex);   //v3.48 Phase2: guest内单次VMFUNC(0, idx)EPTP切换(0=clean/1=hooked, 零VM-Exit); 仅bVmfuncOn核可调; 失败走exit rsn59→跳过+自测降级
 
 	//v3.35: 三重故障park核位掩码(bit i=cpu i已park)。main.c卸载守卫读它:
 	//park核的VMM栈/park代码页仍被占用, 驱动绝不能卸载(拒绝并提示重启)

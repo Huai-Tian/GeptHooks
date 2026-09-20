@@ -68,6 +68,15 @@ enum
 	TSC_OFFSET_HIGH = 0x00002011,
 	VIRTUAL_APIC_PAGE_ADDR = 0x00002012,
 	VIRTUAL_APIC_PAGE_ADDR_HIGH = 0x00002013,
+	//v3.47d Phase1(VMFUNC EPTP switching): VMCS 64-bit control字段编码
+	//**权威源: Linux arch/x86/include/asm/vmx.h enum vmcs_field(Intel出品)**
+	//  0x2014/15=APIC_ACCESS_ADDR 0x2016/17=POSTED_INTR_DESC_ADDR
+	//  0x2018=VM_FUNCTION_CONTROL 0x201A=EPT_POINTER 0x2024=EPTP_LIST_ADDRESS
+	//v3.47c教训: 曾凭记忆写0x2015/0x2016(=APIC-access高半区/posted-int
+	//描述符!)→真VMFUNC controls恒0→vmfunc执行=unsupported function=
+	//#UD(guest内直接异常, 环零留痕)→蓝屏0x7E@C000001D@CmVmfuncTest
+	VMFUNC_CONTROL = 0x00002018,          //VM-function control(bit0=EPTP switching)
+	EPTP_LIST_ADDRESS = 0x00002024,        //EPTP-list(4KB对齐, 512项×8B)
 	EPT_POINTER = 0x0000201a,
 	GUEST_PHYSICAL_ADDRESS = 0x00002400,
 	GUEST_PHYSICAL_ADDRESS_HIGH = 0x00002401,

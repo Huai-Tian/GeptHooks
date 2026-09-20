@@ -41,7 +41,44 @@
 //     a)蓝屏(布防到蓝屏隔了数小时的原因)。STAGE1冷函数(无TLB条目,
 //     靠walk触发)从未暴露。**v3.46修复: asm返回ZF+能力探测+EPTP填充**
 //  c) hookLen与重放无交叉校验(防御缺失)。**v3.46修复: 强校验≠22拒绝安装**
-#define GEPT_BUILD_TAG "v3.46"
+//v3.47 Phase1(VMFUNC路线, 看雪图谱4.2): VMFUNC EPTP switching基础设施
+//上电——EPTP-list页+VMCS配置(secondary ctl bit13+VMFUNC control bit0+
+//EPTP_LIST)+全核guest内裸往返自测。list[0]=[1]同EPTP(切换no-op), 只验证
+//"指令可执行+配置正确"; Phase2才拆clean/hooked两套视图实现零VM-Exit hook。
+//**v3.47b: 探测修正**——撤销CPUID.7.EBX[16]检查(该位实为AVX512F,
+//客户端Skylake读0导致v3.47误判i7-6700HQ"无VMFUNC"; 实则SDM中VMFUNC
+//无任何CPUID枚举位, 唯一权威判据=ctls2 bit13经MSR 0x48B掩码后存活)
+//**v3.47c: 机器码修正**——CmVmfuncTest的vmfunc嵌入码0F01C4→**0F01D4**。
+//v3.47b实测蓝屏0x7E@(C000001D, GeptHooks+0x1085)裁决: 0F01C4=**VMXOFF**
+//(从看雪帖抄的错误opcode, 未与SDM核对)! 完整链条: guest内执行VMXOFF
+//→VM-exit reason 26→handler无case走'U'逃生→vmx_off回真机从+0x1085
+//重执行→**VMX operation之外执行VMXOFF=#UD**→系统线程异常未处理→0x7E。
+//环铁证: [E]seq=104 rsn=26 a=+0x1085 + tally U:0=1。VMFUNC=0F01D4(SDM)
+//**v3.47d: VMCS字段编码修正**——v3.47c实测仍蓝屏0x7E@C000001D@+0x1085
+//但环无rsn=26(vmfunc已非VMXOFF)。裁决: VMFUNC_CONTROL/EPTP_LIST_ADDRESS
+//编码凭记忆写错(0x2015/0x2016实为APIC-access高半区/posted-int描述符,
+//被硬件忽略)→真VM-function controls恒0→vmfunc=unsupported function=
+//#UD(guest内直接异常无VM-exit)→0x7E。**权威源(Linux asm/vmx.h)**:
+//VM_FUNCTION_CONTROL=0x2018, EPTP_LIST_ADDRESS=0x2024。
+//三次同型教训(位号/opcode/字段编码=全凭记忆不查权威): 此后所有
+//硬件相关常量必须在注释标注权威源出处
+//v3.48: **Phase 2——双EPT拆分+VMFUNC hook闭环**(看雪图谱4.2核心)。
+//设计依据=SDM §28.5.7.3权威裁决(NOTES "Phase 2设计依据"节, 动工前
+//逐条对SDM PDF核对): VMFUNC切换会写回EPT_POINTER字段=切换跨exit/entry
+//持久+root侧vmwrite(EPT_POINTER)同义。要点:
+//  ①每核hooked EPT(深拷贝, 自指链重指): EPTP-list[0]=clean/[1]=hooked
+//  ②标记页remap(hooked EPT独有): guest内同一VA在两视图读出
+//    "CLEANEPT"/"HOOKEDPT"=双EPT真实分叉的软件证据(自测)
+//  ③EptSetHook VMFUNC主路径: hooked表里hook页PTE→CodePage(X=1,R=1,W=0)
+//    +vmwrite(EPT_POINTER)切hooked视图——hook触发**零VM-Exit**(r48
+//    计数不再增长=毕业判据); clean视图原页字节完好(读写看原始字节)
+//  ④violation兜底改作用于ACTIVE视图表(EptGetActiveData): VMFUNC核的
+//    写兜底(hook页W=0)与fallback核的v3.46互切共用骨架
+//  ⑤case 59(VMFUNC失败exit): 推RIP跳过+自测判FAIL降级, 绝不走'U'逃生
+//    (真机重执行vmfunc=#UD蓝屏, rsn59绝非#UD——SDM裁决)
+//  ⑥EPT自检新增[7][8][9](hooked表结构/标记remap/高区共享链), launch前
+//    软件走查把黑盒死亡变成精确报错
+#define GEPT_BUILD_TAG "v3.48"
 
 //v3.33: 构建标签全局副本——黑匣子(common.h GEPT_BLACKBOX)在FlInit时
 //拷入, 蓝屏DMP解析时自证二进制版本
@@ -287,6 +324,98 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObjct, PUNICODE_STRING pRegPath)
 			i, g_vcpu[i].bInGuest, g_vcpu[i].bLaunchFailed, g_vcpu[i].bVmxOn);
 	}
 
+	//v3.47 Phase1: VMFUNC全核自测——逐核亲和性切换, 在该核guest内执行
+	//CmVmfuncTest(vmfunc(0,1)→vmfunc(0,0)裸往返)。v3.48起list[0]=clean/
+	//list[1]=hooked(真实双EPT), 本往返=真实视图切换环, 验证"指令在
+	//non-root可执行+VMCS配置正确+list项合法"——任一环节错=当场rsn59
+	//exit(case59跳过指令, 自测读到旧视图判FAIL)或#UD蓝屏(错误配置的核
+	//当场暴露, 不留到hook期)。bVmfuncOn=0的核(能力探测未过)跳过=它们
+	//的hook走v3.46 violation方案(fallback语义)
+	{
+		ULONG vmfuncOk = 0, vmfuncSkip = 0;
+		for (ULONG i = 0; i < cpuCount; i++)
+		{
+			if (!g_vcpu[i].bInGuest)
+			{
+				continue;    //未进guest的核(启动失败/跳过)无从谈guest内自测
+			}
+			KeSetSystemAffinityThread((KAFFINITY)1 << i);
+			if (g_vcpu[i].bVmfuncOn)
+			{
+				FlLog("[VMFUNC] cpu%u自测开始(切list[1]=hooked→切回list[0]=clean, 真实双EPT往返; 下一行=通过)",
+					i);
+				CmVmfuncTest();
+				FlLog("[VMFUNC] cpu%u自测通过: EPTP切换往返零VM-Exit, VMFUNC链路OK",
+					i);
+				vmfuncOk++;
+			}
+			else
+			{
+				FlLog("[VMFUNC] cpu%u未启用(能力探测未过), 跳过自测(hook走violation方案)",
+					i);
+				vmfuncSkip++;
+			}
+			KeSetSystemAffinityThread(allCpus);
+		}
+		FlLog("[VMFUNC] Phase1全核汇总: 通过%u核, 跳过%u核(Phase2按此分派: VMFUNC主路径/violation fallback)",
+			vmfuncOk, vmfuncSkip);
+	}
+
+	//v3.48 Phase2: 双EPT标记自测——hooked EPT里标记页GPA被改译到另一
+	//物理页(EptInitEptData布防), guest内读同一VA三次:
+	//  clean读="CLEANEPT" → vmfunc(0,1)切hooked读="HOOKEDPT" →
+	//  vmfunc(0,0)切回clean读="CLEANEPT"
+//"HOOKEDPT"的出现=VMFUNC切换到的是**真实独立翻译的第二套EPT**(Phase1
+//往返no-op验证的功能升级; 若TLB残留旧翻译/切换未生效/rsn59被跳过,
+//读到的都是旧视图值→FAIL)。FAIL核bVmfuncOn=0→hook走v3.46方案(按核
+//降级, 互不影响)。测试线程已钉核(亲和性), 视图状态确定不串核
+	{
+		ULONG dualOk = 0, dualFail = 0;
+		for (ULONG i = 0; i < cpuCount; i++)
+		{
+			if (!g_vcpu[i].bInGuest || !g_vcpu[i].bVmfuncOn)
+			{
+				continue;
+			}
+			KeSetSystemAffinityThread((KAFFINITY)1 << i);
+			if (g_vcpu[i].PeptDataHooked != NULL && g_geptMarkVA != NULL)
+			{
+				volatile ULONG64* mark = (volatile ULONG64*)g_geptMarkVA;
+				FlLog("[双EPT] cpu%u标记自测开始: 同一VA两视图应读CLEANEPT/HOOKEDPT",
+					i);
+				ULONG64 v0 = *mark;          //clean视图(恒等): 应=CLEANEPT
+				CmVmfuncSwitch(1);           //切hooked视图(零VM-Exit)
+				ULONG64 v1 = *mark;          //hooked视图(remap): 应=HOOKEDPT
+				CmVmfuncSwitch(0);           //切回clean视图
+				ULONG64 v2 = *mark;          //应=CLEANEPT
+				if (v0 == GEPT_MARK_A && v1 == GEPT_MARK_B && v2 == GEPT_MARK_A)
+				{
+					dualOk++;
+					FlLog("[双EPT] cpu%u标记自测通过: %llX→%llX→%llX(两套EPT真实独立生效, VMFUNC切换闭环)",
+						i, (unsigned long long)v0, (unsigned long long)v1,
+						(unsigned long long)v2);
+				}
+				else
+				{
+					dualFail++;
+					g_vcpu[i].bVmfuncOn = 0;    //降级: 该核hook走violation方案
+					FlLog("[双EPT] cpu%u标记自测FAIL: %llX→%llX→%llX(期望CLEANEPT→HOOKEDPT→CLEANEPT)——降级violation方案",
+						i, (unsigned long long)v0, (unsigned long long)v1,
+						(unsigned long long)v2);
+				}
+			}
+			else
+			{
+				dualFail++;
+				g_vcpu[i].bVmfuncOn = 0;    //无hooked EPT/标记页: 同样降级
+				FlLog("[双EPT] cpu%u无hooked EPT/标记页, 降级violation方案", i);
+			}
+			KeSetSystemAffinityThread(allCpus);
+		}
+		FlLog("[双EPT] Phase2标记自测汇总: 通过%u核, FAIL降级%u核(hook安装按核分派VMFUNC/violation)",
+			dualOk, dualFail);
+	}
+
 #if GEPT_HOOK_STAGE == 0
 	Log("stage0: virtualization only, no hook installed");
 	FlLog("stage0: DriverEntry完成(v3.35=三重故障park化+看门狗观测t1Seq: TF→park机器存活日志落盘; 仍冻→30s→蓝屏→DMP), 心跳监控中(250ms一条)");
@@ -345,7 +474,17 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObjct, PUNICODE_STRING pRegPath)
 	// CodePage跳板→AsmHookTestTarget→HookTestTarget]链路内, DMP环的
 	//'V'/'x'序列可直接二分定位到具体指令段
 	FlLog("[STAGE1] 触发GeptTestTarget(下一行=hook命中或死亡点)");
+	//v3.48: 零VM-Exit证据——VMFUNC主路径下hook触发是纯EPTP翻译切换
+	//(hooked视图hook页→CodePage), 全程零EPT violation(v3.46方案每次
+	//触发至少1次)。r48为全局计数, 此时全系统唯一受限页=本hook页且
+	//无背景violation → Δ=0即VMFUNC hook闭环直接证据; Δ>0=该核走了
+	//violation方案(看[双EPT]自测是否FAIL降级)或写兜底被触发
+	LONG64 r48Before = g_flExitCounts[EXIT_REASON_EPT_VIOLATION];
 	GeptTestTarget();
+	LONG64 r48After = g_flExitCounts[EXIT_REASON_EPT_VIOLATION];
+	FlLog("[STAGE1] 零VM-Exit证据: r48 %lld→%lld(Δ=%lld, VMFUNC主路径应Δ=0; violation方案Δ=1+)",
+		(long long)r48Before, (long long)r48After,
+		(long long)(r48After - r48Before));
 	FlLog("[STAGE1] 自测调用返回(未死机未蓝屏), EPT hook全链路打通");
 	Log("stage1: self-test hook done");
 #if GEPT_HOOK_STAGE >= 2
@@ -399,6 +538,24 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObjct, PUNICODE_STRING pRegPath)
 		FlLog("[STAGE2] NtClose hook已布防(DPC广播返回), 此后全系统NtClose调用"
 			"经跳板→HookNtClose(计数+采样)→重放→原函数; 系统存活的每一秒"
 			"都是监控模式正确的证据");
+		//v3.48: 零VM-Exit观测窗(2秒)——hook已全面接管系统NtClose调用,
+		//VMFUNC主路径下: 拦截计数持续增长而r48(EPT violation计数)纹丝
+		//不动=v3.46方案(高频函数每次触发都violation)与VMFUNC方案的
+		//直接量化对比, Phase 2毕业的核心判据
+		{
+			LONG64 r0 = g_flExitCounts[EXIT_REASON_EPT_VIOLATION];
+			LONG n0 = g_geptNtCloseCount;
+			LARGE_INTEGER tick;
+			tick.QuadPart = -2000000LL;    //2秒
+			KeDelayExecutionThread(KernelMode, FALSE, &tick);
+			LONG64 r1 = g_flExitCounts[EXIT_REASON_EPT_VIOLATION];
+			LONG n1 = g_geptNtCloseCount;
+			FlLog("[STAGE2] 零VM-Exit观测窗(2s): NtClose拦截%ld→%ld(+%ld), "
+				"r48=%lld→%lld(Δ=%lld)——拦截持续增长且Δr48=0即VMFUNC hook闭环铁证"
+				"(Δr48>0=有核走violation方案或写兜底触发, 对照[双EPT]汇总)",
+				n0, n1, n1 - n0, (long long)r0, (long long)r1,
+				(long long)(r1 - r0));
+		}
 		Log("stage2: NtClose hook installed");
 	}
 #endif

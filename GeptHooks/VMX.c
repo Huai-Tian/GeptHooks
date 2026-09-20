@@ -177,9 +177,16 @@ int VMXInitCpuAlloc(ULONG cpuNumber)
 	PVMX_VMCS pvmcs = (PVMX_VMCS)MmAllocateContiguousMemory(sizeof(VMX_VMCS), phys);
 	PVOID MsrBitMap = MmAllocateContiguousMemory(PAGE_SIZE, phys);
 	PVOID pvmmStack = MmAllocateContiguousMemory(PAGE_SIZE * 6, phys);
-	if (pvmmStack == NULL || MsrBitMap == NULL || pvmxon == NULL || pvmcs == NULL)
+	//v3.47 Phase1: EPTP-list页(VMFUNC EPTP switching用)。SDM要求4KB对齐
+	//(MmAllocateContiguousMemory天然满足)+物理连续。内容在VmxSetupVmcs
+	//里填(Eptp此刻尚未就绪): list[0]=list[1]=Eptp(Phase1同EPT双项=切换
+	//no-op, 只验证VMFUNC链路本身; Phase2拆成clean/hooked两套)
+	PVOID pEptpList = MmAllocateContiguousMemory(PAGE_SIZE, phys);
+	if (pvmmStack == NULL || MsrBitMap == NULL || pvmxon == NULL || pvmcs == NULL
+		|| pEptpList == NULL)
 	{
 		//释放已成功的部分, 调用方负责清理
+		if (pEptpList) MmFreeContiguousMemory(pEptpList);
 		if (pvmmStack) MmFreeContiguousMemory(pvmmStack);
 		if (MsrBitMap) MmFreeContiguousMemory(MsrBitMap);
 		if (pvmxon) MmFreeContiguousMemory(pvmxon);
@@ -194,14 +201,19 @@ int VMXInitCpuAlloc(ULONG cpuNumber)
 	//x2APIC系统的EOI(WRMSR 0x80B)被吞 → APIC中断卡死 → 整机冻结无蓝屏(vmlaunch成功后秒冻)
 	//全零位图=不拦截任何MSR, guest直接访问, 零exit零风险
 	RtlZeroMemory(MsrBitMap, PAGE_SIZE);
+	//EPTP-list清零: 未用项(idx2-511)保持全0, guest误切到无效索引时VMFUNC
+	//按SDM语义VMfail(#UD)而非静默翻译到物理0——预留安全失败模式
+	RtlZeroMemory(pEptpList, PAGE_SIZE);
 	pvmxon->RevisionId = (ULONG)__readmsr(MSR_IA32_VMX_BASIC);
 	pvmcs->RevisionId = (ULONG)__readmsr(MSR_IA32_VMX_BASIC);
 	g_vcpu[cpuNumber].VMXON = pvmxon;
 	g_vcpu[cpuNumber].VMMStack = pvmmStack;
 	g_vcpu[cpuNumber].VMCS = pvmcs;
 	g_vcpu[cpuNumber].MsrBitMap = MsrBitMap;
+	g_vcpu[cpuNumber].VmfuncEptpList = pEptpList;
 	g_vcpu[cpuNumber].bInGuest = 0;
 	g_vcpu[cpuNumber].bLaunchFailed = 0;
+	g_vcpu[cpuNumber].bVmfuncOn = 0;
 	return 0;
 }
 
@@ -372,6 +384,19 @@ void VmxFreeCpuResources(ULONG cpuNumber)
 	{
 		MmFreeContiguousMemory(g_vcpu[cpuNumber].PeptData);
 		g_vcpu[cpuNumber].PeptData = NULL;
+	}
+	//v3.48 Phase2: hooked视图EPT(内含的拆分pte页与v3.46同粒度不单独
+	//跟踪, 随整机生命周期释放——仅调试期可接受的既有语义)
+	if (g_vcpu[cpuNumber].PeptDataHooked)
+	{
+		MmFreeContiguousMemory(g_vcpu[cpuNumber].PeptDataHooked);
+		g_vcpu[cpuNumber].PeptDataHooked = NULL;
+	}
+	//v3.47 Phase1: EPTP-list页(VMFUNC)
+	if (g_vcpu[cpuNumber].VmfuncEptpList)
+	{
+		MmFreeContiguousMemory(g_vcpu[cpuNumber].VmfuncEptpList);
+		g_vcpu[cpuNumber].VmfuncEptpList = NULL;
 	}
 	//释放>512GB动态建立的pdpt页(必须用raw指针: HighPdptVa是4KB对齐后的
 	//地址, 不在pool块起始处, 直接ExFreePool会池损坏)
@@ -572,7 +597,7 @@ void VmxExitHandler(PGUEST_REGS GuestRegs)
 			//(sc start/stop循环测试时, 上一轮残留+下一轮同物理页重用
 			//=静默错译的经典源)
 			//v3.46: 统一入口(能力探测+VMfail留痕, 见ept.c实现)
-			EptInveptCurrent();
+			EptInveptBothViews();
 			//v3.39: 状态一致性——bInGuest清零(旧版漏: KEEP卸载路径
 			//从不复位, 卸载流程虽不再读它, 但保持语义正确)
 			g_vcpu[KeGetCurrentProcessorNumber()].bInGuest = 0;
@@ -651,7 +676,7 @@ void VmxExitHandler(PGUEST_REGS GuestRegs)
 			//(win32kfull蓝屏/冻结), TLB残留(尤其sc start/stop循环时
 			//下轮重用同物理页)是候选根因之一, 此处彻底排除
 			//v3.46: 统一入口(能力探测+VMfail留痕)
-			EptInveptCurrent();
+			EptInveptBothViews();
 			//v3.26: vmx_off前排空积压in-service债(与VmxExitStormEscape
 			//同款)——v3.25起IF=1, 探针窗内注入的ISR运行时(IF=0中断门)
 			//到达的ext-int会入队; 'K'直接vmx_off=队列vector永卡LAPIC
@@ -807,6 +832,26 @@ void VmxExitHandler(PGUEST_REGS GuestRegs)
 		//rcx=XCR索引, rdx:rax=64位值(寄存器映射同WRMSR)
 		_xsetbv((unsigned int)GuestRegs->rcx,
 			((ULONG64)GuestRegs->rdx << 32) | (GuestRegs->rax & 0xFFFFFFFF));
+	}
+	break;
+	case EXIT_REASON_VMFUNC:   //59
+	{
+		//v3.48 Phase2: VMFUNC失败exit(SDM §28.5.7.2/28.5.7.3)——到达本case
+		//的只有EPTP switching失败: EPTP-list项非法/ECX>=512/函数位未开。
+		//(EAX>63或控制位0是#UD不走这里)。**视图未切换**(tent_EPTP被拒):
+		//正确处置=推RIP跳过vmfunc, guest继续在旧视图跑——标记自测会读到
+		//旧视图值→判FAIL→该核bVmfuncOn=0降级violation方案。
+		//绝不走'U'逃生: vmx_off回真机后重执行vmfunc=非non-root=#UD蓝屏
+		//(与v3.21 vmcall推RIP教训同源)。SDM §30.2.5: VMFUNC失败exit的
+		//VM-exit instruction length字段有效→函数尾通用RIP推进=安全跳过
+		//(防御: length异常时按vmfunc裸指令定长3跳过——CmVmfuncTest/
+		//CmVmfuncSwitch的vmfunc均无前缀, 机器码恰为3字节0F01D4)
+		if (exitCodeLen == 0 || exitCodeLen > 15)
+		{
+			exitCodeLen = 3;
+		}
+		FlRingPush('u', KeGetCurrentProcessorNumber(), 59,
+			guestRip, exitQual, exitCodeLen);
 	}
 	break;
 	case EXIT_REASON_TRIPLE_FAULT:
@@ -978,7 +1023,7 @@ void VmxExitStormEscape(char tag, ULONG reason, ULONG64 a, ULONG64 b,
 	}
 	//v3.15: vmx_off前invept全上下文(EPT派生TLB零残留, 同[K]路径理由)
 	//v3.46: 统一入口(能力探测+VMfail留痕)
-	EptInveptCurrent();
+	EptInveptBothViews();
 	//v3.39: vmx_off前还原GDTR/IDTR limit(VM-exit强制0xFFFF, 见
 	//VmxRestoreDtrLimits注释; 同样必须前置=vmread依赖VMX operation)
 	VmxRestoreDtrLimits();
@@ -1058,7 +1103,7 @@ void VmxTripleFaultPark(void)
 	}
 	//脱离VMX(此刻仍在exit上下文/VMM栈, host状态合法)
 	//v3.46: 统一入口(能力探测+VMfail留痕)——EPT派生TLB残留全作废(同'K')
-	EptInveptCurrent();
+	EptInveptBothViews();
 	__vmx_off();
 	ULONG64 cr4 = __readcr4();
 	cr4 &= ~0x2000;                               //清CR4.VMXE, 干净回真机
@@ -1276,11 +1321,56 @@ int VmxSetupVmcs(PVOID GuestRsp)
 		//VmxMsrAdjuest公式无法拦截。正确期望=0x10100A(bit1|bit3|bit12|bit20),
 		//四位均在允许域内
 		ULONG64 ctls2Value = VmxMsrAdjuest(MSR_IA32_VMX_PROCBASED_CTLS2,
-			0x2 | 0x8 | 0x1000 | 0x100000);
+			0x2 | 0x8 | 0x2000 | 0x1000 | 0x100000);
 		__vmx_vmwrite(SECONDARY_VM_EXEC_CONTROL, ctls2Value);
 		__vmx_vmwrite(EPT_POINTER, g_vcpu[cpuNumber].Eptp.ALL);
-		FlLog("cpu%u ctls2=%llX (v3.38期望0010100A=EPT+rdtscp+invpcid+xsaves, 无VPID)",
+		FlLog("cpu%u ctls2=%llX (v3.47b期望0010300A=EPT+rdtscp+invpcid+xsaves+VMFUNC, 无VPID)",
 			cpuNumber, (unsigned long long)ctls2Value);
+		//v3.47 Phase1: VMFUNC EPTP switching上电(看雪图谱4.2, 隐藏性最优
+		//hook的基石)。**v3.47b探测修正: 撤销CPUID.7.EBX[16]检查**——
+		//该位实为AVX512F(客户端Skylake/i7-6700HQ无AVX-512=读0, 被误判
+		//为"无VMFUNC"); VMFUNC在SDM中**没有任何CPUID枚举位**(VMFUNC
+		//指令页: #UD仅当非non-root/控制位0/EAX>=64)。权威判据只有两个:
+		//  ①ctls2 bit13(enable VM functions)实际置位——VmxMsrAdjuest
+		//    公式已按MSR 0x48B允许域自动掩码, bit13存活=硬件支持该控制
+		//  ②EPTP-list页就绪(Alloc阶段已分配)
+		//vmlaunch成功即硬件已验证整个VMFUNC配置(控制字段+EPTP list)。
+		//任一不满足=本核bVmfuncOn=0: hook走v3.46 violation方案(fallback)
+		if ((ctls2Value & 0x2000) && g_vcpu[cpuNumber].VmfuncEptpList != NULL)
+		{
+			//v3.48 Phase2拆分: [0]=clean视图EPTP(恒等原始), [1]=hooked视图
+			//EPTP(hook页→CodePage的hook世界)——SDM §28.5.7.3: guest内
+			//vmfunc(0,idx)零VM-Exit切换; EptSetHook在root侧用
+			//vmwrite(EPT_POINTER)走同一字段切视图。无hooked EPT(分配失败)
+			//时退回Phase1语义(双项同值=切换no-op, hook走violation方案)。
+			//未用项(idx2-511)保持全0: guest误切=无效项→VM-exit reason 59
+			//(case 59推RIP跳过+自测判FAIL, 绝非#UD——SDM裁决见NOTES)
+			PULONG64 eptpList = (PULONG64)g_vcpu[cpuNumber].VmfuncEptpList;
+			eptpList[0] = g_vcpu[cpuNumber].Eptp.ALL;
+			eptpList[1] = (g_vcpu[cpuNumber].PeptDataHooked != NULL)
+				? g_vcpu[cpuNumber].EptpHooked.ALL
+				: g_vcpu[cpuNumber].Eptp.ALL;
+			PHYSICAL_ADDRESS eptpListPhys =
+				MmGetPhysicalAddress(g_vcpu[cpuNumber].VmfuncEptpList);
+			//VMFUNC control bit0=EPTP switching(唯一function); EPTP-list
+			//地址须4KB对齐(物理连续页天然满足)
+			__vmx_vmwrite(VMFUNC_CONTROL, 1);
+			__vmx_vmwrite(EPTP_LIST_ADDRESS, eptpListPhys.QuadPart);
+			g_vcpu[cpuNumber].bVmfuncOn = 1;
+			FlLog("cpu%u VMFUNC已启用: EPTP-list=%p(phys=%llX) [0]=%llX(clean) [1]=%llX(%s)",
+				cpuNumber, g_vcpu[cpuNumber].VmfuncEptpList,
+				(unsigned long long)eptpListPhys.QuadPart,
+				(unsigned long long)eptpList[0], (unsigned long long)eptpList[1],
+				(g_vcpu[cpuNumber].PeptDataHooked != NULL)
+				? "hooked双EPT" : "同值no-op(hooked分配失败)");
+		}
+		else
+		{
+			g_vcpu[cpuNumber].bVmfuncOn = 0;
+			FlLog("cpu%u VMFUNC未启用(ctls2.bit13=%d list=%p, MSR 0x48B无VMFUNC控制=CPU不支持)——Phase1自测跳过, hook走violation方案",
+				cpuNumber, (int)((ctls2Value >> 13) & 1),
+				g_vcpu[cpuNumber].VmfuncEptpList);
+		}
 	}
 	else
 	{

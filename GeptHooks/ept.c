@@ -1,4 +1,4 @@
-#pragma once
+ï»¿#pragma once
 #include<intrin.h>
 #include"ept.h"
 #include"CPU.h"
@@ -34,62 +34,62 @@ BOOLEAN EptIsSupportEpt()
 	return TRUE;
 }
 
-//bit17: EPT 1GB´óÒ³Ö§³Ö(ÓÃÓÚ³¬512GBÇøÓòµÄ¶¯Ì¬Ó³Éä)
+//bit17: EPT 1GBå¤§é¡µæ”¯æŒ(ç”¨äºè¶…512GBåŒºåŸŸçš„åŠ¨æ€æ˜ å°„)
 BOOLEAN g_bEpt1GbPage = FALSE;
 
-//==================== v3.8¸ùÒòĞŞ¸´: EPTÄÚ´æÀàĞÍ°´ÕæÊµRAM²¼¾Ö ====================
-//v3.7Êµ²â¶³½áĞÎÌ¬: ÈÕÖ¾Í£ÔÚ"cpu0 vmlaunch...", Ö®ºóÁãĞĞÁã[HB]ÁãÀ¶ÆÁ¡£
-//¸ùÒò: EptInitEptData°Ñ0-512GB**È«²¿**±ê³ÉmemoryType=6(WB¿É»º´æ), µ«ÎïÀí
-//¿Õ¼äÀï²¼ÂúMMIO¶´(LAPIC 0xFEE00000 / IOAPIC 0xFEC00000 / HPET 0xFED00000 /
-//AHCI/USB/GPUµÍµØÖ·BAR, È«²¿<4GB)¡£±»ĞéÄâ»¯ºËÒ»µ©ÔËĞĞÉè±¸ISR:
-//  Ğ´MMIO¼Ä´æÆ÷(ÇåÖĞ¶ÏÔ­Òò) -> Ğ´½øCPU»º´æĞĞÓÀ²»µÖ´ïÉè±¸ -> ÖĞ¶ÏÓÀÔ¶pending
-//  -> ISR·ç±©¶ÀÕ¼¸ÃºË; ¶ÁMMIO¼Ä´æÆ÷ -> ÄÃµ½stale»º´æÖµ -> I/OÓÀ²»Íê³É¡£
-//Á½Õß¶¼±íÏÖÎªÕû»ú¶³½á(ËùÓĞºËµÈ´ı´ÅÅÌ/ÖĞ¶ÏÏìÓ¦), ÎŞbugcheck¡£
-//´¥·¢Á´=vmlaunch³É¹¦ºóT1µÄµÚÒ»´ÎÂäÅÌZwWriteFile -> AHCIÍê³ÉÖĞ¶ÏÂäÔÚ±»ĞéÄâ»¯
-//µÄcpu0ÉÏ(Éè±¸IRQÆÕ±éÇãÏòcpu0) -> Ãë¼¶¶³½á¡£Óë"¶³½áµã=×îºóÈÕÖ¾ÊÇvmlaunch¡¢
-//³É¹¦ÈÕÖ¾ÓÀÔ¶Ğ´²»³ö¡¢Áã[HB]"ÍêÈ«ÎÇºÏ¡£
-//ĞŞ¸´: MmGetPhysicalMemoryRanges»ñÈ¡ÕæÊµRAM²¼¾Ö, 2MB´óÒ³**ÍêÈ«**ÂäÔÚRAMÄÚ
-//²ÅWB, ·ñÔò(´¿MMIO»òRAM/MMIO±ß½çÒ³)UC¡£UCÖ»ËğÊ§ĞÔÄÜ, ¾ø²»ËğÊ§ÕıÈ·ĞÔ¡£
-//Î»Í¼32KB(512GB/2MB/8), DriverEntryÀï½¨Ò»´Î, È«²¿ºË¹²ÓÃ¡£
+//==================== v3.8æ ¹å› ä¿®å¤: EPTå†…å­˜ç±»å‹æŒ‰çœŸå®RAMå¸ƒå±€ ====================
+//v3.7å®æµ‹å†»ç»“å½¢æ€: æ—¥å¿—åœåœ¨"cpu0 vmlaunch...", ä¹‹åé›¶è¡Œé›¶[HB]é›¶è“å±ã€‚
+//æ ¹å› : EptInitEptDataæŠŠ0-512GB**å…¨éƒ¨**æ ‡æˆmemoryType=6(WBå¯ç¼“å­˜), ä½†ç‰©ç†
+//ç©ºé—´é‡Œå¸ƒæ»¡MMIOæ´(LAPIC 0xFEE00000 / IOAPIC 0xFEC00000 / HPET 0xFED00000 /
+//AHCI/USB/GPUä½åœ°å€BAR, å…¨éƒ¨<4GB)ã€‚è¢«è™šæ‹ŸåŒ–æ ¸ä¸€æ—¦è¿è¡Œè®¾å¤‡ISR:
+//  å†™MMIOå¯„å­˜å™¨(æ¸…ä¸­æ–­åŸå› ) -> å†™è¿›CPUç¼“å­˜è¡Œæ°¸ä¸æŠµè¾¾è®¾å¤‡ -> ä¸­æ–­æ°¸è¿œpending
+//  -> ISRé£æš´ç‹¬å è¯¥æ ¸; è¯»MMIOå¯„å­˜å™¨ -> æ‹¿åˆ°staleç¼“å­˜å€¼ -> I/Oæ°¸ä¸å®Œæˆã€‚
+//ä¸¤è€…éƒ½è¡¨ç°ä¸ºæ•´æœºå†»ç»“(æ‰€æœ‰æ ¸ç­‰å¾…ç£ç›˜/ä¸­æ–­å“åº”), æ— bugcheckã€‚
+//è§¦å‘é“¾=vmlaunchæˆåŠŸåT1çš„ç¬¬ä¸€æ¬¡è½ç›˜ZwWriteFile -> AHCIå®Œæˆä¸­æ–­è½åœ¨è¢«è™šæ‹ŸåŒ–
+//çš„cpu0ä¸Š(è®¾å¤‡IRQæ™®éå€¾å‘cpu0) -> ç§’çº§å†»ç»“ã€‚ä¸"å†»ç»“ç‚¹=æœ€åæ—¥å¿—æ˜¯vmlaunchã€
+//æˆåŠŸæ—¥å¿—æ°¸è¿œå†™ä¸å‡ºã€é›¶[HB]"å®Œå…¨å»åˆã€‚
+//ä¿®å¤: MmGetPhysicalMemoryRangesè·å–çœŸå®RAMå¸ƒå±€, 2MBå¤§é¡µ**å®Œå…¨**è½åœ¨RAMå†…
+//æ‰WB, å¦åˆ™(çº¯MMIOæˆ–RAM/MMIOè¾¹ç•Œé¡µ)UCã€‚UCåªæŸå¤±æ€§èƒ½, ç»ä¸æŸå¤±æ­£ç¡®æ€§ã€‚
+//ä½å›¾32KB(512GB/2MB/8), DriverEntryé‡Œå»ºä¸€æ¬¡, å…¨éƒ¨æ ¸å…±ç”¨ã€‚
 #define EPT_2M_FRAME_COUNT (EPT_PREALLOC_PAGES * EPT_PREALLOC_PAGES)   //262144
 #define EPT_RAM_BITMAP_BYTES (EPT_2M_FRAME_COUNT / 8)                  //32KB
-static UCHAR g_eptRamBitmap[EPT_RAM_BITMAP_BYTES];    //BSS×Ô¶¯ÇåÁã: 1=¸Ã2MBÒ³ÍêÈ«ÔÚRAMÄÚ
+static UCHAR g_eptRamBitmap[EPT_RAM_BITMAP_BYTES];    //BSSè‡ªåŠ¨æ¸…é›¶: 1=è¯¥2MBé¡µå®Œå…¨åœ¨RAMå†…
 static BOOLEAN g_eptRamBitmapReady = FALSE;
 
-//==================== v3.18: ¸ßÇø(512GB-256TB)EPTÔ¤½¨ ====================
-//v3.17Êµ²âÅĞ¶Á: µ¥ºË½Ó¹Ü(cpu0)ºó<20msÈ«»ú¶³½á¡ª¡ªL287"vmlaunch..."ºóÁ¬[F]
-//»·ÊÂ¼ş¶¼Ã»±»T1ÅÅ¿Õ(T1¶¤ÔÚÕæ»úºËÉÏÒ²ËÀÁË), Óëv3.12/v3.13È«ºË½Ó¹Ü¶³½á
-//ÍêÈ«Í¬Ç©Ãû; ¶øÌ½Õë×Ô²âÄ£Ê½(²»ÔËĞĞOS)37´ÎÈ«¹ı => Ğ×ÊÖ=OSÔÚEPTÏÂµÄÄ³ĞĞÎª¡£
-//Í·ºÅÏÓÒÉ(Ö¤¾İÁ´): GPU ReBAR¸ßµØÖ·MMIO(>512GB, v3.5Ä£¿éÇåµ¥ÒÑÖ¤nvlddmkm/
-//igdkmd64ÔÚÅÜ)±»cpu0ÉÏµÄÏß³Ì/DPC/ISR´¥Åö ¡ú EPT violation ¡ú
-//EptBuildHighMappingÔÚ**VM-exitÉÏÏÂÎÄ**Ö´ĞĞExAllocatePoolWithTag¡ª¡ª
-//Èô±»ÖĞ¶ÏÕß³Ö³ØËø(DPCÇÀÕ¼Ïß³Ì)»ò´¦ÓÚDIRQL(ISR): ³ØËø×ÔĞıÓÀ²»³öÀ´ ¡ú
-//cpu0Ğ¨ËÀ ¡ú È«¾Ö³ØËø±»¿¨ ¡ú ËùÓĞºËµÄ³Ø·ÖÅäÈ«²¿×ÔĞı ¡ú Õû»ú¶³½á(º¬T1µÄ
-//ZwWriteFile¡úIRP·ÖÅä), »­Ãæ¿¨ËÀ¡£Óë"Ë²É±È«»ú+ÆÁÄ»ËÀ+ÈÕÖ¾ê©È»¶øÖ¹"
-//ÈıÌØÕ÷ÍêÈ«ÎÇºÏ¡£
-//ĞŞ¸´: DriverEntry(PASSIVE¼¶)Ò»´ÎĞÔÔ¤½¨pml4[1..511]È«²¿511¸öpdptÒ³
-//(Ã¿Ò³512¸ö1GB UCºãµÈ´óÒ³, ¸²¸Ç512GB-256TBÈ«²¿ÎïÀíµØÖ·¿Õ¼ä), 8ºËEPT
-//¹²ÏíÍ¬Ò»ÅúÒ³±í ¡ú ÈÎºÎ¸ßµØÖ·MMIO·ÃÎÊ**Ö±½Ó·­Òë³É¹¦, ÁãexitÁã·ÖÅä**¡£
-//¶èĞÔÂ·¾¶±£ÁôÎª¶µµ×: Ô¤½¨ºóHighPdptVa·Ç¿Õ+pdpteÒÑpresent ¡ú Ô­Â·¾¶
-//ÍË»¯Îª´¿¶Á+invept, ÈÎÒâIRQL°²È«¡£ÄÚ´æ´ú¼Û: 511¡Á8KB¡Ö4MB NonPaged(¹²Ïí)¡£
-static PVOID g_eptHighPdptVa[512];     //¹²Ïí¸ßÇøpdptÒ³(4KB¶ÔÆëºó; [0]Î´ÓÃ)
-static PVOID g_eptHighPdptRaw[512];    //Ô­Ê¼poolÖ¸Õë(Í³Ò»ÊÍ·ÅÓÃ)
+//==================== v3.18: é«˜åŒº(512GB-256TB)EPTé¢„å»º ====================
+//v3.17å®æµ‹åˆ¤è¯»: å•æ ¸æ¥ç®¡(cpu0)å<20mså…¨æœºå†»ç»“â€”â€”L287"vmlaunch..."åè¿[F]
+//ç¯äº‹ä»¶éƒ½æ²¡è¢«T1æ’ç©º(T1é’‰åœ¨çœŸæœºæ ¸ä¸Šä¹Ÿæ­»äº†), ä¸v3.12/v3.13å…¨æ ¸æ¥ç®¡å†»ç»“
+//å®Œå…¨åŒç­¾å; è€Œæ¢é’ˆè‡ªæµ‹æ¨¡å¼(ä¸è¿è¡ŒOS)37æ¬¡å…¨è¿‡ => å‡¶æ‰‹=OSåœ¨EPTä¸‹çš„æŸè¡Œä¸ºã€‚
+//å¤´å·å«Œç–‘(è¯æ®é“¾): GPU ReBARé«˜åœ°å€MMIO(>512GB, v3.5æ¨¡å—æ¸…å•å·²è¯nvlddmkm/
+//igdkmd64åœ¨è·‘)è¢«cpu0ä¸Šçš„çº¿ç¨‹/DPC/ISRè§¦ç¢° â†’ EPT violation â†’
+//EptBuildHighMappingåœ¨**VM-exitä¸Šä¸‹æ–‡**æ‰§è¡ŒExAllocatePoolWithTagâ€”â€”
+//è‹¥è¢«ä¸­æ–­è€…æŒæ± é”(DPCæŠ¢å çº¿ç¨‹)æˆ–å¤„äºDIRQL(ISR): æ± é”è‡ªæ—‹æ°¸ä¸å‡ºæ¥ â†’
+//cpu0æ¥”æ­» â†’ å…¨å±€æ± é”è¢«å¡ â†’ æ‰€æœ‰æ ¸çš„æ± åˆ†é…å…¨éƒ¨è‡ªæ—‹ â†’ æ•´æœºå†»ç»“(å«T1çš„
+//ZwWriteFileâ†’IRPåˆ†é…), ç”»é¢å¡æ­»ã€‚ä¸"ç¬æ€å…¨æœº+å±å¹•æ­»+æ—¥å¿—æˆ›ç„¶è€Œæ­¢"
+//ä¸‰ç‰¹å¾å®Œå…¨å»åˆã€‚
+//ä¿®å¤: DriverEntry(PASSIVEçº§)ä¸€æ¬¡æ€§é¢„å»ºpml4[1..511]å…¨éƒ¨511ä¸ªpdpté¡µ
+//(æ¯é¡µ512ä¸ª1GB UCæ’ç­‰å¤§é¡µ, è¦†ç›–512GB-256TBå…¨éƒ¨ç‰©ç†åœ°å€ç©ºé—´), 8æ ¸EPT
+//å…±äº«åŒä¸€æ‰¹é¡µè¡¨ â†’ ä»»ä½•é«˜åœ°å€MMIOè®¿é—®**ç›´æ¥ç¿»è¯‘æˆåŠŸ, é›¶exité›¶åˆ†é…**ã€‚
+//æƒ°æ€§è·¯å¾„ä¿ç•™ä¸ºå…œåº•: é¢„å»ºåHighPdptVaéç©º+pdpteå·²present â†’ åŸè·¯å¾„
+//é€€åŒ–ä¸ºçº¯è¯»+invept, ä»»æ„IRQLå®‰å…¨ã€‚å†…å­˜ä»£ä»·: 511Ã—8KBâ‰ˆ4MB NonPaged(å…±äº«)ã€‚
+static PVOID g_eptHighPdptVa[512];     //å…±äº«é«˜åŒºpdpté¡µ(4KBå¯¹é½å; [0]æœªç”¨)
+static PVOID g_eptHighPdptRaw[512];    //åŸå§‹poolæŒ‡é’ˆ(ç»Ÿä¸€é‡Šæ”¾ç”¨)
 static BOOLEAN g_eptHighReady = FALSE;
-static BOOLEAN EptPrebuildHighMappings(VOID);   //Ç°ÖÃÉùÃ÷(¶¨ÒåÔÚEptAllocAlignedPageºó)
+static BOOLEAN EptPrebuildHighMappings(VOID);   //å‰ç½®å£°æ˜(å®šä¹‰åœ¨EptAllocAlignedPageå)
 
-//PASSIVE_LEVEL(Ê×¸öEptInitEptDataµ÷ÓÃÊ±Ö´ĞĞÒ»´Î, ¼´DriverEntryÔ¤·ÖÅä½×¶Î)
+//PASSIVE_LEVEL(é¦–ä¸ªEptInitEptDataè°ƒç”¨æ—¶æ‰§è¡Œä¸€æ¬¡, å³DriverEntryé¢„åˆ†é…é˜¶æ®µ)
 static VOID EptBuildRamBitmap(VOID)
 {
 	if (g_eptRamBitmapReady)
 	{
 		return;
 	}
-	//·µ»ØÕæÊµÎïÀíRAMÇø¼äÊı×é(ÒÔÈ«ÁãÌõÄ¿½áÎ²), µ÷ÓÃ·½¸ºÔğExFreePool
+	//è¿”å›çœŸå®ç‰©ç†RAMåŒºé—´æ•°ç»„(ä»¥å…¨é›¶æ¡ç›®ç»“å°¾), è°ƒç”¨æ–¹è´Ÿè´£ExFreePool
 	PPHYSICAL_MEMORY_RANGE ranges = MmGetPhysicalMemoryRanges();
 	if (ranges == NULL)
 	{
-		//¼«Ğ¡¸ÅÂÊÊ§°Ü: Î»Í¼±£³ÖÈ«0 = È«²¿UC(Âıµ«ÕıÈ·), FlLogÁôºÛ
-		FlLog("EPT: MmGetPhysicalMemoryRangesÊ§°Ü! EPTÈ«³ÌUC(ĞÔÄÜ½µ¼¶, ÕıÈ·ĞÔ²»±ä)");
+		//æå°æ¦‚ç‡å¤±è´¥: ä½å›¾ä¿æŒå…¨0 = å…¨éƒ¨UC(æ…¢ä½†æ­£ç¡®), FlLogç•™ç—•
+		FlLog("EPT: MmGetPhysicalMemoryRangeså¤±è´¥! EPTå…¨ç¨‹UC(æ€§èƒ½é™çº§, æ­£ç¡®æ€§ä¸å˜)");
 		return;
 	}
 	ULONG wbPages = 0;
@@ -99,18 +99,18 @@ static VOID EptBuildRamBitmap(VOID)
 	{
 		ULONG64 base = (ULONG64)r->BaseAddress.QuadPart;
 		ULONG64 end = base + (ULONG64)r->NumberOfBytes.QuadPart;
-		//v3.14: Çø¼äÖğÌõÂäÅÌ¡ª¡ªv3.13Êµ²âWB=4023¸ö2MÒ³(Ô¼7.9GB), µ«EPT_DATA
-		//(ÎïÀí0x277BFE000¡Ö9.9GB)ÓëÇı¶¯´úÂëÒ³(¡Ö10.6GB)¶¼´æÔÚÇÒ±êÁËWB,
-		//ËµÃ÷RAMÑÓÉìÖÁÉÙµ½10.6GB, Î»Í¼È´Ö»±êÁËÔ¼Ò»°ë¡ª¡ªÇø¼äÃ÷Ï¸ÊÇ²Ã¾öÒÀ¾İ
+		//v3.14: åŒºé—´é€æ¡è½ç›˜â€”â€”v3.13å®æµ‹WB=4023ä¸ª2Mé¡µ(çº¦7.9GB), ä½†EPT_DATA
+		//(ç‰©ç†0x277BFE000â‰ˆ9.9GB)ä¸é©±åŠ¨ä»£ç é¡µ(â‰ˆ10.6GB)éƒ½å­˜åœ¨ä¸”æ ‡äº†WB,
+		//è¯´æ˜RAMå»¶ä¼¸è‡³å°‘åˆ°10.6GB, ä½å›¾å´åªæ ‡äº†çº¦ä¸€åŠâ€”â€”åŒºé—´æ˜ç»†æ˜¯è£å†³ä¾æ®
 		if (rangeCnt < 32)
 		{
-			FlLog("RAMÇø¼ä[%u]: %llX - %llX (%llu MB)",
+			FlLog("RAMåŒºé—´[%u]: %llX - %llX (%llu MB)",
 				rangeCnt, (unsigned long long)base, (unsigned long long)end,
 				(unsigned long long)((end - base) >> 20));
 		}
 		rangeCnt++;
-		//Ö»±ê¼Ç"ÍêÕû"ÂäÔÚ[base,end)ÄÚµÄ2MBÖ¡: Ê×Ö¡=ceil(base/2M),
-		//Î²Ö¡(²»º¬)=floor(end/2M)¡£±ß½ç°ëÒ³±êUC(°²È«²à)
+		//åªæ ‡è®°"å®Œæ•´"è½åœ¨[base,end)å†…çš„2MBå¸§: é¦–å¸§=ceil(base/2M),
+		//å°¾å¸§(ä¸å«)=floor(end/2M)ã€‚è¾¹ç•ŒåŠé¡µæ ‡UC(å®‰å…¨ä¾§)
 		ULONG64 first = (base + 0x1FFFFFULL) >> 21;
 		ULONG64 last = end >> 21;
 		for (ULONG64 f = first; f < last && f < EPT_2M_FRAME_COUNT; f++)
@@ -119,14 +119,14 @@ static VOID EptBuildRamBitmap(VOID)
 			wbPages++;
 		}
 	}
-	FlLog("EPT: RAMÇø¼ä¹²%uÌõ(³¬³ö32ÌõÎ´ÁĞ)", rangeCnt);
+	FlLog("EPT: RAMåŒºé—´å…±%uæ¡(è¶…å‡º32æ¡æœªåˆ—)", rangeCnt);
 	ExFreePool(ranges);
 	g_eptRamBitmapReady = TRUE;
-	FlLog("EPT: RAMÎ»Í¼¾ÍĞ÷, WB=%u/%u¸ö2MÒ³(ÆäÓàUC=MMIO¶´/±ß½çÒ³)",
+	FlLog("EPT: RAMä½å›¾å°±ç»ª, WB=%u/%uä¸ª2Mé¡µ(å…¶ä½™UC=MMIOæ´/è¾¹ç•Œé¡µ)",
 		wbPages, (ULONG)EPT_2M_FRAME_COUNT);
 }
 
-//2MÖ¡ºÅ -> ÄÚ´æÀàĞÍ: ÍêÈ«RAM=WB(6), ·ñÔòUC(0)
+//2Må¸§å· -> å†…å­˜ç±»å‹: å®Œå…¨RAM=WB(6), å¦åˆ™UC(0)
 static ULONG EptMemTypeFor2MFrame(ULONG64 frame2m)
 {
 	if (g_eptRamBitmapReady &&
@@ -137,29 +137,103 @@ static ULONG EptMemTypeFor2MFrame(ULONG64 frame2m)
 	return 0;
 }
 
-//==================== v3.13: vmlaunchÇ°EPTÈí¼ş×Ô¼ìÃÅ ====================
-//v3.12Êµ²â: ¿ØÖÆ×Ö¶ÎĞŞ¸´ºóvmlaunchÊ×´ÎÕæÕı³É¹¦, È´ÔÚ"cpu0 vmlaunch..."ºó
-//250msÄÚÕû»ú¶³½á¡ª¡ªT1(¶¤ÔÚÎ´ĞéÄâ»¯ºËÉÏ, 250msĞÄÌø)Á¬Ò»Ìõ[HB]¶¼Ã»À´µÃ¼°·¢,
-//¶ş½øÖÆ»·Áã±ê¼Ç(=ÁãexitÁãÌÓÒİÁãÈıÖØ¹ÊÕÏ)¡£guestÂäµØ´°¿ÚµÄÈ«²¿´úÂëÂ·¾¶
-//(CmGeustRip»Ö¸´Õ»/EPTÓ²¼ş×ß²éÈ¡Ö¸)´ÓÎ´±»v3.11bÖ´ĞĞ¹ı(8ºËÈ«ÔÚentry¼ì²é
-//½×¶Î¾Ífail·µ»Ø), Êô"ºÚºĞËÀÇø"¡ª¡ªEPTÈô°ÑÂäµØ´úÂëÒ³¾²Ä¬´íÒëµ½±ğµÄÎïÀíÖ¡
-//(È¨ÏŞÎ»È«¶Ô¡¢²»´¥·¢violation/misconfig), guestÖ´ĞĞµÄ¾ÍÊÇ"±ğµÄÄÚ´æµÄÄÚÈİ",
-//Õû»úË²¼ä»ìÂÒ¶³½áÇÒÁãÈÕÖ¾, ÓëÊµ²âĞÎÌ¬ÍêÈ«ÎÇºÏ¡£
-//±¾º¯ÊıÔÚlaunchÇ°ÓÃ**Èí¼ş×ß²é**¸´ÑİÓ²¼şEPT·­Òë, °Ñ"ËÀÔÚºÚºĞÀï"±ä³É
-//"launchÇ°¾«È·±¨´í+°²È«·ÅÆú"(Ê§°ÜºËÁôÔÚrootÄ£Ê½, ÏµÍ³´æ»î, T1¼ÌĞø¼ÇÂ¼):
-//  [1] EPTP: ±£ÁôÎ»ÇåÁã/walkLen=3/PML4ÎïÀíµØÖ·==MmGetPhysicalAddress(pml4)
-//  [2] pml4[0] -> pdpte ÎïÀíÁ´
-//  [3] pdpte[i] -> pde[i][0] ÎïÀíÁ´(512ÏîÈ«²é)
-//  [4] pde[i][k] ºãµÈÖ¡+P/W/X/psÎ»(262144ÏîÈ«É¨, Ë³Ğò¶Á2MB, Î¢Ãë¼¶)
-//  [5] ¹Ø¼üÑù±¾Ò³×ß²é: Ì½Õë´úÂëÒ³/ÂäµØ±êÇ©Ò³/guestÕ»Ò³/CR3Ò³±í/IDT/GDT/KPCR
-//·µ»ØÊ§°Ü×éÊı(0=Í¨¹ı)¡£guestRspVa=GUEST_RSP(CmGuestRspÖ¡ÄÚÕ»Ö¸Õë)
+//==================== v3.48 Phase2: åŒEPTæ ‡è®°é¡µ ====================
+//åŠŸèƒ½: hooked EPTé‡ŒæŠŠpageAçš„GPAæ”¹è¯‘åˆ°pageBç‰©ç†é¡µã€‚guestå†…è¯»åŒä¸€VA:
+//  cleanè§†å›¾(æ’ç­‰)   â†’ è¯»åˆ° GEPT_MARK_A "CLEANEPT"
+//  hookedè§†å›¾(remap) â†’ è¯»åˆ° GEPT_MARK_B "HOOKEDPT"
+//Bå€¼çš„å‡ºç°=VMFUNCåˆ‡æ¢åˆ°çš„æ˜¯**çœŸå®ç‹¬ç«‹ç¿»è¯‘çš„ç¬¬äºŒå¥—EPT**(Phase1çš„
+//no-opå¾€è¿”éªŒè¯å‡çº§ä¸ºåŠŸèƒ½éªŒè¯)ã€‚åˆ†é…åœ¨EptInitEptDataé¦–æ¬¡è°ƒç”¨(PASSIVE),
+//é‡Šæ”¾èµ°EptShutdownHighMappings(unload/å›æ»š, å¹‚ç­‰)
+PVOID g_geptMarkVA = NULL;      //pageAè™šæ‹Ÿåœ°å€(GPA=PA_A, æ’ç­‰æ˜ å°„)
+static PVOID s_geptMarkVB = NULL;   //pageBè™šæ‹Ÿåœ°å€(å†™MAGIC/é‡Šæ”¾ç”¨)
+ULONG64 g_geptMarkPaB = 0;      //pageBç‰©ç†åœ°å€(hookedè§†å›¾çš„ç¿»è¯‘ç›®æ ‡)
+
+static BOOLEAN EptAllocMarkPages(VOID)
+{
+	if (g_geptMarkVA != NULL)
+	{
+		return TRUE;
+	}
+	PHYSICAL_ADDRESS phys = { 0 };
+	phys.QuadPart = MAXULONG64;
+	PVOID a = MmAllocateContiguousMemory(PAGE_SIZE, phys);
+	PVOID b = MmAllocateContiguousMemory(PAGE_SIZE, phys);
+	if (a == NULL || b == NULL)
+	{
+		if (a) MmFreeContiguousMemory(a);
+		if (b) MmFreeContiguousMemory(b);
+		FlLog("EPT: åŒEPTæ ‡è®°é¡µåˆ†é…å¤±è´¥â€”â€”æ ‡è®°è‡ªæµ‹è·³è¿‡(VMFUNCæ ¸å°†åˆ¤FAILé™çº§)");
+		return FALSE;
+	}
+	*(volatile ULONG64*)a = GEPT_MARK_A;
+	*(volatile ULONG64*)b = GEPT_MARK_B;
+	g_geptMarkVA = a;
+	s_geptMarkVB = b;
+	g_geptMarkPaB = MmGetPhysicalAddress(b).QuadPart;
+	FlLog("EPT: åŒEPTæ ‡è®°é¡µå°±ç»ª: pageA=%p(PA=%llX) pageB(PA=%llX) MAGIC=\"%llX\"/\"%llX\"",
+		a, (unsigned long long)MmGetPhysicalAddress(a).QuadPart,
+		(unsigned long long)g_geptMarkPaB,
+		(unsigned long long)GEPT_MARK_A, (unsigned long long)GEPT_MARK_B);
+	return TRUE;
+}
+
+//åœ¨hooked EPTé‡Œå»ºç«‹æ ‡è®°remap: æ‹†pageAæ‰€åœ¨2Mé¡µâ†’PTEæ”¹æŒ‡pageBç‰©ç†å¸§
+//(å…¨æƒé™, å†…å­˜ç±»å‹ç»§æ‰¿æº2Mé¡µ)ã€‚launchå‰+PASSIVEçº§è°ƒç”¨(è¡¨ä»æœªè¢«ç¡¬ä»¶
+//walkè¿‡)=æ— éœ€inveptã€‚è¿”å›FALSE=pageAè¶…512GB/æ‹†åˆ†å¤±è´¥(æ ‡è®°è‡ªæµ‹åˆ¤FAIL)
+static BOOLEAN EptBuildMarkRemap(PEPT_DATA hooked)
+{
+	if (g_geptMarkVA == NULL)
+	{
+		return FALSE;
+	}
+	ULONG64 paA = MmGetPhysicalAddress(g_geptMarkVA).QuadPart;
+	PEPT_PDE_2M pde2M = EptGetPde2B(hooked, paA);
+	if (pde2M == NULL)
+	{
+		return FALSE;    //>512GB(8GBæœºå™¨ä¸å¯èƒ½, é˜²å¾¡)
+	}
+	if (pde2M->fileds.ps)
+	{
+		if (!EptPdeToPte(pde2M))
+		{
+			return FALSE;
+		}
+	}
+	PEPT_PTE pte = EptGetPte(hooked, paA);
+	if (pte == NULL)
+	{
+		return FALSE;
+	}
+	pte->fileds.physicalAddr = g_geptMarkPaB >> 12;
+	pte->fileds.present = 1;
+	pte->fileds.write = 1;
+	pte->fileds.execute = 1;
+	return TRUE;
+}
+
+//==================== v3.13: vmlaunchå‰EPTè½¯ä»¶è‡ªæ£€é—¨ ====================
+//v3.12å®æµ‹: æ§åˆ¶å­—æ®µä¿®å¤åvmlaunché¦–æ¬¡çœŸæ­£æˆåŠŸ, å´åœ¨"cpu0 vmlaunch..."å
+//250mså†…æ•´æœºå†»ç»“â€”â€”T1(é’‰åœ¨æœªè™šæ‹ŸåŒ–æ ¸ä¸Š, 250mså¿ƒè·³)è¿ä¸€æ¡[HB]éƒ½æ²¡æ¥å¾—åŠå‘,
+//äºŒè¿›åˆ¶ç¯é›¶æ ‡è®°(=é›¶exité›¶é€ƒé€¸é›¶ä¸‰é‡æ•…éšœ)ã€‚guestè½åœ°çª—å£çš„å…¨éƒ¨ä»£ç è·¯å¾„
+//(CmGeustRipæ¢å¤æ ˆ/EPTç¡¬ä»¶èµ°æŸ¥å–æŒ‡)ä»æœªè¢«v3.11bæ‰§è¡Œè¿‡(8æ ¸å…¨åœ¨entryæ£€æŸ¥
+//é˜¶æ®µå°±failè¿”å›), å±"é»‘ç›’æ­»åŒº"â€”â€”EPTè‹¥æŠŠè½åœ°ä»£ç é¡µé™é»˜é”™è¯‘åˆ°åˆ«çš„ç‰©ç†å¸§
+//(æƒé™ä½å…¨å¯¹ã€ä¸è§¦å‘violation/misconfig), guestæ‰§è¡Œçš„å°±æ˜¯"åˆ«çš„å†…å­˜çš„å†…å®¹",
+//æ•´æœºç¬é—´æ··ä¹±å†»ç»“ä¸”é›¶æ—¥å¿—, ä¸å®æµ‹å½¢æ€å®Œå…¨å»åˆã€‚
+//æœ¬å‡½æ•°åœ¨launchå‰ç”¨**è½¯ä»¶èµ°æŸ¥**å¤æ¼”ç¡¬ä»¶EPTç¿»è¯‘, æŠŠ"æ­»åœ¨é»‘ç›’é‡Œ"å˜æˆ
+//"launchå‰ç²¾ç¡®æŠ¥é”™+å®‰å…¨æ”¾å¼ƒ"(å¤±è´¥æ ¸ç•™åœ¨rootæ¨¡å¼, ç³»ç»Ÿå­˜æ´», T1ç»§ç»­è®°å½•):
+//  [1] EPTP: ä¿ç•™ä½æ¸…é›¶/walkLen=3/PML4ç‰©ç†åœ°å€==MmGetPhysicalAddress(pml4)
+//  [2] pml4[0] -> pdpte ç‰©ç†é“¾
+//  [3] pdpte[i] -> pde[i][0] ç‰©ç†é“¾(512é¡¹å…¨æŸ¥)
+//  [4] pde[i][k] æ’ç­‰å¸§+P/W/X/psä½(262144é¡¹å…¨æ‰«, é¡ºåºè¯»2MB, å¾®ç§’çº§)
+//  [5] å…³é”®æ ·æœ¬é¡µèµ°æŸ¥: æ¢é’ˆä»£ç é¡µ/è½åœ°æ ‡ç­¾é¡µ/guestæ ˆé¡µ/CR3é¡µè¡¨/IDT/GDT/KPCR
+//è¿”å›å¤±è´¥ç»„æ•°(0=é€šè¿‡)ã€‚guestRspVa=GUEST_RSP(CmGuestRspå¸§å†…æ ˆæŒ‡é’ˆ)
 ULONG EptVerifyTables(ULONG cpuNumber, ULONG64 guestRspVa)
 {
 	ULONG fails = 0;
 	PEPT_DATA e = g_vcpu[cpuNumber].PeptData;
 	if (e == NULL)
 	{
-		FlLog("EPT×Ô¼ì: PeptDataÎª¿Õ(Òì³£), °´Ê§°Ü´¦Àí");
+		FlLog("EPTè‡ªæ£€: PeptDataä¸ºç©º(å¼‚å¸¸), æŒ‰å¤±è´¥å¤„ç†");
 		return 1;
 	}
 	//[1] EPTP
@@ -168,37 +242,37 @@ ULONG EptVerifyTables(ULONG cpuNumber, ULONG64 guestRspVa)
 		ULONG64 pml4Pa = MmGetPhysicalAddress(&e->pml4[0]).QuadPart;
 		if ((eptp & 0xF80ULL) != 0 || (eptp >> 52) != 0)
 		{
-			FlLog("EPT×Ô¼ì[1] FAIL: EPTP±£ÁôÎ»·Ç0 (EPTP=%llX)",
+			FlLog("EPTè‡ªæ£€[1] FAIL: EPTPä¿ç•™ä½é0 (EPTP=%llX)",
 				(unsigned long long)eptp);
 			fails++;
 		}
 		if (g_vcpu[cpuNumber].Eptp.fileds.walkLen != 3)
 		{
-			FlLog("EPT×Ô¼ì[1] FAIL: walkLen=%u(±ØĞë3=ËÄ¼¶)",
+			FlLog("EPTè‡ªæ£€[1] FAIL: walkLen=%u(å¿…é¡»3=å››çº§)",
 				(ULONG)g_vcpu[cpuNumber].Eptp.fileds.walkLen);
 			fails++;
 		}
 		if (g_vcpu[cpuNumber].Eptp.fileds.physicalAddr * PAGE_SIZE != pml4Pa)
 		{
-			FlLog("EPT×Ô¼ì[1] FAIL: EPTP.PML4=%llX != pml4Êµ¼ÊÎïÀíµØÖ·=%llX",
+			FlLog("EPTè‡ªæ£€[1] FAIL: EPTP.PML4=%llX != pml4å®é™…ç‰©ç†åœ°å€=%llX",
 				(unsigned long long)(g_vcpu[cpuNumber].Eptp.fileds.physicalAddr * PAGE_SIZE),
 				(unsigned long long)pml4Pa);
 			fails++;
 		}
 		else
 		{
-			FlLog("EPT×Ô¼ì[1] EPTP->pml4Á´OK (EPTP=%llX PA=%llX mt=%u)",
+			FlLog("EPTè‡ªæ£€[1] EPTP->pml4é“¾OK (EPTP=%llX PA=%llX mt=%u)",
 				(unsigned long long)eptp, (unsigned long long)pml4Pa,
 				(ULONG)g_vcpu[cpuNumber].Eptp.fileds.memoryType);
 		}
 	}
-	//[2][3] ·ÇÒ¶ÎïÀíÁ´: Ó²¼şwalk²ÈµÄ¾ÍÊÇÕâĞ©Ö¸Õë, ´íÒ»Ïî=ºóÃæÈ«´íÎ»
+	//[2][3] éå¶ç‰©ç†é“¾: ç¡¬ä»¶walkè¸©çš„å°±æ˜¯è¿™äº›æŒ‡é’ˆ, é”™ä¸€é¡¹=åé¢å…¨é”™ä½
 	{
 		ULONG64 pdptePa = MmGetPhysicalAddress(&e->pdpte[0]).QuadPart;
 		if (!e->pml4[0].fileds.present ||
 			e->pml4[0].fileds.physicalAddr != pdptePa / PAGE_SIZE)
 		{
-			FlLog("EPT×Ô¼ì[2] FAIL: pml4[0]Ö¸Ïò%llX != pdpteÊµ¼Ê%llX (present=%u)",
+			FlLog("EPTè‡ªæ£€[2] FAIL: pml4[0]æŒ‡å‘%llX != pdpteå®é™…%llX (present=%u)",
 				(unsigned long long)(e->pml4[0].fileds.physicalAddr * PAGE_SIZE),
 				(unsigned long long)pdptePa, (ULONG)e->pml4[0].fileds.present);
 			fails++;
@@ -220,16 +294,16 @@ ULONG EptVerifyTables(ULONG cpuNumber, ULONG64 guestRspVa)
 		}
 		if (badPdpt != 0)
 		{
-			FlLog("EPT×Ô¼ì[3] FAIL: pdpte->pdeÁ´%u/512Ïî´íÎ»(Ê×¸öi=%u)",
+			FlLog("EPTè‡ªæ£€[3] FAIL: pdpte->pdeé“¾%u/512é¡¹é”™ä½(é¦–ä¸ªi=%u)",
 				badPdpt, firstBadPdpt);
 			fails++;
 		}
 		else
 		{
-			FlLog("EPT×Ô¼ì[2/3] pml4[0]->pdpte->512¸öpdeÒ³ÎïÀíÁ´È«OK");
+			FlLog("EPTè‡ªæ£€[2/3] pml4[0]->pdpte->512ä¸ªpdeé¡µç‰©ç†é“¾å…¨OK");
 		}
 	}
-	//[4] Ò¶È«É¨: ºãµÈÖ¡ºÅ+È¨ÏŞÎ»
+	//[4] å¶å…¨æ‰«: æ’ç­‰å¸§å·+æƒé™ä½
 	{
 		ULONG badLeaf = 0;
 		ULONG64 firstBadGpa = 0;
@@ -254,37 +328,37 @@ ULONG EptVerifyTables(ULONG cpuNumber, ULONG64 guestRspVa)
 		}
 		if (badLeaf != 0)
 		{
-			FlLog("EPT×Ô¼ì[4] FAIL: 2MÒ¶%u/262144ÏîÒì³£, Ê×ÏîGPA=%llX entry=%llX",
+			FlLog("EPTè‡ªæ£€[4] FAIL: 2Må¶%u/262144é¡¹å¼‚å¸¸, é¦–é¡¹GPA=%llX entry=%llX",
 				badLeaf, (unsigned long long)firstBadGpa,
 				(unsigned long long)firstBadEntry);
 			fails++;
 		}
 		else
 		{
-			FlLog("EPT×Ô¼ì[4] 262144¸ö2MÒ¶ºãµÈÖ¡+P/W/X/psÈ«OK");
+			FlLog("EPTè‡ªæ£€[4] 262144ä¸ª2Må¶æ’ç­‰å¸§+P/W/X/pså…¨OK");
 		}
 	}
-	//[5] ¹Ø¼üÑù±¾Ò³: guestÂäµØºóÍ·¼¸ÌõÖ¸Áî¾Í»á´¥ÅöµÄÎïÀíÒ³
+	//[5] å…³é”®æ ·æœ¬é¡µ: guestè½åœ°åå¤´å‡ æ¡æŒ‡ä»¤å°±ä¼šè§¦ç¢°çš„ç‰©ç†é¡µ
 	{
 		const char* names[8];
 		ULONG64 gpas[8];
 		ULONG n = 0;
-		names[n] = "Ì½Õë´úÂëÒ³";   gpas[n] = MmGetPhysicalAddress((PVOID)CmGuestProbe).QuadPart; n++;
-		names[n] = "ÂäµØ±êÇ©Ò³";   gpas[n] = MmGetPhysicalAddress((PVOID)CmGeustRip).QuadPart; n++;
+		names[n] = "æ¢é’ˆä»£ç é¡µ";   gpas[n] = MmGetPhysicalAddress((PVOID)CmGuestProbe).QuadPart; n++;
+		names[n] = "è½åœ°æ ‡ç­¾é¡µ";   gpas[n] = MmGetPhysicalAddress((PVOID)CmGeustRip).QuadPart; n++;
 		if (guestRspVa != 0)
 		{
-			names[n] = "guestÕ»Ò³"; gpas[n] = MmGetPhysicalAddress((PVOID)guestRspVa).QuadPart; n++;
+			names[n] = "guestæ ˆé¡µ"; gpas[n] = MmGetPhysicalAddress((PVOID)guestRspVa).QuadPart; n++;
 		}
-		names[n] = "CR3Ò³±í";      gpas[n] = __readcr3(); n++;
-		names[n] = "IDTÒ³";        gpas[n] = MmGetPhysicalAddress((PVOID)GetIdtBase()).QuadPart; n++;
-		names[n] = "GDTÒ³";        gpas[n] = MmGetPhysicalAddress((PVOID)GetGdtBase()).QuadPart; n++;
-		names[n] = "KPCRÒ³(GS»ù)"; gpas[n] = MmGetPhysicalAddress((PVOID)__readmsr(MSR_GS_BASE)).QuadPart; n++;
+		names[n] = "CR3é¡µè¡¨";      gpas[n] = __readcr3(); n++;
+		names[n] = "IDTé¡µ";        gpas[n] = MmGetPhysicalAddress((PVOID)GetIdtBase()).QuadPart; n++;
+		names[n] = "GDTé¡µ";        gpas[n] = MmGetPhysicalAddress((PVOID)GetGdtBase()).QuadPart; n++;
+		names[n] = "KPCRé¡µ(GSåŸº)"; gpas[n] = MmGetPhysicalAddress((PVOID)__readmsr(MSR_GS_BASE)).QuadPart; n++;
 		for (ULONG s = 0; s < n; s++)
 		{
-			ULONG64 gpa2m = gpas[s] & ~0x1FFFFFULL;    //Ñù±¾¶ÔÆëµ½2MÒ¶
+			ULONG64 gpa2m = gpas[s] & ~0x1FFFFFULL;    //æ ·æœ¬å¯¹é½åˆ°2Må¶
 			if ((gpa2m >> 39) != 0)
 			{
-				FlLog("EPT×Ô¼ì[5] FAIL: %s GPA=%llX ³¬³ö512GBºãµÈÇø(Çı¶¯Êı¾İ²»Ó¦ÔÚ´Ë!)",
+				FlLog("EPTè‡ªæ£€[5] FAIL: %s GPA=%llX è¶…å‡º512GBæ’ç­‰åŒº(é©±åŠ¨æ•°æ®ä¸åº”åœ¨æ­¤!)",
 					names[s], (unsigned long long)gpas[s]);
 				fails++;
 				continue;
@@ -296,14 +370,14 @@ ULONG EptVerifyTables(ULONG cpuNumber, ULONG64 guestRspVa)
 			if (d->fileds.present && d->fileds.write && d->fileds.execute &&
 				d->fileds.ps && d->fileds.physicalAddr == expectFrame)
 			{
-				FlLog("EPT×Ô¼ì[5] %s: GPA=%llX Ö¡=%llX È¨ÏŞOK mt=%s",
+				FlLog("EPTè‡ªæ£€[5] %s: GPA=%llX å¸§=%llX æƒé™OK mt=%s",
 					names[s], (unsigned long long)gpas[s],
 					(unsigned long long)d->fileds.physicalAddr,
 					d->fileds.memoryType == 6 ? "WB" : "UC");
 			}
 			else
 			{
-				FlLog("EPT×Ô¼ì[5] FAIL: %s GPA=%llX entry=%llX (ÆÚÍûÖ¡=%llX)",
+				FlLog("EPTè‡ªæ£€[5] FAIL: %s GPA=%llX entry=%llX (æœŸæœ›å¸§=%llX)",
 					names[s], (unsigned long long)gpas[s],
 					(unsigned long long)d->ALL,
 					(unsigned long long)expectFrame);
@@ -311,9 +385,9 @@ ULONG EptVerifyTables(ULONG cpuNumber, ULONG64 guestRspVa)
 			}
 		}
 	}
-	//[6] v3.18: ¸ßÇøÁ´¡ª¡ª511¸öpml4[1..511]È«²¿Ö¸Ïò¹²ÏípdptÒ³, ³é²é
-	//Ê×(pml4[1]/pdpt[0]=512GB,Ö¡512)Î²(pml4[511]/pdpt[511]=256TB-1GB,Ö¡262143)
-	//Á½Æ¬1GB UCºãµÈÒ¶¡£½Ó¹ÜºóGPUµÈ¸ßMMIOÈ«¿¿ÕâÅúÒ³Ö±½Ó·­Òë(ÁãexitÁã·ÖÅä)
+	//[6] v3.18: é«˜åŒºé“¾â€”â€”511ä¸ªpml4[1..511]å…¨éƒ¨æŒ‡å‘å…±äº«pdpté¡µ, æŠ½æŸ¥
+	//é¦–(pml4[1]/pdpt[0]=512GB,å¸§512)å°¾(pml4[511]/pdpt[511]=256TB-1GB,å¸§262143)
+	//ä¸¤ç‰‡1GB UCæ’ç­‰å¶ã€‚æ¥ç®¡åGPUç­‰é«˜MMIOå…¨é è¿™æ‰¹é¡µç›´æ¥ç¿»è¯‘(é›¶exité›¶åˆ†é…)
 	{
 		ULONG badHigh = 0;
 		ULONG64 firstBadIdx = 0;
@@ -333,7 +407,7 @@ ULONG EptVerifyTables(ULONG cpuNumber, ULONG64 guestRspVa)
 		}
 		if (badHigh != 0)
 		{
-			FlLog("EPT×Ô¼ì[6] FAIL: pml4[1..511]¸ßÇøÁ´%u/511ÏîÒì³£(Ê×¸öi=%llu)",
+			FlLog("EPTè‡ªæ£€[6] FAIL: pml4[1..511]é«˜åŒºé“¾%u/511é¡¹å¼‚å¸¸(é¦–ä¸ªi=%llu)",
 				badHigh, (unsigned long long)firstBadIdx);
 			fails++;
 		}
@@ -348,20 +422,195 @@ ULONG EptVerifyTables(ULONG cpuNumber, ULONG64 guestRspVa)
 				p511[511].fileds.memoryType == 0 &&
 				p511[511].fileds.physicalAddr == 262143)
 			{
-				FlLog("EPT×Ô¼ì[6] ¸ßÇø511¡Á512¡Á1GB UCºãµÈÁ´È«OK(512GB-256TB, 8ºË¹²Ïí)");
+				FlLog("EPTè‡ªæ£€[6] é«˜åŒº511Ã—512Ã—1GB UCæ’ç­‰é“¾å…¨OK(512GB-256TB, 8æ ¸å…±äº«)");
 			}
 			else
 			{
-				FlLog("EPT×Ô¼ì[6] FAIL: ¸ßÇø1GBÒ¶³é²é²»·û (Ê×=%llX Î²=%llX)",
+				FlLog("EPTè‡ªæ£€[6] FAIL: é«˜åŒº1GBå¶æŠ½æŸ¥ä¸ç¬¦ (é¦–=%llX å°¾=%llX)",
 					(unsigned long long)p1[0].ALL, (unsigned long long)p511[511].ALL);
 				fails++;
+			}
+		}
+	}
+	//==================== v3.48 Phase2: hooked EPTè‡ªæ£€ ====================
+	//åŒè§†å›¾çš„ç¬¬äºŒå¥—è¡¨åœ¨launchå‰ç”¨è½¯ä»¶èµ°æŸ¥å¤æ¼”(æŠŠ"æ­»åœ¨é»‘ç›’"å˜æˆlaunchå‰
+	//ç²¾ç¡®æŠ¥é”™): [7]æ·±æ‹·è´è‡ªæŒ‡é“¾ [8]å¶å…¨æ‰«+æ ‡è®°remap [9]é«˜åŒºå…±äº«é“¾ã€‚
+	//ä»»ä¸€FAIL=è¯¥æ ¸vmlaunchæ”¾å¼ƒ(ä¸cleanè‡ªæ£€åŒå¤„ç½®)â€”â€”hookedè¡¨ç»“æ„é”™çš„
+	//æ ¸ç»ä¸è®©å®ƒè¿›guestååˆ‡è§†å›¾
+	if (g_vcpu[cpuNumber].PeptDataHooked != NULL)
+	{
+		PEPT_DATA h = g_vcpu[cpuNumber].PeptDataHooked;
+		//[7] hooked EPTP + æ·±æ‹·è´è‡ªæŒ‡é“¾(pml4[0]â†’hooked pdpteâ†’512Ã—hooked pde)
+		{
+			ULONG64 hPa = MmGetPhysicalAddress(&h->pml4[0]).QuadPart;
+			if ((g_vcpu[cpuNumber].EptpHooked.ALL & 0xF80ULL) != 0 ||
+				(g_vcpu[cpuNumber].EptpHooked.ALL >> 52) != 0 ||
+				g_vcpu[cpuNumber].EptpHooked.fileds.walkLen != 3 ||
+				g_vcpu[cpuNumber].EptpHooked.fileds.physicalAddr * PAGE_SIZE != hPa)
+			{
+				FlLog("EPTè‡ªæ£€[7] FAIL: hooked EPTP=%llXéæ³•(PML4æœŸæœ›PA=%llX)",
+					(unsigned long long)g_vcpu[cpuNumber].EptpHooked.ALL,
+					(unsigned long long)hPa);
+				fails++;
+			}
+			else if (!h->pml4[0].fileds.present ||
+				h->pml4[0].fileds.physicalAddr !=
+				MmGetPhysicalAddress(&h->pdpte[0]).QuadPart / PAGE_SIZE)
+			{
+				FlLog("EPTè‡ªæ£€[7] FAIL: hooked pml4[0]æŒ‡å‘%llX != hooked pdpteå®é™…%llX(æ·±æ‹·è´è‡ªæŒ‡é“¾æ–­è£‚)",
+					(unsigned long long)(h->pml4[0].fileds.physicalAddr * PAGE_SIZE),
+					(unsigned long long)MmGetPhysicalAddress(&h->pdpte[0]).QuadPart);
+				fails++;
+			}
+			else
+			{
+				ULONG badLink = 0;
+				ULONG firstBad = 0xFFFFFFFF;
+				for (ULONG i = 0; i < EPT_PREALLOC_PAGES; i++)
+				{
+					if (!h->pdpte[i].fileds.present ||
+						h->pdpte[i].fileds.physicalAddr !=
+						MmGetPhysicalAddress(&h->pde[i][0]).QuadPart / PAGE_SIZE)
+					{
+						badLink++;
+						if (firstBad == 0xFFFFFFFF)
+						{
+							firstBad = i;
+						}
+					}
+				}
+				if (badLink != 0)
+				{
+					FlLog("EPTè‡ªæ£€[7] FAIL: hooked pdpteâ†’pdeé“¾%u/512é¡¹é”™ä½(é¦–ä¸ªi=%u, æ·±æ‹·è´æœªé‡æŒ‡?)",
+						badLink, firstBad);
+					fails++;
+				}
+				else
+				{
+					FlLog("EPTè‡ªæ£€[7] hooked EPTP=%llX è‡ªæŒ‡é“¾(pml4[0]â†’pdpteâ†’512Ã—pde)å…¨OK",
+						(unsigned long long)g_vcpu[cpuNumber].EptpHooked.ALL);
+				}
+			}
+			//SDM Â§28.5.7.3 EPTP-listé¡¹æœ‰æ•ˆæ€§: walkLenå·²éªŒ, æ­¤å¤„éªŒmt/A-Dä¸
+			//cleanä¸€è‡´(å…¨ä½å¤åˆ¶æ„é€ , ä¸ä¸€è‡´=æ„é€ ä»£ç å›å½’)
+			if (g_vcpu[cpuNumber].EptpHooked.fileds.memoryType !=
+				g_vcpu[cpuNumber].Eptp.fileds.memoryType ||
+				g_vcpu[cpuNumber].EptpHooked.fileds.dirty !=
+				g_vcpu[cpuNumber].Eptp.fileds.dirty)
+			{
+				FlLog("EPTè‡ªæ£€[7] FAIL: hooked EPTPçš„mt/A-Dä½ä¸cleanä¸ä¸€è‡´(vmfuncåˆ‡æ¢ä¼šrsn59æ‹’ç»)");
+				fails++;
+			}
+		}
+		//[8] hookedå¶å…¨æ‰«(é™¤æ ‡è®°é¡µæ‰€åœ¨2MåŒºå·²æ‹†4K)+æ ‡è®°remap PTEé€ä¸€éªŒè¯
+		{
+			ULONG64 paA = (g_geptMarkVA != NULL)
+				? MmGetPhysicalAddress(g_geptMarkVA).QuadPart : 0;
+			ULONG mark1g = (ULONG)((paA >> 30) & 0x1FF);
+			ULONG mark2m = (ULONG)((paA >> 21) & 0x1FF);
+			ULONG badLeaf = 0;
+			ULONG64 firstBadGpa = 0;
+			for (ULONG i = 0; i < EPT_PREALLOC_PAGES; i++)
+			{
+				for (ULONG k = 0; k < EPT_PREALLOC_PAGES; k++)
+				{
+					if (paA != 0 && i == mark1g && k == mark2m)
+					{
+						continue;    //æ ‡è®°åŒºå·²æ‹†4K(PDE.ps=0), ä¸‹æ–¹PTEçº§è¡¥éªŒ
+					}
+					PEPT_PDE_2M d = &h->pde[i][k];
+					if (!d->fileds.present || !d->fileds.write || !d->fileds.execute ||
+						!d->fileds.ps ||
+						d->fileds.physicalAddr != (ULONG64)i * EPT_PREALLOC_PAGES + k)
+					{
+						if (badLeaf == 0)
+						{
+							firstBadGpa = ((ULONG64)i * EPT_PREALLOC_PAGES + k) << 21;
+						}
+						badLeaf++;
+					}
+				}
+			}
+			if (badLeaf != 0)
+			{
+				FlLog("EPTè‡ªæ£€[8] FAIL: hooked 2Må¶%u/262144é¡¹å¼‚å¸¸(é¦–é¡¹GPA=%llX, æ·±æ‹·è´/markeræ‹†é¡µæŸå)",
+					badLeaf, (unsigned long long)firstBadGpa);
+				fails++;
+			}
+			else
+			{
+				FlLog("EPTè‡ªæ£€[8] hooked 262144ä¸ª2Må¶æ’ç­‰å…¨OK(æ ‡è®°åŒºé™¤å¤–, è§ä¸‹è¡Œ)");
+			}
+			//æ ‡è®°åŒºPTEçº§: 512é¡¹=511æ’ç­‰+1é¡¹remapåˆ°pageB
+			if (paA != 0)
+			{
+				PEPT_PDE pdePtr = (PEPT_PDE)&h->pde[mark1g][mark2m];
+				PHYSICAL_ADDRESS pttPh = { 0 };
+				pttPh.QuadPart = pdePtr->fileds.physicalAddr * PAGE_SIZE;
+				PEPT_PTE ptt = (PEPT_PTE)MmGetVirtualForPhysical(pttPh);
+				ULONG markPteIdx = (ULONG)((paA >> 12) & 0x1FF);
+				ULONG64 base2mFrame = (paA & ~0x1FFFFFULL) >> 12;
+				ULONG badPte = 0;
+				if (ptt != NULL)
+				{
+					for (ULONG t = 0; t < 512; t++)
+					{
+						ULONG64 expect = (t == markPteIdx)
+							? (g_geptMarkPaB >> 12) : (base2mFrame + t);
+						PEPT_PTE p = &ptt[t];
+						if (!p->fileds.present || !p->fileds.write ||
+							!p->fileds.execute || p->fileds.physicalAddr != expect)
+						{
+							badPte++;
+						}
+					}
+				}
+				else
+				{
+					badPte = 1;    //ptté¡µVAæ˜ å°„å¤±è´¥(å¼‚å¸¸)
+				}
+				if (badPte != 0)
+				{
+					FlLog("EPTè‡ªæ£€[8] FAIL: æ ‡è®°åŒº512 PTEä¸­%ué¡¹å¼‚å¸¸(511æ’ç­‰+1 remapâ†’%llX æœŸæœ›)",
+						badPte, (unsigned long long)(g_geptMarkPaB >> 12));
+					fails++;
+				}
+				else
+				{
+					FlLog("EPTè‡ªæ£€[8] æ ‡è®°åŒº512 PTEå…¨OK(511æ’ç­‰+1 remapâ†’PA %llX: åŒè§†å›¾çœŸæ­£åˆ†å‰ç‚¹)",
+						(unsigned long long)g_geptMarkPaB);
+				}
+			}
+		}
+		//[9] hookedé«˜åŒºå…±äº«é“¾(pml4[1..511]ä¸cleanæŒ‡å‘åŒä¸€æ‰¹å…±äº«pdpté¡µ)
+		if (g_eptHighReady)
+		{
+			ULONG badHigh = 0;
+			for (ULONG i = 1; i < 512; i++)
+			{
+				if (!h->pml4[i].fileds.present ||
+					h->pml4[i].fileds.physicalAddr !=
+					MmGetPhysicalAddress(g_eptHighPdptVa[i]).QuadPart / PAGE_SIZE)
+				{
+					badHigh++;
+				}
+			}
+			if (badHigh != 0)
+			{
+				FlLog("EPTè‡ªæ£€[9] FAIL: hookedé«˜åŒºé“¾%u/511é¡¹å¼‚å¸¸(æ·±æ‹·è´æ—¶é«˜åŒºå…±äº«é“¾æŸå)",
+					badHigh);
+				fails++;
+			}
+			else
+			{
+				FlLog("EPTè‡ªæ£€[9] hookedé«˜åŒº511é“¾å…¨OK(ä¸cleanå…±äº«åŒä¸€æ‰¹pdpté¡µ)");
 			}
 		}
 	}
 	return fails;
 }
 
-//±ØĞëÔÚPASSIVE_LEVELµ÷ÓÃ(DriverEntryÔ¤·ÖÅä½×¶Î), ²»ÄÜÔÚDPCÀï·ÖÅä2MBÁ¬ĞøÄÚ´æ
+//å¿…é¡»åœ¨PASSIVE_LEVELè°ƒç”¨(DriverEntryé¢„åˆ†é…é˜¶æ®µ), ä¸èƒ½åœ¨DPCé‡Œåˆ†é…2MBè¿ç»­å†…å­˜
 NTSTATUS EptInitEptData(ULONG cpuNumber)
 {
 	ULONG64 msrCap = __readmsr(MSR_IA32_VMX_EPT_VPID_CAP);
@@ -381,14 +630,16 @@ NTSTATUS EptInitEptData(ULONG cpuNumber)
 	{
 		return STATUS_UNSUCCESSFUL;
 	}
-	//MmAllocateContiguousMemory²»ÇåÁã(ÎÄµµÃ÷Ê¾)! ²ĞÁôÀ¬»ø»áÈÃpml4[1..511]/pdpte/pde
-	//µÄ±£ÁôÎ»Ëæ»úÖÃ1: ÇáÔòEPT misconfigÎŞÏŞÖØÊÔ(Õû»ú¿¨ËÀ), ÖØÔò·­Òëµ½Ëæ»úÎïÀíÒ³
-	//(¾²Ä¬Êı¾İËğ»µ)¡£myVtÔ­°æÍ¬ÑùÂ©ÁËÕâĞĞ, ×÷Õß²âÊÔ»úÅöÇÉÄÃµ½ÇåÁãÒ³²Å"ÄÜÓÃ"¡£
-	//ÕâÊÇvmlaunch³É¹¦ºóÈÔ¿¨ËÀµÄÍ·ºÅ¸ùÒò¡£
+	//MmAllocateContiguousMemoryä¸æ¸…é›¶(æ–‡æ¡£æ˜ç¤º)! æ®‹ç•™åƒåœ¾ä¼šè®©pml4[1..511]/pdpte/pde
+	//çš„ä¿ç•™ä½éšæœºç½®1: è½»åˆ™EPT misconfigæ— é™é‡è¯•(æ•´æœºå¡æ­»), é‡åˆ™ç¿»è¯‘åˆ°éšæœºç‰©ç†é¡µ
+	//(é™é»˜æ•°æ®æŸå)ã€‚myVtåŸç‰ˆåŒæ ·æ¼äº†è¿™è¡Œ, ä½œè€…æµ‹è¯•æœºç¢°å·§æ‹¿åˆ°æ¸…é›¶é¡µæ‰"èƒ½ç”¨"ã€‚
+	//è¿™æ˜¯vmlaunchæˆåŠŸåä»å¡æ­»çš„å¤´å·æ ¹å› ã€‚
 	RtlZeroMemory(currentVcpu->PeptData, sizeof(EPT_DATA));
 
-	//v3.8: ÏÈ½¨RAMÎ»Í¼(Ê×´Îµ÷ÓÃÊ±), PDEÄÚ´æÀàĞÍÓÉÎ»Í¼¾ö¶¨(¼ûEptBuildRamBitmap)
+	//v3.8: å…ˆå»ºRAMä½å›¾(é¦–æ¬¡è°ƒç”¨æ—¶), PDEå†…å­˜ç±»å‹ç”±ä½å›¾å†³å®š(è§EptBuildRamBitmap)
 	EptBuildRamBitmap();
+	//v3.48: åŒEPTæ ‡è®°é¡µ(å…¨æ ¸å…±ç”¨ä¸€å¯¹, é¦–æ¬¡è°ƒç”¨æ—¶åˆ†é…)
+	EptAllocMarkPages();
 
 	for (size_t i = 0; i < EPT_PREALLOC_PAGES; i++)
 	{
@@ -401,7 +652,7 @@ NTSTATUS EptInitEptData(ULONG cpuNumber)
 			currentVcpu->PeptData->pde[i][k].fileds.present = 1;
 			currentVcpu->PeptData->pde[i][k].fileds.execute = 1;
 			currentVcpu->PeptData->pde[i][k].fileds.write = 1;
-			//v3.8: ÍêÈ«RAMµÄ2MÒ³=WB, MMIO¶´/±ß½çÒ³=UC(Õû»ú¶³½á¸ùÒòĞŞ¸´)
+			//v3.8: å®Œå…¨RAMçš„2Mé¡µ=WB, MMIOæ´/è¾¹ç•Œé¡µ=UC(æ•´æœºå†»ç»“æ ¹å› ä¿®å¤)
 			currentVcpu->PeptData->pde[i][k].fileds.memoryType =
 				EptMemTypeFor2MFrame(i * EPT_PREALLOC_PAGES + k);
 			currentVcpu->PeptData->pde[i][k].fileds.ps = 1;
@@ -416,9 +667,9 @@ NTSTATUS EptInitEptData(ULONG cpuNumber)
 	currentVcpu->PeptData->pml4[0].fileds.execute = 1;
 	currentVcpu->PeptData->pml4[0].fileds.write = 1;
 	currentVcpu->PeptData->pml4[0].fileds.physicalAddr = MmGetPhysicalAddress(&(currentVcpu->PeptData->pdpte)).QuadPart / PAGE_SIZE;
-	//v3.18: Ô¤½¨+Á´½Ó¸ßÇø(512GB-256TB)¡ª¡ªËùÓĞºË¹²ÏíÍ¬Ò»ÅúpdptÒ³, ÈÎºÎ
-	//¸ßµØÖ·MMIO(GPU ReBARµÈ)Ö±½Ó·­Òë, ³¹µ×Ïû³ıexitÉÏÏÂÎÄµÄ³Ø·ÖÅäËÀËø
-	//(v3.17µ¥ºË½Ó¹Ü<20msÈ«»ú¶³½áµÄÍ·ºÅ¸ùÒò, ¼ûÎÄ¼şÍ·×¢ÊÍ)
+	//v3.18: é¢„å»º+é“¾æ¥é«˜åŒº(512GB-256TB)â€”â€”æ‰€æœ‰æ ¸å…±äº«åŒä¸€æ‰¹pdpté¡µ, ä»»ä½•
+	//é«˜åœ°å€MMIO(GPU ReBARç­‰)ç›´æ¥ç¿»è¯‘, å½»åº•æ¶ˆé™¤exitä¸Šä¸‹æ–‡çš„æ± åˆ†é…æ­»é”
+	//(v3.17å•æ ¸æ¥ç®¡<20mså…¨æœºå†»ç»“çš„å¤´å·æ ¹å› , è§æ–‡ä»¶å¤´æ³¨é‡Š)
 	if (EptPrebuildHighMappings())
 	{
 		for (ULONG i = 1; i < 512; i++)
@@ -429,22 +680,72 @@ NTSTATUS EptInitEptData(ULONG cpuNumber)
 			currentVcpu->PeptData->pml4[i].fileds.execute = 1;
 			currentVcpu->PeptData->pml4[i].fileds.physicalAddr =
 				MmGetPhysicalAddress(g_eptHighPdptVa[i]).QuadPart / PAGE_SIZE;
-			//¶èĞÔ¶µµ×Â·¾¶Ê¶±ğÒÑ½¨ºÃµÄÒ³(²»ÔÙ½ø·ÖÅä·ÖÖ§)
+			//æƒ°æ€§å…œåº•è·¯å¾„è¯†åˆ«å·²å»ºå¥½çš„é¡µ(ä¸å†è¿›åˆ†é…åˆ†æ”¯)
 			currentVcpu->HighPdptVa[i] = g_eptHighPdptVa[i];
-			//HighPdptRawVa±£³ÖNULL: ¹²ÏíÒ³ÓÉEptShutdownHighMappingsÍ³Ò»ÊÍ·Å
+			//HighPdptRawVaä¿æŒNULL: å…±äº«é¡µç”±EptShutdownHighMappingsç»Ÿä¸€é‡Šæ”¾
 		}
+	}
+	//==== v3.48 Phase2: hookedè§†å›¾EPT(æ¯æ ¸ä¸€ä»½æ·±æ‹·è´)â€”â€”hookçš„ä¸–ç•Œ ====
+	//**å¿…é¡»æ·±æ‹·è´**: æµ…memcpyä¼šæŠŠcleanè¡¨é‡Œçš„è‡ªæŒ‡ç‰©ç†åœ°å€ä¸€èµ·æŠ„è¿‡æ¥
+	//(pml4[0]â†’clean pdpte / pdpte[i]â†’clean pde[i])=pml4ä»¥ä¸‹ä¸¤å¥—EPT
+	//å…±äº«åŒä¸€æ‰¹ç‰©ç†é¡µè¡¨â†’ä»»ä½•ä¸€ä¾§é‡æ‹†2Mé¡µå¦ä¸€ä¾§åŒæ­¥è¢«æ”¹, åŒè§†å›¾åå­˜å®äº¡ã€‚
+	//æ·±æ‹·è´ä¸‰æ­¥:
+	//  â‘ æ•´å—memcpy: 262144ä¸ª2Mæ’ç­‰å¶+é«˜åŒºpml4[1..511]å…±äº«é“¾(å€¼æ­£ç¡®)
+	//  â‘¡é‡æŒ‡è‡ªæŒ‡é“¾: hooked pml4[0]â†’hooked pdpte, hooked pdpte[i]â†’hooked pde[i]
+	//  â‘¢EptpHooked=clean EPTPå…¨ä½å¤åˆ¶åä»…æ¢PML4ç‰©ç†åœ°å€â€”â€”å†…å­˜ç±»å‹/
+	//    walkLen/A/Dä½å¤©ç„¶ä¸€è‡´=SDM Â§28.5.7.3 EPTP-listé¡¹æœ‰æ•ˆæ€§åˆ¤æ®è‡ªåŠ¨æ»¡è¶³
+	//åˆ†é…å¤±è´¥ä¸è‡´å‘½: bVmfuncOnæ ¸çš„hookè‡ªåŠ¨èµ°v3.46 violationæ–¹æ¡ˆ(fallback)
+	currentVcpu->PeptDataHooked =
+		(PEPT_DATA)MmAllocateContiguousMemory(sizeof(EPT_DATA), phys);
+	if (currentVcpu->PeptDataHooked != NULL)
+	{
+		PEPT_DATA h = currentVcpu->PeptDataHooked;
+		RtlZeroMemory(h, sizeof(EPT_DATA));
+		RtlCopyMemory(h, currentVcpu->PeptData, sizeof(EPT_DATA));
+		h->pml4[0].ALL = 0;
+		h->pml4[0].fileds.present = 1;
+		h->pml4[0].fileds.write = 1;
+		h->pml4[0].fileds.execute = 1;
+		h->pml4[0].fileds.physicalAddr =
+			MmGetPhysicalAddress(&h->pdpte[0]).QuadPart / PAGE_SIZE;
+		for (ULONG i = 0; i < EPT_PREALLOC_PAGES; i++)
+		{
+			h->pdpte[i].fileds.physicalAddr =
+				MmGetPhysicalAddress(&h->pde[i][0]).QuadPart / PAGE_SIZE;
+		}
+		currentVcpu->EptpHooked.ALL = currentVcpu->Eptp.ALL;
+		currentVcpu->EptpHooked.fileds.physicalAddr =
+			MmGetPhysicalAddress(&h->pml4[0]).QuadPart / PAGE_SIZE;
+		//æ ‡è®°remap(hooked EPTç‹¬æœ‰; cleanè§†å›¾æ’ç­‰, ä¸¤è§†å›¾ä»æ­¤çœŸæ­£ä¸åŒ)
+		if (EptBuildMarkRemap(h))
+		{
+			FlLog("cpu%u hooked EPTå°±ç»ª(æ·±æ‹·è´): %p EPTP=%llX(ä»…PML4å¼‚äºclean=%llX), æ ‡è®°é¡µremap=OK",
+				cpuNumber, h,
+				(unsigned long long)currentVcpu->EptpHooked.ALL,
+				(unsigned long long)currentVcpu->Eptp.ALL);
+		}
+		else
+		{
+			FlLog("cpu%u hooked EPTå°±ç»ªä½†æ ‡è®°remapå¤±è´¥(æ‹†é¡µ/è¶…512GB)â€”â€”æ ‡è®°è‡ªæµ‹å°†åˆ¤FAILé™çº§",
+				cpuNumber);
+		}
+	}
+	else
+	{
+		FlLog("cpu%u hooked EPTåˆ†é…å¤±è´¥(2MBè¿ç»­)â€”â€”æœ¬æ ¸hookèµ°violationæ–¹æ¡ˆ(fallback)",
+			cpuNumber);
 	}
 	return status;
 }
 
-//EPTÒ³±íÒ³×¨ÓÃ·ÖÅä: ±£Ö¤4KB¶ÔÆëÇÒexitÉÏÏÂÎÄ°²È«(<=DISPATCHµÄNonPaged·ÖÅä)
-//v3.6¸ùÒò: ExAllocatePoolWithTagÖ»±£Ö¤16×Ö½Ú¶ÔÆë(pool header 0x10Æ«ÒÆ),
-//¶øĞ´ÈëÒ³±íÏîÊ± MmGetPhysicalAddress(p)/PAGE_SIZE »á½Ø¶ÏÎïÀíµØÖ·µÍ12Î»
-//-> EPTÓ²¼ş´Ó½Ø¶ÏºóµÄ(´íÎó)ÎïÀíµØÖ·¶ÁÒ³±í, Èí¼şĞ´µÄÌõÄ¿Ó²¼şÓÀÔ¶¿´²»¼û
-//-> ¸ÃgpaÓÀÔ¶violation/misconfig -> exitÎŞÏŞÑ­»· -> ³ÖËøÏß³ÌÍÏËÀÈ«ÏµÍ³(Õû»ú¶³½á)
-//·½°¸: ·ÖÅä2Ò³, ÄÚ²¿ÏòÉÏ¶ÔÆëµ½4KB±ß½ç(Áã³öµÄ4KBÇ¡ºÃÍêÕûÂäÔÚ×Ô¼ºµÄraw¿éÄÚ,
-//Ë³´øĞŞ¸´Ô­°æRtlZeroMemory(pdpt,PAGE_SIZE)Ô½½çÇåÁãÏàÁÚpool¿é16×Ö½ÚµÄbug)
-//rawÖ¸Õë±ØĞëÓÉµ÷ÓÃ·½±£´æ, Ğ¶ÔØÊ±ÓÃËüExFreePool(¶ÔÆëÖ¸Õë²»ÄÜÓÃÓÚÊÍ·Å)
+//EPTé¡µè¡¨é¡µä¸“ç”¨åˆ†é…: ä¿è¯4KBå¯¹é½ä¸”exitä¸Šä¸‹æ–‡å®‰å…¨(<=DISPATCHçš„NonPagedåˆ†é…)
+//v3.6æ ¹å› : ExAllocatePoolWithTagåªä¿è¯16å­—èŠ‚å¯¹é½(pool header 0x10åç§»),
+//è€Œå†™å…¥é¡µè¡¨é¡¹æ—¶ MmGetPhysicalAddress(p)/PAGE_SIZE ä¼šæˆªæ–­ç‰©ç†åœ°å€ä½12ä½
+//-> EPTç¡¬ä»¶ä»æˆªæ–­åçš„(é”™è¯¯)ç‰©ç†åœ°å€è¯»é¡µè¡¨, è½¯ä»¶å†™çš„æ¡ç›®ç¡¬ä»¶æ°¸è¿œçœ‹ä¸è§
+//-> è¯¥gpaæ°¸è¿œviolation/misconfig -> exitæ— é™å¾ªç¯ -> æŒé”çº¿ç¨‹æ‹–æ­»å…¨ç³»ç»Ÿ(æ•´æœºå†»ç»“)
+//æ–¹æ¡ˆ: åˆ†é…2é¡µ, å†…éƒ¨å‘ä¸Šå¯¹é½åˆ°4KBè¾¹ç•Œ(é›¶å‡ºçš„4KBæ°å¥½å®Œæ•´è½åœ¨è‡ªå·±çš„rawå—å†…,
+//é¡ºå¸¦ä¿®å¤åŸç‰ˆRtlZeroMemory(pdpt,PAGE_SIZE)è¶Šç•Œæ¸…é›¶ç›¸é‚»poolå—16å­—èŠ‚çš„bug)
+//rawæŒ‡é’ˆå¿…é¡»ç”±è°ƒç”¨æ–¹ä¿å­˜, å¸è½½æ—¶ç”¨å®ƒExFreePool(å¯¹é½æŒ‡é’ˆä¸èƒ½ç”¨äºé‡Šæ”¾)
 static PVOID EptAllocAlignedPage(PVOID* rawOut)
 {
 	PUCHAR raw = (PUCHAR)ExAllocatePoolWithTag(NonPagedPool, PAGE_SIZE * 2, 'tpeP');
@@ -460,8 +761,8 @@ static PVOID EptAllocAlignedPage(PVOID* rawOut)
 	return aligned;
 }
 
-//v3.18: Ô¤½¨È«²¿¸ßÇøpdptÒ³(PASSIVE¼¶, Ê×¸öEptInitEptDataÊ±Ö´ĞĞÒ»´Î, ÃİµÈ)
-//511Ò³¡Á512¸ö1GB UCºãµÈ´óÒ³ = 512GB-256TBÈ«¸²¸Ç¡£8ºËEPT¹²ÏíÍ¬Ò»ÅúÒ³¡£
+//v3.18: é¢„å»ºå…¨éƒ¨é«˜åŒºpdpté¡µ(PASSIVEçº§, é¦–ä¸ªEptInitEptDataæ—¶æ‰§è¡Œä¸€æ¬¡, å¹‚ç­‰)
+//511é¡µÃ—512ä¸ª1GB UCæ’ç­‰å¤§é¡µ = 512GB-256TBå…¨è¦†ç›–ã€‚8æ ¸EPTå…±äº«åŒä¸€æ‰¹é¡µã€‚
 static BOOLEAN EptPrebuildHighMappings(VOID)
 {
 	if (g_eptHighReady)
@@ -470,8 +771,8 @@ static BOOLEAN EptPrebuildHighMappings(VOID)
 	}
 	if (!g_bEpt1GbPage)
 	{
-		//ÎŞ1GB´óÒ³Ö§³Ö(ÏÖ´úIntel¾ùÓĞ, º±¼û): ±£³Ö¶èĞÔÂ·¾¶²¢ÁôºÛ
-		FlLog("EPT: ±¾»úÎŞ1GB´óÒ³Ö§³Ö, ¸ßÇø±£³Ö¶èĞÔ½¨±í(º±¼û, ½Ó¹ÜÓĞ¶³½á·çÏÕ!)");
+		//æ— 1GBå¤§é¡µæ”¯æŒ(ç°ä»£Intelå‡æœ‰, ç½•è§): ä¿æŒæƒ°æ€§è·¯å¾„å¹¶ç•™ç—•
+		FlLog("EPT: æœ¬æœºæ— 1GBå¤§é¡µæ”¯æŒ, é«˜åŒºä¿æŒæƒ°æ€§å»ºè¡¨(ç½•è§, æ¥ç®¡æœ‰å†»ç»“é£é™©!)");
 		return FALSE;
 	}
 	for (ULONG i = 1; i < 512; i++)
@@ -480,7 +781,7 @@ static BOOLEAN EptPrebuildHighMappings(VOID)
 		PEPT_PDPTE_1G pdpt = (PEPT_PDPTE_1G)EptAllocAlignedPage(&raw);
 		if (pdpt == NULL || raw == NULL)
 		{
-			FlLog("EPT: ¸ßÇøÔ¤½¨Ê§°Ü(pml4[%u]·ÖÅäÊ§°Ü), ÒÑ½¨%u/511¡ª¡ª·ÅÆú", i, i - 1);
+			FlLog("EPT: é«˜åŒºé¢„å»ºå¤±è´¥(pml4[%u]åˆ†é…å¤±è´¥), å·²å»º%u/511â€”â€”æ”¾å¼ƒ", i, i - 1);
 			EptShutdownHighMappings();
 			return FALSE;
 		}
@@ -490,19 +791,20 @@ static BOOLEAN EptPrebuildHighMappings(VOID)
 			pdpt[j].fileds.present = 1;
 			pdpt[j].fileds.write = 1;
 			pdpt[j].fileds.execute = 1;
-			pdpt[j].fileds.memoryType = 0;    //UC: ¸ßÇøÖ»ÓĞMMIO(±¾»ú8GB RAMÈ«ÔÚ512GBÄÚ)
+			pdpt[j].fileds.memoryType = 0;    //UC: é«˜åŒºåªæœ‰MMIO(æœ¬æœº8GB RAMå…¨åœ¨512GBå†…)
 			pdpt[j].fileds.largePage = 1;
-			pdpt[j].fileds.physicalAddr = (ULONG64)i * 512 + j;   //1GBÖ¡ºÅ(bits 47:30)
+			pdpt[j].fileds.physicalAddr = (ULONG64)i * 512 + j;   //1GBå¸§å·(bits 47:30)
 		}
 		g_eptHighPdptVa[i] = pdpt;
 		g_eptHighPdptRaw[i] = raw;
 	}
 	g_eptHighReady = TRUE;
-	FlLog("EPT: ¸ßÇøÔ¤½¨Íê³É: 511¸öpdpt¡Á512¡Á1GB UCºãµÈ(512GB-256TBÈ«¸²¸Ç), 8ºË¹²Ïí");
+	FlLog("EPT: é«˜åŒºé¢„å»ºå®Œæˆ: 511ä¸ªpdptÃ—512Ã—1GB UCæ’ç­‰(512GB-256TBå…¨è¦†ç›–), 8æ ¸å…±äº«");
 	return TRUE;
 }
 
-//v3.18: ÊÍ·Å¹²Ïí¸ßÇøÒ³±í(DriverUload/DriverEntry»Ø¹öµ÷ÓÃ, ÃİµÈ)
+//v3.18: é‡Šæ”¾å…±äº«é«˜åŒºé¡µè¡¨(DriverUload/DriverEntryå›æ»šè°ƒç”¨, å¹‚ç­‰)
+//(v3.48: å…¼é‡Šæ”¾åŒEPTæ ‡è®°é¡µä¸€å¯¹â€”â€”æ­¤æ—¶å·²vmx_off/æœªlaunch, æ— ç¿»è¯‘å¼•ç”¨)
 VOID EptShutdownHighMappings(VOID)
 {
 	for (ULONG i = 1; i < 512; i++)
@@ -515,11 +817,23 @@ VOID EptShutdownHighMappings(VOID)
 		}
 	}
 	g_eptHighReady = FALSE;
+	//v3.48: æ ‡è®°é¡µ(å…¨å±€ä¸€å¯¹)
+	if (s_geptMarkVB != NULL)
+	{
+		MmFreeContiguousMemory(s_geptMarkVB);
+		s_geptMarkVB = NULL;
+		g_geptMarkPaB = 0;
+	}
+	if (g_geptMarkVA != NULL)
+	{
+		MmFreeContiguousMemory(g_geptMarkVA);
+		g_geptMarkVA = NULL;
+	}
 }
 
-//Îª³¬³ö512GBºãµÈÓ³ÉäµÄgpa(µäĞÍ: PCIe¸ßµØÖ·MMIO)¶¯Ì¬½¨Á¢EPTÂ·¾¶
-//¶èĞÔ²ßÂÔ: Ö»ÎªÃüÖĞµÄ512GBÇø¼ä½¨Ò»¸öpdptÒ³, pdpteÏîÓÃ1GB´óÒ³(²»Ö§³ÖÊ±½¨pdtÒ³+2M´óÒ³)
-//ÄÚ´æÀàĞÍÒ»ÂÉUC: MMIO±ØĞë²»¿É»º´æ; ¼´Ê¹ÊÇRAMÒ²Ö»ÊÇÂı¶ø²»»á´í
+//ä¸ºè¶…å‡º512GBæ’ç­‰æ˜ å°„çš„gpa(å…¸å‹: PCIeé«˜åœ°å€MMIO)åŠ¨æ€å»ºç«‹EPTè·¯å¾„
+//æƒ°æ€§ç­–ç•¥: åªä¸ºå‘½ä¸­çš„512GBåŒºé—´å»ºä¸€ä¸ªpdpté¡µ, pdpteé¡¹ç”¨1GBå¤§é¡µ(ä¸æ”¯æŒæ—¶å»ºpdté¡µ+2Må¤§é¡µ)
+//å†…å­˜ç±»å‹ä¸€å¾‹UC: MMIOå¿…é¡»ä¸å¯ç¼“å­˜; å³ä½¿æ˜¯RAMä¹Ÿåªæ˜¯æ…¢è€Œä¸ä¼šé”™
 BOOLEAN EptBuildHighMapping(ULONG64 gpa)
 {
 	ULONG pml4Idx = (ULONG)((gpa >> 39) & 0x1FF);
@@ -537,7 +851,7 @@ BOOLEAN EptBuildHighMapping(ULONG64 gpa)
 		pdpt = (PEPT_PDPTE)EptAllocAlignedPage(&raw);
 		if (pdpt == NULL || raw == NULL)
 		{
-			//v3.7: ²»DbgPrint(exitÉÏÏÂÎÄÖØÈë·çÏÕ), Ê§°ÜÓÉµ÷ÓÃ·½'A'×Ô»ÙÁôºÛ
+			//v3.7: ä¸DbgPrint(exitä¸Šä¸‹æ–‡é‡å…¥é£é™©), å¤±è´¥ç”±è°ƒç”¨æ–¹'A'è‡ªæ¯ç•™ç—•
 			return FALSE;
 		}
 		RtlZeroMemory(pdpt, PAGE_SIZE);
@@ -548,16 +862,28 @@ BOOLEAN EptBuildHighMapping(ULONG64 gpa)
 		eptData->pml4[pml4Idx].fileds.write = 1;
 		eptData->pml4[pml4Idx].fileds.execute = 1;
 		eptData->pml4[pml4Idx].fileds.physicalAddr = MmGetPhysicalAddress(pdpt).QuadPart / PAGE_SIZE;
-		//v3.7: ĞÅÏ¢²»DbgPrint(exitÉÏÏÂÎÄÖØÈë·çÏÕ), º¯ÊıÎ²²¿FlRingPush('H')ÒÑ¼ÇÂ¼
+		//v3.48: åŒä¸€pdpté¡µåŒæ—¶é“¾è¿›hooked EPT(å…±äº«, ä¸é«˜åŒºé¢„å»ºåŒè¯­ä¹‰)â€”â€”
+		//å¦åˆ™hookedè§†å›¾ä¸‹åŒä¸€MMIO gpaçš„violationæ°¸è¿œä¿®ä¸å¥½(æ”¹çš„æ˜¯cleanè¡¨)
+		//â†’'X'é£æš´ã€‚æœ¬æœº1GBå¤§é¡µ+é¢„å»ºå…¨è¦†ç›–, æ­¤è·¯å¾„ä¸ºdormanté˜²å¾¡ä»£ç 
+		if (g_vcpu[cpuNumber].PeptDataHooked != NULL)
+		{
+			g_vcpu[cpuNumber].PeptDataHooked->pml4[pml4Idx].ALL = 0;
+			g_vcpu[cpuNumber].PeptDataHooked->pml4[pml4Idx].fileds.present = 1;
+			g_vcpu[cpuNumber].PeptDataHooked->pml4[pml4Idx].fileds.write = 1;
+			g_vcpu[cpuNumber].PeptDataHooked->pml4[pml4Idx].fileds.execute = 1;
+			g_vcpu[cpuNumber].PeptDataHooked->pml4[pml4Idx].fileds.physicalAddr =
+				MmGetPhysicalAddress(pdpt).QuadPart / PAGE_SIZE;
+		}
+		//v3.7: ä¿¡æ¯ä¸DbgPrint(exitä¸Šä¸‹æ–‡é‡å…¥é£é™©), å‡½æ•°å°¾éƒ¨FlRingPush('H')å·²è®°å½•
 	}
 	if (pdpt[pdpteIdx].fileds.present)
 	{
-		//¸Ã1GBÒÑ½¨ºÃ(¿ÉÄÜÉÏ´ÎinveptÇ°²ĞÁôµÄÖØ¸´violation)
+		//è¯¥1GBå·²å»ºå¥½(å¯èƒ½ä¸Šæ¬¡inveptå‰æ®‹ç•™çš„é‡å¤violation)
 		return TRUE;
 	}
 	if (g_bEpt1GbPage)
 	{
-		//1GB´óÒ³ºãµÈÓ³Éä, UC
+		//1GBå¤§é¡µæ’ç­‰æ˜ å°„, UC
 		EPT_PDPTE_1G e1g;
 		e1g.ALL = 0;
 		e1g.fileds.present = 1;
@@ -565,22 +891,22 @@ BOOLEAN EptBuildHighMapping(ULONG64 gpa)
 		e1g.fileds.execute = 1;
 		e1g.fileds.memoryType = 0;	//UC
 		e1g.fileds.largePage = 1;
-		e1g.fileds.physicalAddr = (ULONG64)pml4Idx * 512 + pdpteIdx;	//1GBÒ³Ö¡ºÅ(bits 47:30)
+		e1g.fileds.physicalAddr = (ULONG64)pml4Idx * 512 + pdpteIdx;	//1GBé¡µå¸§å·(bits 47:30)
 		pdpt[pdpteIdx].ALL = e1g.ALL;
 	}
 	else
 	{
-		//ÎŞ1GBÖ§³Ö: ½¨pdtÒ³, 512¸ö2M´óÒ³ºãµÈ, UC
-		//(pdtµÄrawÖ¸ÕëÎ´¸ú×Ù: ¸ÃÂ·¾¶½öÎŞ1GBÖ§³ÖµÄ¾ÉCPU×ß, ÏÖ´úIntel¾ùÓĞ1GB;
-		// Ô­°æ±¾¾ÍĞ¹Â©pdt²»ÊÍ·Å, ±£³ÖÍ¬Á£¶È, 4KB¶ÔÆëĞŞ¸´²ÅÊÇ¹Ø¼ü)
+		//æ— 1GBæ”¯æŒ: å»ºpdté¡µ, 512ä¸ª2Må¤§é¡µæ’ç­‰, UC
+		//(pdtçš„rawæŒ‡é’ˆæœªè·Ÿè¸ª: è¯¥è·¯å¾„ä»…æ— 1GBæ”¯æŒçš„æ—§CPUèµ°, ç°ä»£Intelå‡æœ‰1GB;
+		// åŸç‰ˆæœ¬å°±æ³„æ¼pdtä¸é‡Šæ”¾, ä¿æŒåŒç²’åº¦, 4KBå¯¹é½ä¿®å¤æ‰æ˜¯å…³é”®)
 		PEPT_PDE_2M pdt = (PEPT_PDE_2M)EptAllocAlignedPage(NULL);
 		if (pdt == NULL)
 		{
-			//v3.7: ²»DbgPrint(exitÉÏÏÂÎÄÖØÈë·çÏÕ), Ê§°ÜÓÉµ÷ÓÃ·½'A'×Ô»ÙÁôºÛ
+			//v3.7: ä¸DbgPrint(exitä¸Šä¸‹æ–‡é‡å…¥é£é™©), å¤±è´¥ç”±è°ƒç”¨æ–¹'A'è‡ªæ¯ç•™ç—•
 			return FALSE;
 		}
 		RtlZeroMemory(pdt, PAGE_SIZE);
-		ULONG64 base2mPfn = ((ULONG64)pml4Idx * 512 + pdpteIdx) * 512;	//¸Ã1GBÇø¼äÊ×¸ö2MÒ³Ö¡ºÅ
+		ULONG64 base2mPfn = ((ULONG64)pml4Idx * 512 + pdpteIdx) * 512;	//è¯¥1GBåŒºé—´é¦–ä¸ª2Mé¡µå¸§å·
 		for (ULONG i = 0; i < 512; i++)
 		{
 			pdt[i].fileds.present = 1;
@@ -596,9 +922,28 @@ BOOLEAN EptBuildHighMapping(ULONG64 gpa)
 		pdpt[pdpteIdx].fileds.execute = 1;
 		pdpt[pdpteIdx].fileds.physicalAddr = MmGetPhysicalAddress(pdt).QuadPart / PAGE_SIZE;
 	}
-	//ÎÄ¼şÈÕÖ¾: ¶¯Ì¬½¨±íÊÂ¼şÈë»·(¸ßµØÖ·MMIOÊ×´Î·ÃÎÊ), ĞÄÌøÏß³ÌÂäÅÌ
+	//æ–‡ä»¶æ—¥å¿—: åŠ¨æ€å»ºè¡¨äº‹ä»¶å…¥ç¯(é«˜åœ°å€MMIOé¦–æ¬¡è®¿é—®), å¿ƒè·³çº¿ç¨‹è½ç›˜
 	FlRingPush('H', KeGetCurrentProcessorNumber(), 0, gpa, pml4Idx, pdpteIdx);
 	return TRUE;
+}
+
+//v3.48 Phase2: æœ¬æ ¸**å½“å‰è§†å›¾**çš„EPTã€‚SDM Â§28.5.7.3è£å†³: VMFUNCåˆ‡æ¢ä¼šæŠŠ
+//æ–°EPTPå†™å›EPT_POINTERå­—æ®µ(åˆ‡æ¢è·¨exit/entryæŒä¹…)â€”â€”vmreadè¯¥å­—æ®µå³çœŸç›¸ã€‚
+//ä»…VMX root+VMCSå·²åŠ è½½ä¸Šä¸‹æ–‡å¯è°ƒ(exit handler/EptSetHook); vmreadå¤±è´¥æˆ–
+//æ— hooked EPT=è¿”å›clean(å…œåº•è¯­ä¹‰, fallbackæ ¸æ’è¿”å›clean=v3.46è¡Œä¸º)
+PEPT_DATA EptGetActiveData(VOID)
+{
+	ULONG cpu = KeGetCurrentProcessorNumber();
+	if (g_vcpu[cpu].PeptDataHooked != NULL && g_vcpu[cpu].bVmxOn)
+	{
+		ULONG64 cur = 0;
+		if (__vmx_vmread(EPT_POINTER, &cur) == 0 &&
+			cur == g_vcpu[cpu].EptpHooked.ALL)
+		{
+			return g_vcpu[cpu].PeptDataHooked;
+		}
+	}
+	return g_vcpu[cpu].PeptData;
 }
 
 void EptExitHandler(PGUEST_REGS GuestRegs)
@@ -610,24 +955,27 @@ void EptExitHandler(PGUEST_REGS GuestRegs)
 	__vmx_vmread(GUEST_RIP, &guestRip);
 	__vmx_vmread(GUEST_RSP, &guestRsp);
 	__vmx_vmread(EXIT_QUALIFICATION, &eptExit);
-	//»ñÈ¡ÄÄ¸öµØÖ·´¥·¢µÄexitÊÂ¼ş
+	//è·å–å“ªä¸ªåœ°å€è§¦å‘çš„exitäº‹ä»¶
 	__vmx_vmread(GUEST_PHYSICAL_ADDRESS, &gpa);
-	//ÎÄ¼şÈÕÖ¾: violationÍêÕûËÄÔª×é(gpa/rip/qual)Èë»·ĞÎ»º³å, ĞÄÌøÏß³ÌÂäÅÌ
+	//æ–‡ä»¶æ—¥å¿—: violationå®Œæ•´å››å…ƒç»„(gpa/rip/qual)å…¥ç¯å½¢ç¼“å†², å¿ƒè·³çº¿ç¨‹è½ç›˜
 	FlRingPush('V', KeGetCurrentProcessorNumber(), 48, gpa, guestRip, eptExit.ALL);
-	//v3.7: ÒÆ³ıDbgPrintÏŞÁ÷ÈÕÖ¾¡ª¡ª±»ÖĞ¶ÏÏß³Ì¿ÉÄÜÕı³ÖÓĞDbgPrintÄÚ²¿Ëø,
-	//exitÉÏÏÂÎÄÖØÈë=Í¬ºËËÀËø(ÕûºË¶³½áÁãÈÕÖ¾µÄºòÑ¡»úÀí), »·ĞÎ»º³åÒÑ¼ÇÂ¼È«²¿
-	//ÅĞ¶ÏÕâ¸öµØÖ·ËùÔÚÒ³ÊÇ·ñ±»ÎÒÃÇhook¹ı
+	//v3.48: åŒEPTâ€”â€”violationå‘ç”Ÿåœ¨**å½“å‰è§†å›¾**çš„è¡¨ä¸Šã€‚VMFUNCæ ¸hookedè§†å›¾
+	//(hooké¡µW=0çš„å†™å…œåº•/å†™åX=0çš„æ‰§è¡Œå›åˆ‡)ä¸fallbackæ ¸cleanè§†å›¾çš„v3.46
+	//äº’åˆ‡ç”±åŒä¸€é€»è¾‘å¤„ç†, åŒºåˆ«åªæ˜¯actæŒ‡å‘å“ªå¥—è¡¨(vmread EPT_POINTERè£å†³)
+	PEPT_DATA act = EptGetActiveData();
+	//åˆ¤æ–­è¿™ä¸ªåœ°å€æ‰€åœ¨é¡µæ˜¯å¦è¢«æˆ‘ä»¬hookè¿‡
 	ULONG64 pfn = gpa / PAGE_SIZE;
 	PPAGE_HOOK_ENTRY pageEntry = PHGetHookEntryPageBy(pfn);
 	if (pageEntry == NULL)
 	{
-		//Î´±»hookµÄÒ³·¢ÉúEPTÎ¥¹æ(µäĞÍÔ­Òò: ÎïÀíµØÖ·³¬³ö512GBºãµÈÓ³Éä·¶Î§, ÈçPCIe¸ßµØÖ·MMIO)
-		//Ô­°æÖ±½Óreturn -> Í¬Ò»Ö¸ÁîÎŞÏŞÖØÊÔ -> Õû»ú¿¨ËÀ
-		PEPT_PDE_2M pde2M = EptGetPde2B(gpa);
+		//æœªè¢«hookçš„é¡µå‘ç”ŸEPTè¿è§„(å…¸å‹åŸå› : ç‰©ç†åœ°å€è¶…å‡º512GBæ’ç­‰æ˜ å°„èŒƒå›´, å¦‚PCIeé«˜åœ°å€MMIO)
+		//åŸç‰ˆç›´æ¥return -> åŒä¸€æŒ‡ä»¤æ— é™é‡è¯• -> æ•´æœºå¡æ­»
+		//v3.48: æ¢å¤è·¯å¾„åŒæ ·ä½œç”¨äºACTIVEè§†å›¾çš„è¡¨(æ”¹cleanä¿®ä¸äº†hookedè§†å›¾çš„violation)
+		PEPT_PDE_2M pde2M = EptGetPde2B(act, gpa);
 		if (pde2M != NULL)
 		{
-			//512GBÄÚµ«2MÒ³ÉĞÎ´²ğ·ÖµÈÇéĞÎ: »Ö¸´¸ÃPTEÈ«²¿È¨ÏŞÈÃÖ¸Áî¼ÌĞøÖ´ĞĞ
-			PEPT_PTE ppte = EptGetPte(gpa);
+			//512GBå†…ä½†2Mé¡µå°šæœªæ‹†åˆ†ç­‰æƒ…å½¢: æ¢å¤è¯¥PTEå…¨éƒ¨æƒé™è®©æŒ‡ä»¤ç»§ç»­æ‰§è¡Œ
+			PEPT_PTE ppte = EptGetPte(act, gpa);
 			if (ppte != NULL)
 			{
 				ppte->fileds.present = 1;
@@ -636,18 +984,18 @@ void EptExitHandler(PGUEST_REGS GuestRegs)
 			}
 			else
 			{
-				//2MÒ³ÉĞÎ´²ğ·ÖÎªPTE: Ö±½Ó»Ö¸´PDEÈ«È¨ÏŞ¶µµ×
+				//2Mé¡µå°šæœªæ‹†åˆ†ä¸ºPTE: ç›´æ¥æ¢å¤PDEå…¨æƒé™å…œåº•
 				pde2M->fileds.present = 1;
 				pde2M->fileds.write = 1;
 				pde2M->fileds.execute = 1;
 			}
-			//±ØĞëË¢ĞÂEPT»º´æ, ·ñÔò¾É·­ÒëÈÔÔÚ, Í¬Ò»Ö¸Áî¼ÌĞøviolation
-			//v3.46: Í³Ò»Èë¿Ú(ÄÜÁ¦Ì½²â+VMfailÁôºÛ, ¼ûEptInveptCurrent×¢ÊÍ)
+			//å¿…é¡»åˆ·æ–°EPTç¼“å­˜, å¦åˆ™æ—§ç¿»è¯‘ä»åœ¨, åŒä¸€æŒ‡ä»¤ç»§ç»­violation
+			//v3.46: ç»Ÿä¸€å…¥å£(èƒ½åŠ›æ¢æµ‹+VMfailç•™ç—•, è§EptInveptCurrentæ³¨é‡Š)
 			EptInveptCurrent();
-			//'P'»·Â·¼ì²â: ÎŞhookÊ±¸Ã·ÖÖ§»Ö¸´µÄÊÇ±¾¾ÍÈ«È¨ÏŞµÄPDE/PTE¡ª¡ªÈôÍ¬Ò»
-			//gpa·´¸´×ßµ½ÕâÀï(>100), ËµÃ÷violation¸ùÔ´²»ÔÚÈ¨ÏŞ(½á¹¹ĞÔbug:
-			//ÈçpdpteÓëpdeÊı×é²»Ò»ÖÂ/Ó²¼ş×ßµÄÒ³±íÓëÈí¼şĞ´µÄ²»ÊÇÍ¬Ò»·İ),
-			//ĞŞ¸´ÊÇÎŞĞ§no-op ¡ú ×Ô»ÙÁô'P'ËÀÒò, ²»ÔÙÍÏÈ«ÏµÍ³
+			//'P'ç¯è·¯æ£€æµ‹: æ— hookæ—¶è¯¥åˆ†æ”¯æ¢å¤çš„æ˜¯æœ¬å°±å…¨æƒé™çš„PDE/PTEâ€”â€”è‹¥åŒä¸€
+			//gpaåå¤èµ°åˆ°è¿™é‡Œ(>100), è¯´æ˜violationæ ¹æºä¸åœ¨æƒé™(ç»“æ„æ€§bug:
+			//å¦‚pdpteä¸pdeæ•°ç»„ä¸ä¸€è‡´/ç¡¬ä»¶èµ°çš„é¡µè¡¨ä¸è½¯ä»¶å†™çš„ä¸æ˜¯åŒä¸€ä»½),
+			//ä¿®å¤æ˜¯æ— æ•ˆno-op â†’ è‡ªæ¯ç•™'P'æ­»å› , ä¸å†æ‹–å…¨ç³»ç»Ÿ
 			static volatile ULONG64 s_pGpa[128] = { 0 };
 			static volatile LONG s_pCnt[128] = { 0 };
 			ULONG cpuP = KeGetCurrentProcessorNumber();
@@ -663,16 +1011,16 @@ void EptExitHandler(PGUEST_REGS GuestRegs)
 		}
 		else
 		{
-			//³¬³ö512GBºãµÈÓ³Éä: ¶¯Ì¬½¨Á¢EPTÂ·¾¶(¶èĞÔ, UCÄÚ´æÀàĞÍ¶ÔMMIO°²È«)
+			//è¶…å‡º512GBæ’ç­‰æ˜ å°„: åŠ¨æ€å»ºç«‹EPTè·¯å¾„(æƒ°æ€§, UCå†…å­˜ç±»å‹å¯¹MMIOå®‰å…¨)
 			if (EptBuildHighMapping(gpa))
 			{
-				//Ó³ÉäÒÑ½¨Á¢, Ë¢ĞÂEPT»º´æºóÖØÖ´ĞĞÍ¬Ò»Ö¸Áî(´Ë´ÎÄÜÍ¨¹ı)
-				//v3.46: Í³Ò»Èë¿Ú(ÄÜÁ¦Ì½²â+VMfailÁôºÛ)
+				//æ˜ å°„å·²å»ºç«‹, åˆ·æ–°EPTç¼“å­˜åé‡æ‰§è¡ŒåŒä¸€æŒ‡ä»¤(æ­¤æ¬¡èƒ½é€šè¿‡)
+				//v3.46: ç»Ÿä¸€å…¥å£(èƒ½åŠ›æ¢æµ‹+VMfailç•™ç—•)
 				EptInveptCurrent();
-				//·ç±©¼ì²â: Í¬Ò»gpa½¨ºÃÓ³ÉäºóÈÔ·´¸´violation=Ò³±í½á¹¹ĞÔbug
-				//(Èç¶ÔÆë´íÎó/Ó²¼ş¶Áµ½´íÎ»Ò³±í)¡£Õı³£Á÷³Ì½¨ºÃÒ»´Îºó²»ÔÙviolation;
-				//ãĞÖµ1000´Î(~ºÁÃë¼¶)ºóÍ£±¾ºË×Ô»Ù, ±ÜÃâ³ÖËøÏß³ÌÔÚexitÑ­»·Àï
-				//ÍÏËÀÈ«ÏµÍ³(Ëø¼¶Áª=Õû»ú¶³½áÁãÈÕÖ¾, v3.5Êµ²âĞÎÌ¬)
+				//é£æš´æ£€æµ‹: åŒä¸€gpaå»ºå¥½æ˜ å°„åä»åå¤violation=é¡µè¡¨ç»“æ„æ€§bug
+				//(å¦‚å¯¹é½é”™è¯¯/ç¡¬ä»¶è¯»åˆ°é”™ä½é¡µè¡¨)ã€‚æ­£å¸¸æµç¨‹å»ºå¥½ä¸€æ¬¡åä¸å†violation;
+				//é˜ˆå€¼1000æ¬¡(~æ¯«ç§’çº§)ååœæœ¬æ ¸è‡ªæ¯, é¿å…æŒé”çº¿ç¨‹åœ¨exitå¾ªç¯é‡Œ
+				//æ‹–æ­»å…¨ç³»ç»Ÿ(é”çº§è”=æ•´æœºå†»ç»“é›¶æ—¥å¿—, v3.5å®æµ‹å½¢æ€)
 				static volatile ULONG64 s_stormGpa[128] = { 0 };
 				static volatile LONG s_stormCnt[128] = { 0 };
 				ULONG cpu = KeGetCurrentProcessorNumber();
@@ -688,7 +1036,7 @@ void EptExitHandler(PGUEST_REGS GuestRegs)
 			}
 			else
 			{
-				//·ÖÅäÊ§°Ü(¼«Ğ¡¸ÅÂÊ): Í¬Ñù»áÎŞÏŞÖØÊÔ, ÌÓÉúÂ·¾¶ÁôºÛ
+				//åˆ†é…å¤±è´¥(æå°æ¦‚ç‡): åŒæ ·ä¼šæ— é™é‡è¯•, é€ƒç”Ÿè·¯å¾„ç•™ç—•
 				VmxExitStormEscape('A', 48, gpa, guestRip, GuestRegs);    //noreturn
 			}
 		}
@@ -696,19 +1044,19 @@ void EptExitHandler(PGUEST_REGS GuestRegs)
 	}
 	if (eptExit.fileds.read)
 	{
-		EptUpdatePageAcess(gpa, 1, pageEntry);
+		EptUpdatePageAcess(act, gpa, 1, pageEntry);
 	}
 	if (eptExit.fileds.write)
 	{
-		EptUpdatePageAcess(gpa, 2, pageEntry);
+		EptUpdatePageAcess(act, gpa, 2, pageEntry);
 	}
 	if (eptExit.fileds.execute)
 	{
-		EptUpdatePageAcess(gpa, 3, pageEntry);
+		EptUpdatePageAcess(act, gpa, 3, pageEntry);
 	}
-	//Ë¢ĞÂÒ³±í»º´æTLB
-	//v3.46: Í³Ò»Èë¿Ú(ÄÜÁ¦Ì½²â+VMfailÁôºÛ)¡ª¡ªÊÓÍ¼ÇĞ»»ºóÈôinveptÎŞĞ§,
-	//vmresumeÖØÈ¡Ö¸ÈÔÃüÖĞ¾ÉTLBÌõÄ¿=Í¬Ò»ÌõÖ¸ÁîÔÙviolation=±¾ºË»îËø
+	//åˆ·æ–°é¡µè¡¨ç¼“å­˜TLB
+	//v3.46: ç»Ÿä¸€å…¥å£(èƒ½åŠ›æ¢æµ‹+VMfailç•™ç—•)â€”â€”è§†å›¾åˆ‡æ¢åè‹¥inveptæ— æ•ˆ,
+	//vmresumeé‡å–æŒ‡ä»å‘½ä¸­æ—§TLBæ¡ç›®=åŒä¸€æ¡æŒ‡ä»¤å†violation=æœ¬æ ¸æ´»é”
 	EptInveptCurrent();
 
 	__vmx_vmwrite(GUEST_RIP, guestRip);
@@ -718,73 +1066,130 @@ void EptExitHandler(PGUEST_REGS GuestRegs)
 
 void EptSetHook(ULONG64 orginalPagePFN, ULONG64 codePagePFN)
 {
-	//Ïàµ±ÓÚÓĞÁËGPA Òª»ñÈ¡HPA
+	ULONG cpuHook = KeGetCurrentProcessorNumber();
+	//==== v3.48 Phase2: VMFUNCä¸»è·¯å¾„(çœ‹é›ªå›¾è°±4.2çš„é›¶VM-Exit hook) ====
+	//ä¸v3.46æ–¹æ¡ˆçš„æœ¬è´¨åŒºåˆ«: ä¸åœ¨clean EPTæ¸…execute(=ä¸å†ä¾èµ–violationè§¦å‘)
+	//è€Œæ˜¯hooked EPTé‡Œhooké¡µPTEâ†’CodePage(X=1,R=1,W=0)+æœ¬æ ¸æ•´ä½“åˆ‡å…¥hooked
+	//è§†å›¾â€”â€”hookè§¦å‘=çº¯ç¿»è¯‘åˆ‡æ¢,**é›¶VM-Exit**; cleanè§†å›¾ä¸‹åŸé¡µå­—èŠ‚å®Œå¥½
+	//(è¯»/CRCæ ¡éªŒçœ‹åˆ°çš„æ˜¯åŸå§‹å­—èŠ‚, éšè”½æ€§æ ¹åŸº)ã€‚
+	//vmwrite(EPT_POINTER)åˆ‡è§†å›¾çš„åˆæ³•æ€§=SDM Â§28.5.7.3(VMFUNCåˆ‡æ¢çš„æœ¬è´¨
+	//å°±æ˜¯å†™è¯¥å­—æ®µ, è§NOTES Phase2è®¾è®¡ä¾æ®)ã€‚
+	//å†™hooké¡µ(W=0)â†’violationâ†’EptUpdatePageAcessåœ¨hookedè¡¨ä¸ŠæŒ‰v3.46è¯­ä¹‰
+	//äº’åˆ‡(åˆ‡åŸé¡µW=1/X=0â†’å†™è½åŸé¡µâ†’ä¸‹æ¬¡æ‰§è¡Œviolationâ†’åˆ‡å›CodePage)â€”â€”
+	//è¯»å†™å…œåº•ä¸fallbackå…±ç”¨åŒä¸€å¥—éª¨æ¶, åªæ˜¯act=hookedè¡¨
+	if (g_vcpu[cpuHook].bVmfuncOn && g_vcpu[cpuHook].PeptDataHooked != NULL)
+	{
+		PEPT_DATA he = g_vcpu[cpuHook].PeptDataHooked;
+		//ç›¸å½“äºæœ‰äº†GPA è¦è·å–HPA
+		ULONG64 oPFN = orginalPagePFN << 12;
+		PEPT_PDE_2M oPde2M = EptGetPde2B(he, oPFN);
+		if (oPde2M == NULL)
+		{
+			FlRingPush('n', cpuHook, 2, orginalPagePFN, codePagePFN, 0);
+			return;
+		}
+		//hooké¡µæ‰€åœ¨2Mè‹¥æœªæ‹†åˆ†åˆ™åœ¨hookedè¡¨å†…æ‹†(åªå½±å“hookedè§†å›¾)
+		if (oPde2M->fileds.ps)
+		{
+			if (!EptPdeToPte(oPde2M))
+			{
+				FlRingPush('n', cpuHook, 2, orginalPagePFN, 0, 0);
+				return;
+			}
+			FlRingPush('S', cpuHook, 21, orginalPagePFN,
+				((PEPT_PDE)oPde2M)->fileds.physicalAddr, 0);
+		}
+		PEPT_PTE pte = EptGetPte(he, oPFN);
+		if (pte == NULL)
+		{
+			FlRingPush('n', cpuHook, 2, orginalPagePFN, 0, 0);
+			return;
+		}
+		//hooké¡µPTEâ†’CodePage: X=1(æ‰§è¡Œé›¶VM-Exit) R=1(æ‰§è¡Œä¸­è¯»åŒé¡µæ•°æ®çš„
+		//æŒ‡ä»¤ä¸violation, v3.43æ´»é”æ•™è®­) W=0(å†™â†’violationå…œåº•)
+		pte->fileds.physicalAddr = codePagePFN;
+		pte->fileds.present = 1;
+		pte->fileds.execute = 1;
+		pte->fileds.write = 0;
+		//æœ¬æ ¸åˆ‡å…¥hookedè§†å›¾(å…ˆvmwriteå†invept: single-contextå‹CPUä¸Š
+		//EptInveptCurrentæŒ‰å½“å‰EPT_POINTERå¡«å……desc, åˆ‡æ¢åè¯»åˆ°hooked)
+		__vmx_vmwrite(EPT_POINTER, g_vcpu[cpuHook].EptpHooked.ALL);
+		//åˆ·æ–°é¡µè¡¨ç¼“å­˜TLB(all-contextè¦†ç›–ä¸¤å¥—EPTçš„å…¨éƒ¨EP4TAç¼“å­˜;
+		//VMFUNCåˆ‡æ¢è‡ªå¸¦çš„VPID0ç»„åˆæ˜ å°„å¤±æ•ˆä¸è¦†ç›–rootä¾§vmwriteè·¯å¾„)
+		EptInveptCurrent();
+		//v3.48å¸ƒé˜²æ ‡è®°: rsn=24=VMFUNCè·¯å¾„ä¸“å±(åŒºåˆ«äºv3.46çš„23)
+		FlRingPush('S', cpuHook, 24, orginalPagePFN, codePagePFN,
+			g_vcpu[cpuHook].EptpHooked.ALL);
+		return;
+	}
+	//==== v3.46 violationæ–¹æ¡ˆ(fallback: æ— VMFUNC/æ— hooked EPT/æ ‡è®°è‡ªæµ‹FAILçš„æ ¸) ====
+	//ç›¸å½“äºæœ‰äº†GPA è¦è·å–HPA
 	ULONG64 oPFN = orginalPagePFN << 12;
 	ULONG64 cPFN = codePagePFN << 12;
-	//»ñÈ¡PDE/PTE
-	PEPT_PDE_2M oPde2M = EptGetPde2B(oPFN);
-	PEPT_PDE_2M cPed2M = EptGetPde2B(cPFN);
+	//è·å–PDE/PTE
+	PEPT_PDE_2M oPde2M = EptGetPde2B(g_vcpu[cpuHook].PeptData, oPFN);
+	PEPT_PDE_2M cPed2M = EptGetPde2B(g_vcpu[cpuHook].PeptData, cPFN);
 	if (oPde2M == NULL || cPed2M == NULL)
 	{
-		//v3.42: ÖĞÖ¹ÁôºÛ(>512GB»òÒ³±íÔ½½ç: hook¾²Ä¬Î´½¨Á¢, Ô­°æÍêÈ«ÎŞÉù)
-		FlRingPush('n', KeGetCurrentProcessorNumber(), 2,
+		//v3.42: ä¸­æ­¢ç•™ç—•(>512GBæˆ–é¡µè¡¨è¶Šç•Œ: hooké™é»˜æœªå»ºç«‹, åŸç‰ˆå®Œå…¨æ— å£°)
+		FlRingPush('n', cpuHook, 2,
 			orginalPagePFN, codePagePFN, 0);
 		return;
 	}
-	//ÅĞ¶ÏÈç¹ûÊÇ2MÒ³£¬¾Í½øĞĞ²ğ·Ö
+	//åˆ¤æ–­å¦‚æœæ˜¯2Mé¡µï¼Œå°±è¿›è¡Œæ‹†åˆ†
 	if (oPde2M->fileds.ps)
 	{
-		//½«µ±Ç°µÄGPAËùÔÚµÄPDE ²ğ·Ö³É1¸öptt Ò²¾ÍÊÇ512¸öpte
+		//å°†å½“å‰çš„GPAæ‰€åœ¨çš„PDE æ‹†åˆ†æˆ1ä¸ªptt ä¹Ÿå°±æ˜¯512ä¸ªpte
 		BOOLEAN status = EptPdeToPte(oPde2M);
 		if (!status)
 		{
-			FlRingPush('n', KeGetCurrentProcessorNumber(), 2,
+			FlRingPush('n', cpuHook, 2,
 				orginalPagePFN, 0, 0);
 			return;
 		}
-		//v3.43: Èı²½'S'Ö®Ò»(²ğÔ­Ò³Íê³É)¡ª¡ªb=ĞÂpte±íÎïÀíÖ¡ºÅ¡£
-		//DMP»·ÅĞ¶Á: ËÀÔÚ±¾²½Óë'S'rsn=23Ö®¼ä=²ğ·Ö/·ÖÅä/È¡pteÂ·¾¶
-		FlRingPush('S', KeGetCurrentProcessorNumber(), 21,
+		//v3.43: ä¸‰æ­¥'S'ä¹‹ä¸€(æ‹†åŸé¡µå®Œæˆ)â€”â€”b=æ–°pteè¡¨ç‰©ç†å¸§å·ã€‚
+		//DMPç¯åˆ¤è¯»: æ­»åœ¨æœ¬æ­¥ä¸'S'rsn=23ä¹‹é—´=æ‹†åˆ†/åˆ†é…/å–pteè·¯å¾„
+		FlRingPush('S', cpuHook, 21,
 			orginalPagePFN, ((PEPT_PDE)oPde2M)->fileds.physicalAddr, 0);
 	}
 
 	if (cPed2M->fileds.ps)
 	{
-		//½«µ±Ç°µÄGPAËùÔÚµÄPDE ²ğ·Ö³É1¸öptt Ò²¾ÍÊÇ512¸öpte
+		//å°†å½“å‰çš„GPAæ‰€åœ¨çš„PDE æ‹†åˆ†æˆ1ä¸ªptt ä¹Ÿå°±æ˜¯512ä¸ªpte
 		BOOLEAN status = EptPdeToPte(cPed2M);
 		if (!status)
 		{
-			FlRingPush('n', KeGetCurrentProcessorNumber(), 2,
+			FlRingPush('n', cpuHook, 2,
 				0, codePagePFN, 0);
 			return;
 		}
-		//v3.43: Èı²½'S'Ö®¶ş(²ğCodePageµÄ2MÍê³É)¡ª¡ªb=ĞÂpte±íÎïÀíÖ¡ºÅ
-		FlRingPush('S', KeGetCurrentProcessorNumber(), 22,
+		//v3.43: ä¸‰æ­¥'S'ä¹‹äºŒ(æ‹†CodePageçš„2Må®Œæˆ)â€”â€”b=æ–°pteè¡¨ç‰©ç†å¸§å·
+		FlRingPush('S', cpuHook, 22,
 			codePagePFN, ((PEPT_PDE)cPed2M)->fileds.physicalAddr, 0);
 	}
-	//ĞŞ¸ÄÒ³ÊôĞÔ£¬½«Ö´ĞĞÈ¨ÏŞÈ¥µô
-	PEPT_PTE pte = EptGetPte(oPFN);//
+	//ä¿®æ”¹é¡µå±æ€§ï¼Œå°†æ‰§è¡Œæƒé™å»æ‰
+	PEPT_PTE pte = EptGetPte(g_vcpu[cpuHook].PeptData, oPFN);//
 
 	if (pte == NULL)
 	{
-		FlRingPush('n', KeGetCurrentProcessorNumber(), 2,
+		FlRingPush('n', cpuHook, 2,
 			orginalPagePFN, 0, 0);
 		return;
 	}
 	pte->fileds.execute = 0;
-	//Ë¢ĞÂÒ³±í»º´æTLB
-	//v3.46: Í³Ò»Èë¿Ú(ÄÜÁ¦Ì½²â+VMfailÁôºÛ)¡ª¡ª²¼·ÀºóÈôinveptÎŞĞ§, ÈÈº¯Êı
-	//µÄ¾Éexec TLBÌõÄ¿¼ÌĞø´æ»î=hook¶ÔTLB³£×¤º¯Êı(NtClose)ÊıĞ¡Ê±²»´¥·¢
-	//(v3.45À¶ÆÁµÄÑÓ³Ù¸ùÔ´); ÁôºÛ'e'ÊÂ¼ş¿ÉÅĞ¶Á
+	//åˆ·æ–°é¡µè¡¨ç¼“å­˜TLB
+	//v3.46: ç»Ÿä¸€å…¥å£(èƒ½åŠ›æ¢æµ‹+VMfailç•™ç—•)â€”â€”å¸ƒé˜²åè‹¥inveptæ— æ•ˆ, çƒ­å‡½æ•°
+	//çš„æ—§exec TLBæ¡ç›®ç»§ç»­å­˜æ´»=hookå¯¹TLBå¸¸é©»å‡½æ•°(NtClose)æ•°å°æ—¶ä¸è§¦å‘
+	//(v3.45è“å±çš„å»¶è¿Ÿæ ¹æº); ç•™ç—•'e'äº‹ä»¶å¯åˆ¤è¯»
 	EptInveptCurrent();
-	//v3.42: **²¼·ÀÍê³É±ê¼Ç**(Ã¿ºËÒ»Ìõ, DMP½âÎöÅĞ±ğ: 8¡ÁS rsn=23=È«ºËarmed,
-	//<8=ÓĞºËËÀÔÚEptSetHookÂ·¾¶=²ğÒ³/·ÖÅäÎÊÌâ; Óë'n'»¥³â)
-	//v3.43: rsn´Ó2¸ÄÎª23(21/22/23=²ğÔ­Ò³/²ğCodeÒ³/ÇåexecuteÈı²½)
-	FlRingPush('S', KeGetCurrentProcessorNumber(), 23,
+	//v3.42: **å¸ƒé˜²å®Œæˆæ ‡è®°**(æ¯æ ¸ä¸€æ¡, DMPè§£æåˆ¤åˆ«: 8Ã—S rsn=23=å…¨æ ¸armed,
+	//<8=æœ‰æ ¸æ­»åœ¨EptSetHookè·¯å¾„=æ‹†é¡µ/åˆ†é…é—®é¢˜; ä¸'n'äº’æ–¥)
+	//v3.43: rsnä»2æ”¹ä¸º23(21/22/23=æ‹†åŸé¡µ/æ‹†Codeé¡µ/æ¸…executeä¸‰æ­¥)
+	FlRingPush('S', cpuHook, 23,
 		orginalPagePFN, codePagePFN, 0);
 }
 
-PEPT_PDE_2M EptGetPde2B(ULONG64 PFN)
+PEPT_PDE_2M EptGetPde2B(PEPT_DATA ept, ULONG64 PFN)
 {
 
 	//PML4 9 9 9 9 12
@@ -797,18 +1202,16 @@ PEPT_PDE_2M EptGetPde2B(ULONG64 PFN)
 	ULONG pdpteIndex = (PFN >> 30) & 0x1FF;
 	//PDE
 	ULONG pdeindex = (PFN >> 21) & 0x1FF;
-	ULONG cpuNumber = KeGetCurrentProcessorNumber();
-	PVCPU currentVcpu = VmxGetCurrentVcpu(cpuNumber);
-	//EPT_PDE_2M pde2M= currentVcpu->PeptData->pde[pdpteIndex][pdeindex];
-	return &(currentVcpu->PeptData->pde[pdpteIndex][pdeindex]);
+	//v3.48: æ˜¾å¼EPT_DATA(åŒEPT)â€”â€”æ’ç­‰åŒº(pml4[0])å†…ç›´æ¥ç´¢å¼•ç›®æ ‡è¡¨çš„pdeæ•°ç»„
+	return &(ept->pde[pdpteIndex][pdeindex]);
 }
 
 BOOLEAN EptPdeToPte(PEPT_PDE_2M pde2M)
 {
 	BOOLEAN status = TRUE;
-	//v3.6: ±ØĞë4KB¶ÔÆë(Ô­°æExAllocatePoolÖ»16×Ö½Ú¶ÔÆë, physicalAddr½Ø¶ÏµÍ12Î»
-	//=EPTÓ²¼ş¶Á´íÎ»Ò³±í, Stage1²ğ·Ö¼´´¥·¢²»¿É½â·ç±©)¡£Ô­°æ±¾¾ÍĞ¹Â©ppte²»ÊÍ·Å,
-	//rawÖ¸Õë²»¸ú×Ù±£³ÖÍ¬Á£¶È(Ã¿´ÎĞ¹Â©2Ò³, ½öµ÷ÊÔÆÚ¿É½ÓÊÜ)
+	//v3.6: å¿…é¡»4KBå¯¹é½(åŸç‰ˆExAllocatePoolåª16å­—èŠ‚å¯¹é½, physicalAddræˆªæ–­ä½12ä½
+	//=EPTç¡¬ä»¶è¯»é”™ä½é¡µè¡¨, Stage1æ‹†åˆ†å³è§¦å‘ä¸å¯è§£é£æš´)ã€‚åŸç‰ˆæœ¬å°±æ³„æ¼ppteä¸é‡Šæ”¾,
+	//rawæŒ‡é’ˆä¸è·Ÿè¸ªä¿æŒåŒç²’åº¦(æ¯æ¬¡æ³„æ¼2é¡µ, ä»…è°ƒè¯•æœŸå¯æ¥å—)
 	PEPT_PTE ppte = (PEPT_PTE)EptAllocAlignedPage(NULL);
 	if (ppte == NULL)
 	{
@@ -820,8 +1223,8 @@ BOOLEAN EptPdeToPte(PEPT_PDE_2M pde2M)
 		ppte[i].fileds.present = 1;
 		ppte[i].fileds.write = 1;
 		ppte[i].fileds.execute = 1;
-		//±ØĞë¼Ì³ĞÔ´2MÒ³µÄÄÚ´æÀàĞÍ! Ô­°æÂ©Éè=0(UC²»¿É»º´æ),
-		//²ğ·ÖºóÕû¸ö2MBÄÚºË´úÂëÇøÈ¡Ö¸È«²¿Ö±Í¨ÄÚ´æ, ĞÔÄÜËú·½±íÏÖÎªÕû»ú¿¨ËÀ
+		//å¿…é¡»ç»§æ‰¿æº2Mé¡µçš„å†…å­˜ç±»å‹! åŸç‰ˆæ¼è®¾=0(UCä¸å¯ç¼“å­˜),
+		//æ‹†åˆ†åæ•´ä¸ª2MBå†…æ ¸ä»£ç åŒºå–æŒ‡å…¨éƒ¨ç›´é€šå†…å­˜, æ€§èƒ½å¡Œæ–¹è¡¨ç°ä¸ºæ•´æœºå¡æ­»
 		ppte[i].fileds.memoryType = pde2M->fileds.memoryType;
 		ppte[i].fileds.physicalAddr = (pde2M->fileds.physicalAddr) * 512 + i;
 	}
@@ -836,34 +1239,34 @@ BOOLEAN EptPdeToPte(PEPT_PDE_2M pde2M)
 	return status;
 }
 
-PEPT_PTE EptGetPte(ULONG64 PFN)
+PEPT_PTE EptGetPte(PEPT_DATA ept, ULONG64 PFN)
 {
-	PEPT_PDE_2M pde2M = EptGetPde2B(PFN);
+	PEPT_PDE_2M pde2M = EptGetPde2B(ept, PFN);
 	if (pde2M->fileds.ps)
 	{
 		return NULL;
 	}
 	PEPT_PDE pde = (PEPT_PDE)pde2M;
-	//»ñÈ¡PTE 9 9 9 9 12
+	//è·å–PTE 9 9 9 9 12
 	//ptt[index]
 	//PFN = PFN << 12;
 	ULONG pteIndex = ((PFN >> 12) & 0x1FF);
-	//ptt[pteIndex]----¡·pte
+	//ptt[pteIndex]----ã€‹pte
 	PHYSICAL_ADDRESS pttPhAddress = { 0 };
 	pttPhAddress.QuadPart = (pde->fileds.physicalAddr) * PAGE_SIZE;
 	PEPT_PTE ptt = (PEPT_PTE)MmGetVirtualForPhysical(pttPhAddress);
 	return &ptt[pteIndex];
 }
 
-//v3.46: Í³Ò»inveptÈë¿Ú(Ìæ´úÂãVmxInvept(2,&ctx))¡ª¡ªÄÜÁ¦Ì½²â+ÕıÈ·EPTP
-//+VMfailÁôºÛ¡£v3.45À¶ÆÁµÄ**ÑÓ³Ù¸ùÔ´**: ¾É´úÂëinvept type2(all-context)
-//²»¼ì²éVMfail¡ª¡ªCPUÈô²»Ö§³Öall-context(EPT_VPID_CAP bit26=0, ½öÖ§³Ö
-//single-context bit25=1), invept¾²Ä¬VMfail=Ê²Ã´¶¼Ã»Ê§Ğ§: ÒÑ²¼·Àhook
-//¶ÔÈÈº¯Êı(NtCloseµÈTLB³£×¤º¯Êı)ÊıĞ¡Ê±²»´¥·¢(¾ÉexecÌõÄ¿´æ»î), Ö±µ½
-//TLB×ÔÈ»Öğ³ö²ÅµÚÒ»´Î×ß½øÌø°å(×²ÉÏPHGetHookLenµÄhookLen bugÀ¶ÆÁ
-//0x3B@NtClose+0xE)¡£STAGE1Àäº¯Êı(GeptTestTargetÊ×´Îµ÷ÓÃ, ÎŞTLBÌõÄ¿,
-//¿¿walk´¥·¢violation)´ÓÎ´±©Â¶´ËÎÊÌâ¡£inveptÀàĞÍ(SDM): 1=single-
-//context(descµÄEPTP×Ö¶ÎÆ¥ÅäÊ§Ğ§), 2=all-context(È«Ê§Ğ§, descºöÂÔ)
+//v3.46: ç»Ÿä¸€inveptå…¥å£(æ›¿ä»£è£¸VmxInvept(2,&ctx))â€”â€”èƒ½åŠ›æ¢æµ‹+æ­£ç¡®EPTP
+//+VMfailç•™ç—•ã€‚v3.45è“å±çš„**å»¶è¿Ÿæ ¹æº**: æ—§ä»£ç invept type2(all-context)
+//ä¸æ£€æŸ¥VMfailâ€”â€”CPUè‹¥ä¸æ”¯æŒall-context(EPT_VPID_CAP bit26=0, ä»…æ”¯æŒ
+//single-context bit25=1), invepté™é»˜VMfail=ä»€ä¹ˆéƒ½æ²¡å¤±æ•ˆ: å·²å¸ƒé˜²hook
+//å¯¹çƒ­å‡½æ•°(NtCloseç­‰TLBå¸¸é©»å‡½æ•°)æ•°å°æ—¶ä¸è§¦å‘(æ—§execæ¡ç›®å­˜æ´»), ç›´åˆ°
+//TLBè‡ªç„¶é€å‡ºæ‰ç¬¬ä¸€æ¬¡èµ°è¿›è·³æ¿(æ’ä¸ŠPHGetHookLençš„hookLen bugè“å±
+//0x3B@NtClose+0xE)ã€‚STAGE1å†·å‡½æ•°(GeptTestTargeté¦–æ¬¡è°ƒç”¨, æ— TLBæ¡ç›®,
+//é walkè§¦å‘violation)ä»æœªæš´éœ²æ­¤é—®é¢˜ã€‚inveptç±»å‹(SDM): 1=single-
+//context(descçš„EPTPå­—æ®µåŒ¹é…å¤±æ•ˆ), 2=all-context(å…¨å¤±æ•ˆ, descå¿½ç•¥)
 VOID EptInveptCurrent(VOID)
 {
 	EPT_CTX ctx = { 0 };
@@ -872,40 +1275,72 @@ VOID EptInveptCurrent(VOID)
 	{
 		if (!VmxInvept(2, &ctx))
 		{
-			return;    //all-context³É¹¦(×î³¹µ×)
+			return;    //all-contextæˆåŠŸ(æœ€å½»åº•)
 		}
-		//bit26ÔÚÈ´VMfail(Òì³£): Âäµ½single-contextÖØÊÔ
+		//bit26åœ¨å´VMfail(å¼‚å¸¸): è½åˆ°single-contexté‡è¯•
 	}
 	if (cap & (1ULL << 25))
 	{
-		//single-context: ±ØĞëÌîµ±Ç°VMCSµÄEPTP(desc.EPTPÆ¥ÅäÊ§Ğ§,
-		//ctxÈ«Áã=EPTP 0Æ¥Åä²»µ½ÈÎºÎ»º´æ=¾²Ä¬no-op, v3.45¾É´úÂëÍ¬¿îÏİÚå)
+		//single-context: å¿…é¡»å¡«å½“å‰VMCSçš„EPTP(desc.EPTPåŒ¹é…å¤±æ•ˆ,
+		//ctxå…¨é›¶=EPTP 0åŒ¹é…ä¸åˆ°ä»»ä½•ç¼“å­˜=é™é»˜no-op, v3.45æ—§ä»£ç åŒæ¬¾é™·é˜±)
 		__vmx_vmread(EPT_POINTER, &ctx.PEPT);
 		if (!VmxInvept(1, &ctx))
 		{
 			return;
 		}
 	}
-	//Á½ÖÖÀàĞÍ¶¼VMfail/¶¼²»Ö§³Ö(ÀíÂÛ²»¿ÉÄÜ: Ö§³ÖINVEPTÔòÖÁÉÙÆäÒ»)¡ª¡ª
-	//'e'»·ÊÂ¼şÁôºÛ(a=EPT_VPID_CAP): ´ËÊ±EPT TLBÎŞ·¨Èí¼şÊ§Ğ§, hook
-	//ÉúĞ§Ê±µãÍË»¯Îª"TLB×ÔÈ»Öğ³öºó"(v3.45µÄÑÓ³ÙĞÎÌ¬), DMP¿ÉÅĞ¶Á
+	//ä¸¤ç§ç±»å‹éƒ½VMfail/éƒ½ä¸æ”¯æŒ(ç†è®ºä¸å¯èƒ½: æ”¯æŒINVEPTåˆ™è‡³å°‘å…¶ä¸€)â€”â€”
+	//'e'ç¯äº‹ä»¶ç•™ç—•(a=EPT_VPID_CAP): æ­¤æ—¶EPT TLBæ— æ³•è½¯ä»¶å¤±æ•ˆ, hook
+	//ç”Ÿæ•ˆæ—¶ç‚¹é€€åŒ–ä¸º"TLBè‡ªç„¶é€å‡ºå"(v3.45çš„å»¶è¿Ÿå½¢æ€), DMPå¯åˆ¤è¯»
 	FlRingPush('e', KeGetCurrentProcessorNumber(), 0, cap, 0, 0);
 }
 
-void EptUpdatePageAcess(ULONG64 gpa, UCHAR acess, PPAGE_HOOK_ENTRY pageEntry)
+//v3.48: vmx_offå‰çš„åŒè§†å›¾invept(rcx==1å¸è½½/é€ƒç”Ÿ/probe-exitè·¯å¾„)â€”â€”
+//v3.15èµ·vmx_offå‰invepté˜²"EPTæ´¾ç”ŸTLBæ®‹ç•™â†’ä¸‹è½®sc starté‡ç”¨ç‰©ç†é¡µé™é»˜
+//é”™è¯‘"ã€‚åŒEPTä¸‹all-contextå‹CPUä¸€æ¬¡è¦†ç›–ä¸¤å¥—(bit26, æœ¬æœºå½¢æ€, çŸ­è·¯);
+//single-context-onlyå‹CPUçš„inveptåªå¤±æ•ˆdesc.PEPTåŒ¹é…çš„è§†å›¾â†’å¿…é¡»é€
+//è§†å›¾å¤±æ•ˆ(INVEPT single-contextæ¥å—ä»»æ„EPTP, ä¸è¦æ±‚=å½“å‰, SDM INVEPT)
+VOID EptInveptBothViews(VOID)
 {
-	//»ñÈ¡pte
-	PEPT_PTE ppte = EptGetPte(gpa);
+	ULONG64 cap = __readmsr(MSR_IA32_VMX_EPT_VPID_CAP);
+	if (cap & (1ULL << 26))
+	{
+		EPT_CTX allCtx = { 0 };
+		if (!VmxInvept(2, &allCtx))
+		{
+			return;    //all-contextæˆåŠŸ=ä¸¤å¥—EPTä¸€æ¬¡è¦†ç›–
+		}
+	}
+	ULONG cpu = KeGetCurrentProcessorNumber();
+	EPT_CTX ctx = { 0 };
+	if (g_vcpu[cpu].PeptDataHooked != NULL)
+	{
+		ctx.PEPT = g_vcpu[cpu].EptpHooked.ALL;
+		VmxInvept(1, &ctx);
+	}
+	ctx.PEPT = g_vcpu[cpu].Eptp.ALL;
+	VmxInvept(1, &ctx);
+}
+
+//v3.48: æ˜¾å¼EPT_DATA(åŒEPT)â€”â€”äº’åˆ‡å‘ç”Ÿåœ¨violationæ‰€åœ¨çš„ACTIVEè§†å›¾è¡¨ä¸Š:
+//  VMFUNCæ ¸hookedè§†å›¾: å†™hooké¡µ(W=0)â†’åˆ‡åŸé¡µ(R/W/X=0)â†’å†™è½åŸé¡µâ†’ä¸‹æ¬¡æ‰§è¡Œ
+//    violation(X=0)â†’åˆ‡å›CodePage(X=1,R=1,W=0)â€”â€”hooké¡µè¯»æ°¸è¿œç›´é€š,
+//    åªæœ‰å†™ä¼šçŸ­æš‚èµ°åŸé¡µ(CodePageå‰¯æœ¬stale=å·²çŸ¥é™åˆ¶, åŒv3.46è¯­ä¹‰)
+//  fallbackæ ¸cleanè§†å›¾: v3.46åŸè¯­ä¹‰(æ‰§è¡Œâ†”è¯»å†™äº’åˆ‡)
+void EptUpdatePageAcess(PEPT_DATA ept, ULONG64 gpa, UCHAR acess, PPAGE_HOOK_ENTRY pageEntry)
+{
+	//è·å–pte
+	PEPT_PTE ppte = EptGetPte(ept, gpa);
 	if (ppte == NULL)
 	{
 		return;
 	}
-	//v3.43: ÊÓÍ¼ÇĞ»»ÁôºÛ('x')¡ª¡ªa=1¶Á/2Ğ´/3Ö´ĞĞ, b=gpa, c=CodeÒ³PFN¡£
-	//DMP»·ÅĞ¶Á: hook´¥·¢ºóÎŞ'x'=violation¸ù±¾Ã»×ßµ½ÇĞÊÓÍ¼(ËÀÔÚ
-	//EptExitHandler²é±íÇ°); ÓĞ'x'3ºóËÀ=ËÀÔÚvmresumeºóµÄguestÖ´ĞĞ
+	//v3.43: è§†å›¾åˆ‡æ¢ç•™ç—•('x')â€”â€”a=1è¯»/2å†™/3æ‰§è¡Œ, b=gpa, c=Codeé¡µPFNã€‚
+	//DMPç¯åˆ¤è¯»: hookè§¦å‘åæ— 'x'=violationæ ¹æœ¬æ²¡èµ°åˆ°åˆ‡è§†å›¾(æ­»åœ¨
+	//EptExitHandleræŸ¥è¡¨å‰); æœ‰'x'3åæ­»=æ­»åœ¨vmresumeåçš„guestæ‰§è¡Œ
 	FlRingPush('x', KeGetCurrentProcessorNumber(), acess, gpa,
 		pageEntry->CodePagePFN, pageEntry->OriginalPagePFN);
-	//¶Á
+	//è¯»
 	if (acess == 1)
 	{
 		ppte->fileds.physicalAddr = pageEntry->OriginalPagePFN;
@@ -913,7 +1348,7 @@ void EptUpdatePageAcess(ULONG64 gpa, UCHAR acess, PPAGE_HOOK_ENTRY pageEntry)
 		ppte->fileds.execute = 0;
 		ppte->fileds.write = 1;
 	}
-	//Ğ´
+	//å†™
 	else if (acess == 2)
 	{
 		ppte->fileds.physicalAddr = pageEntry->OriginalPagePFN;
@@ -921,13 +1356,13 @@ void EptUpdatePageAcess(ULONG64 gpa, UCHAR acess, PPAGE_HOOK_ENTRY pageEntry)
 		ppte->fileds.execute = 0;
 		ppte->fileds.write = 1;
 	}
-	//Ö´ĞĞ
+	//æ‰§è¡Œ
 	else if (acess == 3)
 	{
 		ppte->fileds.physicalAddr = pageEntry->CodePagePFN;
-		//±£³Ö¿É¶Á(Ô­°æÎª0=½öÖ´ĞĞ): "Ö´ĞĞÖĞ¶ÁÍ¬Ò³Êı¾İ"µÄÖ¸Áî(Èçmov rax,[rip+X])
-		//»áÔÚ¶ÁÊÓÍ¼/Ö´ĞĞÊÓÍ¼¼äÎŞÏŞ»¥ÇĞ, RIPÓÀ²»Ç°½ø=»îËø¿¨ËÀ
-		//´ú¼Û: ¶ÁÄÚ´æ»á¿´µ½Ìø°å×Ö½Ú(¶Ôµ÷ÊÔÎŞÓ°Ïì, Òş±ÎĞÔÒÔºóÓÃVMFUNCË«EPT½â¾ö)
+		//ä¿æŒå¯è¯»(åŸç‰ˆä¸º0=ä»…æ‰§è¡Œ): "æ‰§è¡Œä¸­è¯»åŒé¡µæ•°æ®"çš„æŒ‡ä»¤(å¦‚mov rax,[rip+X])
+		//ä¼šåœ¨è¯»è§†å›¾/æ‰§è¡Œè§†å›¾é—´æ— é™äº’åˆ‡, RIPæ°¸ä¸å‰è¿›=æ´»é”å¡æ­»
+		//ä»£ä»·: è¯»å†…å­˜ä¼šçœ‹åˆ°è·³æ¿å­—èŠ‚(å¯¹è°ƒè¯•æ— å½±å“, éšè”½æ€§ä»¥åç”¨VMFUNCåŒEPTè§£å†³)
 		ppte->fileds.present = 1;
 		ppte->fileds.execute = 1;
 		ppte->fileds.write = 0;

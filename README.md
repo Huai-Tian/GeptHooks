@@ -4,50 +4,56 @@
 
 ## 📖 Introduction
 
-**GeptHooks** is a General EPT hook framework for Windows (Windows 10 - 11).
+**GeptHooks** is a hidden EPT hook framework for Windows (Windows 10 - 11).
 
-It virtualizes the running system with Intel VT-x and uses Extended Page Tables (EPT) to intercept memory reads, writes, and execution — letting your driver hook, monitor, or shadow any kernel or user-mode address **without modifying a single byte of the original memory**.
+It virtualizes the running system with Intel VT-x and uses **VMFUNC EPTP switching between dual EPT views** (clean / hooked) to intercept function execution — letting your driver hook any kernel function **without modifying a single byte of the original memory, and without a single VM-Exit per hook hit**.
+
+This implements the highest-stealth virtual-layer hook design: execution is redirected purely by EPT page-table translation, the original page stays byte-for-byte intact for reads and CRC checks (clean view), and the timing cost of hooking is zero by design.
 
 ## ✨ Features
 
-- **Execution hooks (hidden breakpoints)**
-Intercept execution of any address in kernel or user space. No INT3, no page-table tricks, no debug registers — invisible to the guest.
+- **VMFUNC dual-EPT hooks (zero VM-Exit detour) — v3.48**
+Every core runs with two EPT views: a *clean* view (identity, original bytes) and a *hooked* view (hook page remapped to a shadow copy). Hooking execution = switching translation, not trapping: **each hook hit costs zero VM-Exits**. Measured: 187k+ NtClose interceptions with the EPT-violation counter pinned at 0.
 
-- **Inline EPT hooks**
-Redirect execution to your handler through a stealth trampoline. The original code remains untouched from the guest's point of view.
+- **Detour with full control — v3.50**
+Your callback receives the original arguments, can call the original function directly (`GeptCallOriginal`), modify arguments or return values, or swallow the call entirely. No prologue replay, no instruction-length machinery — the clean view holds the pristine original code.
 
-- **Read/write monitors**
-Watch memory reads and writes like hardware debug registers — but without the 4-slot or size limitations.
+- **Hypervisor concealment — v3.49**
+CPUID leaves `0x40000000-0x4000000F` are zeroed (no hypervisor signature leaks), `CPUID.1:ECX[31]` is cleared, and **TSC offsetting compensation** subtracts every VM-Exit's root-mode dwell time from the guest-visible TSC — the guest's timeline behaves as if no exit ever happened.
 
-- **Memory shadowing**
-Present different memory contents for the read, write, and execute views of the same page.
-
-- **VMFUNC EPTP switching (zero VM-Exit)**
-Switch between clean and hooked EPT views with the VMFUNC instruction — instruction-level speed with no VM-Exit, defeating timing-based detection (requires Haswell or later).
-
-- **MSR interception (MSR bitmap)**
-Forge MSR reads such as IA32_LSTAR while the real value stays under your control — code and data disguised at the same time.
-
-- **Hypervisor concealment (CPUID masking + TSC offsetting)**
-CPUID results are forged to clear the hypervisor-present bit, and TSC offsetting erases the measurable timing delay of VM-exits — defeating both CPUID-based and timing-based hypervisor detection.
+- **Fallback path for older CPUs**
+On CPUs without VMFUNC, hooks transparently fall back to the classic EPT-violation scheme (split 2M pages, X-bit toggling) — same API, zero code changes on your side.
 
 - **Simple, driver-friendly API**
-Install, remove, and enumerate hooks with a few C calls from your own kernel driver — no hypervisor knowledge required.
+Install, remove, enumerate hooks, and call originals with a few C calls from your own kernel driver — no hypervisor knowledge required.
 
-- **More features coming soon...**
+- **MSR interception (MSR bitmap) — planned**
+Infrastructure is in place (`VmxSetMsrRw`); read-forging samples (e.g. IA32_LSTAR) are on the roadmap.
 
-## ⚠️ Project Status
+## 📐 How the zero-VM-Exit hook works
 
-This project is currently in an early development stage. Bugs, incomplete features, and breaking changes may occur.
+```
+                EPTP-list[0]                 EPTP-list[1]
+                ┌────────────┐               ┌────────────┐
+                │ clean EPTP │               │ hooked EPTP│
+                └─────┬──────┘               └─────┬──────┘
+                      │ identity mapping           │ hook page PTE → shadow copy
+   guest (default: clean view)                    │ (X=1, R=1, W=0)
+   ─────────────────┴──────────────────────────────┴─────────────────
+        vmfunc(0, 1)  ── zero-VM-Exit switch (writes EPTP back into the VMCS)
+```
 
-## ⚙️ Requirements
+Hook trigger chain (all in guest mode, no VM-Exit):
 
-- **CPU**: Intel processor with VT-x and EPT support (Haswell or later required for VMFUNC EPTP switching)
-- **OS**: Windows 10 / 11 x64
-- **Hypervisor conflicts**: Hyper-V, Virtualization-Based Security (VBS), Memory Integrity (Core Isolation), and WHP must be disabled — GeptHooks needs to be the root hypervisor
-- **Test signing**: enable with `bcdedit /set testsigning on`, or sign the driver properly
-- **Build**: Visual Studio 2022 + Windows Driver Kit (WDK)
-- **Runtime**: administrator privileges
+```
+caller → NtClose (hooked view = shadow page, 14-byte absolute jump)
+  → per-hook trampoline slot
+  → GeptStubEntry:  vmfunc(0,0) switch to clean → SAVE_ALL
+      → your callback  (may GeptCallOriginal: direct call to the
+        pristine original — clean view holds the real bytes)
+      → vmfunc(0,1) switch back to hooked → ret
+  ← caller (RAX = your callback's return value)
+```
 
 ## 🚀 Quick Start
 
@@ -58,25 +64,75 @@ sc create GeptHooks type= kernel start= demand binPath= "C:\path\to\GeptHooks.sy
 sc start GeptHooks
 ```
 
-Stop and uninstall:
+Stop and uninstall (all hooks are removed cleanly, then VT is torn down):
 
 ```
 sc stop GeptHooks
 sc delete GeptHooks
 ```
 
-Use from your driver (preview API):
+## 🧩 Using the API
 
 ```c
+#include "GeptApi.h"
+
+// Your detour callback: runs in the original function's context
+// (arbitrary thread / IRQL). Return value becomes the hook's return value.
+static ULONG64 OnNtClose(PVOID Context,
+    ULONG64 Arg1, ULONG64 Arg2, ULONG64 Arg3, ULONG64 Arg4)
+{
+    // IRQL-safe work only: counters, ring events, GeptCallOriginal...
+    // NEVER block, never touch paged memory.
+    ULONG64 status = GeptCallOriginal(Arg1, Arg2, Arg3, Arg4);
+    return status;   // or forge it — you have full control
+}
+
+// Install / remove / enumerate
 GEPT_HOOK Hook = { 0 };
-Hook.TargetAddress = TargetFunction;
-Hook.Type          = GeptHookExecute;
-Hook.Callback      = OnTargetExecuted;
+Hook.Target   = (PVOID)NtClose;
+Hook.Callback = OnNtClose;
+Hook.Context  = NULL;
 
 GeptHookInstall(&Hook);
-// ... your test logic ...
-GeptHookRemove(&Hook);
+// ... hooks are live on all cores ...
+GeptHookRemove((PVOID)NtClose);
+
+ULONG Count = 0;
+GeptHookEnumerate(NULL, &Count);   // query live hook count
 ```
+
+**Callback discipline** (enforced by reality, see NOTES.md for the war stories):
+
+1. Callbacks run at the original function's IRQL — only interlocked ops, lock-free logging, and `GeptCallOriginal` are safe. No blocking, no paged memory, no `DbgPrint` storms.
+2. Always call the original through `GeptCallOriginal` — it guarantees the clean view and restores the hooked view afterwards (thread-migration safe).
+3. While your callback runs, the current core is on the clean view: other hook targets invoked from within the callback are **not** intercepted (documented limitation).
+4. Stack arguments beyond the first four (rcx/rdx/r8/r9) are not forwarded in v1.
+
+On unload, call `GeptApiRemoveAll()` **before** VT teardown, then `GeptApiFreeMemory()` after — see `main.c`'s `DriverUload` for the reference sequence.
+
+## ⚙️ Requirements
+
+- **CPU**: Intel with VT-x + EPT; **VMFUNC (Haswell or later) required for the zero-VM-Exit path** — older CPUs get the violation fallback
+- **OS**: Windows 10 / 11 x64
+- **Hypervisor conflicts**: Hyper-V, Virtualization-Based Security (VBS), Memory Integrity (Core Isolation), and WHP must be disabled — GeptHooks needs to be the root hypervisor
+- **Test signing**: enable with `bcdedit /set testsigning on`, or sign the driver properly
+- **Build**: Visual Studio 2022 + Windows Driver Kit (WDK)
+- **Runtime**: administrator privileges
+
+## 🧪 Verified Milestones
+
+| Phase | Milestone | Measured evidence |
+|---|---|---|
+| STAGE 1 | Self-test EPT hook (violation scheme) | hook chain live, clean unload |
+| STAGE 2 | NtClose system-wide monitoring | 780k+ interceptions total across runs, 16–90 min stability |
+| Phase 1 | VMFUNC infrastructure, 8/8 cores | zero-VM-Exit EPTP round-trip self-test |
+| Phase 2 | Dual-EPT zero-VM-Exit hooks | marker pages read different values per view; Δr48 = 0 while interception grows |
+| Phase 3 | Concealment (CPUID + TSC) | CPUID signature fully masked; per-core TSC offset ≈ −0.6 ms of hidden exit time |
+| Phase 4 | Simple API lifecycle | install +388/2s → remove +0/2s → reinstall +14/2s, clean unload |
+
+## ⚠️ Project Status
+
+Core paths (virtualization, dual-EPT VMFUNC hooks, concealment, detour API) are graduated from staged on-hardware testing on an i7-6700HQ (8 cores, Windows 10 x64). The framework is research-grade: bugs may still bugcheck the system — always test on a disposable machine.
 
 ## 🚫 Non-Commercial Statement
 
@@ -127,7 +183,7 @@ The final interpretation of this disclaimer belongs to the author of this projec
 
 ## 💬 Contact
 
-You are welcome to submit issues, suggestions, or bug reports via GitHub Issues.
+You are welcome to submit issues, suggestions, and bug reports via GitHub Issues.
 
 ## ⭐ Support the Project
 

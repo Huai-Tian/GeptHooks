@@ -46,6 +46,9 @@
     <ClCompile Include="LDasm.c">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="GeptApi.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="common.h">
@@ -70,6 +73,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="LDasm.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="GeptApi.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

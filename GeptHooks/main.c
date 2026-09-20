@@ -4,6 +4,7 @@
 #include"PageHook.h"
 #include"VMX.h"
 #include"ept.h"
+#include"GeptApi.h"
 
 //分阶段联调开关:
 //0 = 仅开启虚拟化(vmlaunch+EPT恒等映射), 用于先验证VT层稳定
@@ -89,7 +90,21 @@
 //    maxleaf>0x1F收敛(防嵌套泄漏; 本机0x16不触发)+leaf1 bit31清0(已有)
 //  ③自测: 逐核rdtsc环绕CPUID(单次+1000次平均)落盘+CPUID伪装值自证;
 //    卸载't'环事件=最终TSC_OFFSET(累计隐藏总时长的负值)
-#define GEPT_BUILD_TAG "v3.49"
+//v3.50: **Phase 4——简易API框架化**(用户初衷之二: 普通开发者零虚拟化
+//知识即可用虚拟层HOOK)。GeptApi.h/GeptApi.c新增:
+//  GeptHookInstall/Remove/Enumerate + GeptCallOriginal(detour式)
+//  ①触发链: hooked视图CodePage跳转→独享trampoline槽(mov r10,entry;
+//    jmp GeptStubEntry)→stub: vmfunc切clean→SAVE_ALL→分发器→用户回调
+//    →GeptViewSwitch(1)归位→ret(全程零VM-Exit, 回调返回值=函数返回值)
+//  ②本质简化: clean视图原函数字节完好→GeptCallOriginal直接call原始
+//    入口, **prologue重放/hookLen跳回/trampoline机器整套消亡**
+//  ③Remove: 还原CodePage被覆盖字节(源=原页权威副本)+全核双视图invept
+//    (vmcall(7))→hooked视图≡clean视图=hook死透; 在途回调安全完成
+//  ④卸载纪律: GeptApiRemoveAll(关VT**前**, 让在途回调的vmfunc安全执行)
+//    +2s宽限+GeptApiFreeMemory(关VT后)
+//  ⑤STAGE2=API demo三段式: 装观测2s→移除冻结2s→重装恢复2s=生命周期
+//    闭环证据(旧AsmHookNtClose路径保留为无VMFUNC机器的fallback)
+#define GEPT_BUILD_TAG "v3.50"
 
 //v3.33: 构建标签全局副本——黑匣子(common.h GEPT_BLACKBOX)在FlInit时
 //拷入, 蓝屏DMP解析时自证二进制版本
@@ -125,6 +140,26 @@ NTSTATUS HookNtClose(HANDLE handle)
 	return 0;
 }
 
+//v3.50 Phase4: STAGE 2的API demo回调(detour式)——与HookNtClose的
+//监控语义等价(计数+采样), 但经GeptCallOriginal透传原函数并**返回其
+//真实NTSTATUS**(detour完整控制权的演示; 旧violation路径的返回值
+//被丢弃只能旁路)。纪律同上: 任意IRQL上下文=只做Interlocked+环事件
+//+GeptCallOriginal(vmfunc与普通call在任意IRQL安全), 绝不FlLog/DbgPrint
+static ULONG64 DemoNtCloseCallback(PVOID Context, ULONG64 Arg1, ULONG64 Arg2,
+	ULONG64 Arg3, ULONG64 Arg4)
+{
+	UNREFERENCED_PARAMETER(Context);
+	LONG n = InterlockedIncrement(&g_geptNtCloseCount);
+	if (n == 1 || (n & 0xFFFF) == 0)
+	{
+		FlRingPush('N', KeGetCurrentProcessorNumber(), 0,
+			(ULONG64)(ULONG)n, Arg1, 0);
+	}
+	//回调此刻运行在clean视图(StubEntry已vmfunc切过)→原函数字节完好,
+	//GeptCallOriginal确保clean+调用+归位hooked(线程迁移安全)
+	return GeptCallOriginal(Arg1, Arg2, Arg3, Arg4);
+}
+
 VOID HookTestTarget()
 {
 	//v3.41: 成功证据走文件日志(测试链路=上传日志, DbgView非必开)。
@@ -147,6 +182,18 @@ void DriverUload(PDRIVER_OBJECT pDriverObjct)
 		return;
 	}
 	FlLog("Unload: 开始关闭VT(串行逐核)");
+	//v3.50 Phase4: 先移除全部API hook(CodePage字节还原+全核invept)——
+	//必须在vmx_off**之前**: ①移除后新触发停止 ②在途回调(stub的
+	//vmfunc(0,1)/GeptCallOriginal)此刻VT仍开=安全执行完毕。
+	//随后的2s宽限让被抢占的在途回调跑完; GeptViewSwitch的bInGuest
+	//检查再兜一层(残余窗口=check与vmfunc两条指令间被抢占+停机2s,
+	//概率可忽略; vmx_off后执行vmfunc=#UD蓝屏, 这是已知最后风险点)
+	GeptApiRemoveAll();
+	{
+		LARGE_INTEGER tick;
+		tick.QuadPart = -2000000LL;    //2秒宽限
+		KeDelayExecutionThread(KernelMode, FALSE, &tick);
+	}
 	ULONG cpuCount = KeQueryActiveProcessorCount(NULL);
 	KAFFINITY allCpus = KeQueryActiveProcessors();
 	//串行逐核退出VT(取代DPC): 成功进入guest的核vmcall退出, 仅vmxon的核直接vmx_off
@@ -169,6 +216,9 @@ void DriverUload(PDRIVER_OBJECT pDriverObjct)
 	}
 	//v3.18: 释放共享高区页表(8核EPT共用的511个pdpt, 幂等)
 	EptShutdownHighMappings();
+	//v3.50: API内存(条目+跳板池, 纯pool释放无VT依赖; 此刻已无任何
+	//在途代码引用——hook已移除+VT已关)
+	GeptApiFreeMemory();
 	//v3.45: STAGE 2总结——此时全核vmx_off已完成(EPT失效=NtClose hook
 	//自动解除, 全系统回到原函数), 计数器定格
 	if (g_geptNtCloseCount > 0)
@@ -600,30 +650,97 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObjct, PUNICODE_STRING pRegPath)
 			return STATUS_UNSUCCESSFUL;
 		}
 		g_jmp_ntclose = (ULONG64)NtClose + hookLen;
-		FlLog("[STAGE2] 安装NtClose hook: 目标=%p 跳回=%llx(+%lu) 重放22B校验OK"
-			"(全系统高频监控: 'N'环事件每65536次采样, 卸载时打印总计数)",
-			NtClose, (unsigned long long)g_jmp_ntclose, hookLen);
-		PHHook(NtClose, AsmHookNtClose);
-		FlLog("[STAGE2] NtClose hook已布防(DPC广播返回), 此后全系统NtClose调用"
-			"经跳板→HookNtClose(计数+采样)→重放→原函数; 系统存活的每一秒"
-			"都是监控模式正确的证据");
-		//v3.48: 零VM-Exit观测窗(2秒)——hook已全面接管系统NtClose调用,
-		//VMFUNC主路径下: 拦截计数持续增长而r48(EPT violation计数)纹丝
-		//不动=v3.46方案(高频函数每次触发都violation)与VMFUNC方案的
-		//直接量化对比, Phase 2毕业的核心判据
+		//==== v3.50 Phase4: STAGE 2 = API demo(detour式三段生命周期) ====
+		//优先走GeptHookInstall(VMFUNC双EPT detour); 失败(无VMFUNC机器/
+		//资源不足)自动退回旧violation路径(AsmHookNtClose重放跳板)。
+		//demo回调=DemoNtCloseCallback(计数+采样+GeptCallOriginal透传
+		//并返回真实NTSTATUS)——detour完整控制权的活体演示
+		GEPT_HOOK geptDemo = { 0 };
+		geptDemo.Target = (PVOID)NtClose;
+		geptDemo.Callback = DemoNtCloseCallback;
+		geptDemo.Context = NULL;
+		NTSTATUS apiSt = GeptHookInstall(&geptDemo);
+		if (NT_SUCCESS(apiSt))
 		{
-			LONG64 r0 = g_flExitCounts[EXIT_REASON_EPT_VIOLATION];
-			LONG n0 = g_geptNtCloseCount;
+			FlLog("[STAGE2-API] NtClose已装(detour): 触发链=CodePage跳转→trampoline槽"
+				"→GeptStubEntry(vmfunc切clean)→DemoNtCloseCallback(计数+采样)"
+				"→GeptCallOriginal(直接call原始入口, 零重放)→vmfunc归位→ret, 全程零VM-Exit");
+			//三段式生命周期演示(每段2s): 装→拦截增长→移除→拦截冻结→重装→恢复
+			//=Install/Remove/Reinstall闭环证据, Phase 4毕业判据
 			LARGE_INTEGER tick;
 			tick.QuadPart = -2000000LL;    //2秒
+			LONG64 r48a = g_flExitCounts[EXIT_REASON_EPT_VIOLATION];
+			LONG n0 = g_geptNtCloseCount;
 			KeDelayExecutionThread(KernelMode, FALSE, &tick);
-			LONG64 r1 = g_flExitCounts[EXIT_REASON_EPT_VIOLATION];
+			LONG64 r48b = g_flExitCounts[EXIT_REASON_EPT_VIOLATION];
 			LONG n1 = g_geptNtCloseCount;
-			FlLog("[STAGE2] 零VM-Exit观测窗(2s): NtClose拦截%ld→%ld(+%ld), "
-				"r48=%lld→%lld(Δ=%lld)——拦截持续增长且Δr48=0即VMFUNC hook闭环铁证"
-				"(Δr48>0=有核走violation方案或写兜底触发, 对照[双EPT]汇总)",
-				n0, n1, n1 - n0, (long long)r0, (long long)r1,
-				(long long)(r1 - r0));
+			FlLog("[STAGE2-API] 窗口1(已装,2s): 拦截%ld→%ld(+%ld), Δr48=%lld"
+				"(应: 增长且Δ=0=零VM-Exit detour)",
+				n0, n1, n1 - n0, (long long)(r48b - r48a));
+			//移除: CodePage字节还原+全核invept(vmcall(7)×8核)→hook死透
+			NTSTATUS rmSt = GeptHookRemove((PVOID)NtClose);
+			if (NT_SUCCESS(rmSt))
+			{
+				KeDelayExecutionThread(KernelMode, FALSE, &tick);
+				LONG n2 = g_geptNtCloseCount;
+				FlLog("[STAGE2-API] 窗口2(已移除,2s): 拦截%ld→%ld(+%ld)"
+					"(应: ≈0=移除生效, NtClose直回原函数)",
+					n1, n2, n2 - n1);
+				//重装: PHHook重整页复制+重打跳转(EPT已布防无需再广播)
+				GEPT_HOOK geptDemo2 = { 0 };
+				geptDemo2.Target = (PVOID)NtClose;
+				geptDemo2.Callback = DemoNtCloseCallback;
+				geptDemo2.Context = NULL;
+				NTSTATUS reSt = GeptHookInstall(&geptDemo2);
+				if (NT_SUCCESS(reSt))
+				{
+					KeDelayExecutionThread(KernelMode, FALSE, &tick);
+					LONG64 r48c = g_flExitCounts[EXIT_REASON_EPT_VIOLATION];
+					LONG n3 = g_geptNtCloseCount;
+					FlLog("[STAGE2-API] 窗口3(重装,2s): 拦截%ld→%ld(+%ld), Δr48=%lld"
+						"(应: 恢复增长=Install/Remove/Reinstall生命周期闭环)",
+						n2, n3, n3 - n2, (long long)(r48c - r48b));
+					ULONG live = 0;
+					GeptHookEnumerate(NULL, &live);
+					FlLog("[STAGE2-API] 生命周期闭环: 装Δ%ld/卸Δ%ld/重装Δ%ld, 枚举live=%u"
+						"(此后NtClose持续detour监控直至卸载GeptApiRemoveAll)",
+						n1 - n0, n2 - n1, n3 - n2, live);
+				}
+				else
+				{
+					FlLog("[STAGE2-API] **重装失败(0x%X)**——保持无hook状态继续观测", reSt);
+				}
+			}
+			else
+			{
+				FlLog("[STAGE2-API] **Remove失败(0x%X)**——保持已装状态继续监控", rmSt);
+			}
+		}
+		else
+		{
+			//==== fallback: v3.45/v3.46 violation路径(无VMFUNC机器) ====
+			FlLog("[STAGE2] API安装未成(0x%X), 退回violation方案(AsmHookNtClose重放跳板)",
+				apiSt);
+			FlLog("[STAGE2] 安装NtClose hook: 目标=%p 跳回=%llx(+%lu) 重放22B校验OK",
+				NtClose, (unsigned long long)g_jmp_ntclose, hookLen);
+			PHHook(NtClose, AsmHookNtClose);
+			FlLog("[STAGE2] NtClose hook已布防(DPC广播返回), 此后全系统NtClose调用"
+				"经跳板→HookNtClose(计数+采样)→重放→原函数; 系统存活的每一秒"
+				"都是监控模式正确的证据");
+			//v3.48: 零VM-Exit观测窗(2秒)
+			{
+				LONG64 r0 = g_flExitCounts[EXIT_REASON_EPT_VIOLATION];
+				LONG n0 = g_geptNtCloseCount;
+				LARGE_INTEGER tick;
+				tick.QuadPart = -2000000LL;    //2秒
+				KeDelayExecutionThread(KernelMode, FALSE, &tick);
+				LONG64 r1 = g_flExitCounts[EXIT_REASON_EPT_VIOLATION];
+				LONG n1 = g_geptNtCloseCount;
+				FlLog("[STAGE2] 零VM-Exit观测窗(2s): NtClose拦截%ld→%ld(+%ld), "
+					"r48=%lld→%lld(Δ=%lld)——拦截持续增长且Δr48=0即VMFUNC hook闭环铁证",
+					n0, n1, n1 - n0, (long long)r0, (long long)r1,
+					(long long)(r1 - r0));
+			}
 		}
 		Log("stage2: NtClose hook installed");
 	}

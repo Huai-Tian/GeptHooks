@@ -709,6 +709,24 @@ void VmxExitHandler(PGUEST_REGS GuestRegs)
 		{
 			EptSetHook(GuestRegs->rdx, GuestRegs->r8);
 		}
+		//v3.50 Phase4: GeptHookRemove原语(GeptApi.c的DPC广播调用)——
+		//rdx=CodePage+偏移(还原目标), r8=原页+偏移(权威副本, 原页从未被
+		//修改), r9=还原长度(hookLen)。每核DPC各执行一次: memcpy幂等无害,
+		//invept按核生效(TLB每核独立)故每核必做。还原后hooked视图≡clean
+		//视图=hook死透; 在途回调(已过跳板)安全完成(其vmfunc此刻VT仍开)
+		else if (GuestRegs->rcx == 7)
+		{
+			if (GuestRegs->r9 > 0 && GuestRegs->r9 <= 128)
+			{
+				RtlCopyMemory((PVOID)GuestRegs->rdx, (PVOID)GuestRegs->r8,
+					(SIZE_T)GuestRegs->r9);
+			}
+			//双视图invept: hooked视图的CodePage执行缓存必须失效, 否则
+			//旧翻译(跳转字节)存活到TLB自然逐出=Remove延迟生效
+			EptInveptBothViews();
+			FlRingPush('m', KeGetCurrentProcessorNumber(), 7,
+				GuestRegs->rdx, GuestRegs->r8, GuestRegs->r9);
+		}
 		//v3.13落地探针(唯一合法来源=CmGuestProbe首条vmcall, 探针页已过
 		//launch前EptVerifyTables[5]样本走查): 看到它=全链路自证通过
 		//"VM-entry转换+EPT取指翻译+vmcall exit+本handler+RIP推进+vmresume"。

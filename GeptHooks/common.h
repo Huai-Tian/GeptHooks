@@ -67,7 +67,6 @@ extern "C" {
 	void CmGuestProbe();
 	void CmVmCall(ULONG opcode, ULONG64 arg2, ULONG64 arg3, ULONG64 arg4);
 	void CmTripleFaultPark();    //v3.35: 三重故障park本体(asm, sti+hlt自旋, 永不返回)
-	void CmVmfuncTest();         //v3.47 Phase1: guest内VMFUNC(0,1)/(0,0)裸往返自测(v3.48起=真实双EPT切换环); 仅bVmfuncOn核可调, 否则#UD蓝屏
 	void CmVmfuncSwitch(ULONG eptpIndex);   //v3.48 Phase2: guest内单次VMFUNC(0, idx)EPTP切换(0=clean/1=hooked, 零VM-Exit); 仅bVmfuncOn核可调; 失败走exit rsn59→跳过+自测降级
 
 	//v3.35: 三重故障park核位掩码(bit i=cpu i已park)。main.c卸载守卫读它:
@@ -193,12 +192,23 @@ extern "C" {
 		CHAR   text[GEPT_LINE_TEXT];
 	} GEPT_LINE_ENTRY, * PGEPT_LINE_ENTRY;
 
-	VOID FlInit(VOID);                  //DriverEntry最先调用: 只创建T1/T2后台线程
-	VOID FlShutdown(VOID);              //DriverUnload最后调用: 停线程+T1最终落盘
-	VOID FlLog(const char* fmt, ...);   //仅PASSIVE_LEVEL: 入行环(零文件I/O)
-	VOID FlMarkEntryDone(VOID);         //DriverEntry末尾调用: 放行T2的Desktop镜像
+	//===== v1.2: 文件日志系统总开关(默认关闭) =====
+	//关闭(默认): 零后台线程(T1/T2/看门狗全部不创建)/零文件I/O/零观测面,
+	//  FlLog/FlLogSpin/FlRingPush等全部接口为空操作——交付形态的隐蔽性基线
+	//手动开启: 在本驱动服务注册表键下新建DWORD值LogEnable=1再启动服务:
+	//  reg add HKLM\SYSTEM\CurrentControlSet\Services\GeptHooks ^
+	//      /v LogEnable /t REG_DWORD /d 1 /f
+	//开启后: Temp权威副本C:\Windows\Temp\gept_log.txt + Desktop尽力镜像
+	//  (C:\Users\<用户>\Desktop\gept_log.txt) + 蓝屏黑匣子看门狗(30s冻结
+	//  检测→主动蓝屏0xDEADC0DE写MEMORY.DMP——调试期专用, 交付部署勿开)
+	extern volatile LONG g_flEnabled;      //0=关闭(Fl*全空操作), 1=开启(FlInit读LogEnable置位)
+
+	VOID FlInit(PCUNICODE_STRING ServiceRegPath);   //DriverEntry最先调用: 读服务键LogEnable开关, 开启才创建T1/T2/看门狗线程
+	VOID FlShutdown(VOID);              //DriverUnload最后调用: 停线程+T1最终落盘(未开启=空操作)
+	VOID FlLog(const char* fmt, ...);   //仅PASSIVE_LEVEL: 入行环(零文件I/O); 未开启=空操作
+	VOID FlMarkEntryDone(VOID);         //DriverEntry末尾调用: 放行T2的Desktop镜像; 未开启=空操作
 	VOID FlRingPush(CHAR tag, ULONG cpu, ULONG reason, ULONG64 a, ULONG64 b, ULONG64 c);
-	//任意IRQL(含VM-exit): 无锁写二进制事件环
+	//任意IRQL(含VM-exit): 无锁写二进制事件环; 未开启=空操作
 	VOID FlRingExit(ULONG cpu, ULONG reason, ULONG64 rip, ULONG64 qual);
 	//VM-exit统一采样入口(内部含reason计数)
 	extern volatile LONG64 g_flExitCounts[GEPT_EXIT_REASON_MAX];

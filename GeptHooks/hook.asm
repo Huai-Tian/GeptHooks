@@ -6,7 +6,7 @@ HVM_SAVE_ALL_NOSEGREGS MACRO
         push r11
         push r10
         push r9
-        push r8        
+        push r8
         push rdi
         push rsi
         push rbp
@@ -24,7 +24,7 @@ HVM_RESTORE_ALL_NOSEGREGS MACRO
         pop rbp
         pop rbp
         pop rsi
-        pop rdi 
+        pop rdi
         pop r8
         pop r9
         pop r10
@@ -34,12 +34,14 @@ HVM_RESTORE_ALL_NOSEGREGS MACRO
         pop r14
         pop r15
 ENDM
-EXTERN	 HookTestTarget:PROC
-EXTERN g_jmp_testtarget:DQ
-EXTERN g_geptDummyVmxonPa:DQ     ;v3.53: VMXON探针哑操作数(PA=0, main.c定义)
 EXTERN	 GeptCallbackDispatch:PROC   ;v3.50: API detour分发器(GeptApi.c)
 EXTERN	 GeptViewSwitch:PROC         ;v3.50: 带VT开关检查的视图切换(GeptApi.c)
 .CODE
+;v1.2: 自测目标与病毒探针(GeptTestTarget/GeptTestTarget6/AsmHookTestTarget/
+;GeptVirusVmxDetectOff/GeptVirusVmxOn)整体退役——开发期验证专用, API使用
+;者不需要(验证史见NOTES.md); 本文件只保留API运行时必需的两个入口:
+;GeptStubEntry(hook触发链)与GeptCallOrigAsm(第5+栈参数转发桩)
+;
 ;==== v3.51 Phase4/6: API detour stub(统一版, VMFUNC核+fallback核共用) ====
 ;进入链: hooked视图hook页(=CodePage)目标偏移处的14B绝对跳转
 ;  → 本hook独享trampoline槽(GeptApi.c生成: mov r10,entry; jmp GeptStubEntry)
@@ -99,7 +101,7 @@ GeptStubEntry ENDP
 ;(从源逐个复制到[rsp+20h..])+rcx/rdx/r8/r9装载+call点16对齐。
 ;栈帧精算(入口rsp%16==8): push rbp→0(rbp=帧锚, rbp%16==0); push
 ;rbx/rsi/rdi/rcx(4×8=20h)→rsp%16==0; sub 120h(288B, 16倍数)→call点
-;%16==0 ✓。固定布局的**本质优点**: arg5恒在[rsp+20h](影子之上),
+;%16==0 OK。固定布局的**本质优点**: arg5恒在[rsp+20h](影子之上),
 ;与N奇偶无关——动态sub方案的N奇偶对齐补偿问题构造性不存在
 ;120h=影子20h+栈参区100h(32槽×8B, N≤32只填前N槽, 余槽callee不读)
 ;PROC FRAME+unwind指令(.pushreg/.allocstack/.setframe): 被调Target
@@ -152,120 +154,4 @@ gco_copy:
     pop  rbp
     ret
 GeptCallOrigAsm ENDP
-
-;==== 自测目标: 指令布局完全自控, 不依赖任何Windows版本 ====
-;前5条mov共15字节(>=14字节跳板), 无相对寻址指令, 可被安全跳板化
-;v3.42: **页隔离**——v3.41实测蓝屏的结构性缺陷: 目标原本与
-;common-asm.asm(CmGuestRsp/CmGuestProbe/**CmVmCall**/CmTripleFaultPark)和
-;AsmHookTestTarget同页(hook.asm与common-asm被链接器排到同一4K页, 实测
-;目标=...10D6/跳板=...10E6/探针=...103D/CmVmCall=...1075)——EptSetHook清掉
-;该页execute后, DPC自己的vmcall(2)返回路径(ret)就在被hook页上=立即
-;violation, 全部VT机器码卷入双视图互切(exec视图write=0=活锁雷区), 且
-;自测≠真实场景(STAGE 2 hook的是nt页, 不含我们的代码)。隔离后: 被
-;hook页只有16字节GeptTestTarget, 零自指干扰
-;v3.42b实现修正: 段内`align 1000h`被ml64拒绝("invalid combination with
-;segment alignment:4096"——.code段默认ALIGN(16), 段内align不得超段属性)。
-;改用SEGMENT伪指令自定义ALIGN(4096)段: 链接器给GEPTTGT独立PE section,
-;内存布局按SectionAlignment(0x1000)整页对齐=目标函数独占一页, 且与
-;.code(跳板/AsmHookNtClose)和common-asm.asm物理不同section必然不同页
-GEPTTGT SEGMENT ALIGN(4096) 'CODE'
-GeptTestTarget PROC
-    mov     r11, rcx        ;3字节
-    mov     r10, rdx        ;3字节
-    mov     r9,  r8         ;3字节
-    mov     r8,  r9         ;3字节
-    mov     r11, r10        ;3字节
-    ret
-GeptTestTarget ENDP
-GEPTTGT ENDS
-
-;==== v1.1: 六参自测目标(2栈参)——CallOriginal第5+参数转发上机判据 ====
-;独立GEPTTGT6段=独立页(与GeptTestTarget页物理隔离: STAGE1的violation
-;hook常驻该页, 同页装第二个hook会整页重置互相干扰——v3.50已知限制④)
-;指令全为寄存器/rsp相对寻址(无RIP-relative/无相对分支)→LDE重定位
-;跳板可安全逐条复制; 前5条=3+3+3+3+5=17B≥14B(PHHook跳转覆盖长度)
-;调用形态(x64 ABI): rcx/rdx/r8/r9=a1-a4, [rsp+28h]=a5, [rsp+30h]=a6
-;(入口[rsp]=返回地址, [rsp+8..27h]=影子空间——栈参在影子之上)
-;返回=a1+..+a6全参数加法靶: 六参中任何一个的转发/改写错都改变结果
-;重定位正确性: 第5条add rax,[rsp+28h]在跳板重放时读**跳板自身等价
-;调用帧**的同偏移(桩/跳板入口帧形态与原函数一致)=语义严格保持
-GEPTTGT6 SEGMENT ALIGN(4096) 'CODE'
-GeptTestTarget6 PROC
-    mov  rax, rcx             ;48 89 C8 (3B)  a1
-    add  rax, rdx             ;48 01 D0 (3B)  +a2
-    add  rax, r8              ;4C 01 C0 (3B)  +a3
-    add  rax, r9              ;4C 01 C8 (3B)  +a4
-    add  rax, [rsp+28h]       ;48 03 44 24 28 (5B)  +a5(第1栈参)
-    add  rax, [rsp+30h]       ;48 03 44 24 30 (5B)  +a6(第2栈参)
-    ret
-GeptTestTarget6 ENDP
-GEPTTGT6 ENDS
-
-;独立section天然把跳板隔到不同页(.code), 无需align(v3.42b)
-;(v3.51: GeptStubEntry已移至文件头部统一版; 旧版裸vmfunc stub与
-; AsmHookNtClose硬编码重放随Phase 6动态化一并退役删除)
-
-;==== 自测跳板: 重放被跳板覆盖的5条mov, 然后跳回 原函数+15 ====
-;v3.43**根因修复**: call HookTestTarget前的sub rsp,20h→28h。
-;v3.41/v3.42b两连蓝屏0x1E@(0xC0000005, nt+0x405B4F, 0, -1)的完整机理:
-;  ①本函数入口RSP%16==8(跳板push imm32+ret净值0, 等效一次正常call)
-;  ②16个push(128B)+sub 20h(32B)都不改RSP%16奇偶→call时RSP%16==8
-;    =违反ABI(call前须≡0), HookTestTarget整棵调用树错8字节运行
-;  ③HookTestTarget→FlLog等待T1落盘→线程阻塞→调度器在错位栈上
-;    调用nt上下文切换shell(sub rsp,138h; movaps [rsp+30h],xmm6...)
-;  ④movaps要求16字节对齐, 错8字节→#GP(0); 内核把#GP构造成AV记录
-;    (info[0]=0读, info[1]=-1哨兵)→0x1E@(C0000005, nt+0x405B4F, 0, -1)
-;  铁证: ntoskrnl反汇编RVA 0x405B4F=movaps xmm6→[rsp+30h], 其worker
-;  0x405E90含fxsave/xsave+mov [rdi+58h],rsp+mov rsp,[rsi+58h](栈切换)
-;  =KiSwapContext; 两次蓝屏同RVA(确定性调度路径), 页隔离前后同签名
-;  (与hook页内容无关), Stage0无此路径从不崩——全部吻合
-;28h=32B影子空间(ABI)+8B对齐补偿(与CmGuestRsp的sub 28h同理)
-AsmHookTestTarget proc
-    HVM_SAVE_ALL_NOSEGREGS
-    sub rsp,28h
-    call HookTestTarget
-    add rsp,28h
-    HVM_RESTORE_ALL_NOSEGREGS
-    ;重放被跳板覆盖的原始指令(与GeptTestTarget前15字节完全一致)
-    mov     r11, rcx
-    mov     r10, rdx
-    mov     r9,  r8
-    mov     r8,  r9
-    mov     r11, r10
-    jmp qword ptr[g_jmp_testtarget]
-AsmHookTestTarget endp
-
-;==== v3.53 v1.0.1: 病毒模拟探针(DriverEntry自测专用, 非hook目标, ====
-;==== 与AsmHookTestTarget同页无害——本页永不被EPT hook)            ====
-;机器码纪律(v3.47c铁律): VMX指令一律SDM出处手编, 绝不用论坛/记忆值
-;  VMXOFF = 0F 01 C4 (SDM VMXOFF页"0F 01 C4 VMXOFF"; v3.47c硬件实证
-;            exit rsn26铁证双确认)
-;  VMXON  = F3 0F C7 /6 (SDM VMXON页"F3 0F C7 /6 VMXON m64";
-;            ModRM=30h→[rax]形, lea免手算disp32)
-
-;VMXOFF探针: guest内执行→VM-exit rsn26→宿主case26注入#UD→内核SEH
-;捕获(异常码应=0xC000001D STATUS_ILLEGAL_INSTRUCTION)。**v3.47c确切
-;死法的正规判据重放**: 当年这条机器码蓝屏过整机(无case落'U'逃生),
-;现在它活着穿过新case=安全修复的毕业判据。仅可在in-guest核调用
-;(裸机上=真VMXOFF, 自测流程保证此刻全核in-guest)
-GeptVirusVmxDetectOff PROC
-    db 0Fh, 01h, 0C4h             ;vmxoff
-    ret                            ;到达=宿主未注入#UD(自测判FAIL)
-GeptVirusVmxDetectOff ENDP
-
-;VMXON探针: guest内执行→VM-exit rsn27→宿主注入#GP(0)(v1.1: case27从
-;伪造VMfailInvalid改#GP——"BIOS锁VT"故事的行为面: 0x3A=1的裸机上
-;vmxon=#GP(0), 与MSR 0x3A读伪造=1配套, 读/行为两面互相印证)→内核SEH
-;捕获, 异常码应=0xC0000005(#GP的内核异常码, v3.43 movaps#GP案同款
-;AV转换)。无异常到达xor rax,rax;ret=宿主未注入(自测判FAIL, 返回0)。
-;哑操作数PA=0: 裸机(未虚拟化核)上vmxon=VMfailInvalid(CF=1)无异常=
-;返回0——探针**必须钉在in-guest核执行**(main.c已做)。同框架junior
-;实例的__vmx_on在宿主guest内走的就是这条#GP路→junior侧SEH捕获
-;(VMX.c已__try化)→干净失败=互斥仲裁闭环
-GeptVirusVmxOn PROC
-    lea rax, [g_geptDummyVmxonPa] ;操作数地址(哑QWORD)
-    db 0F3h, 0Fh, 0C7h, 30h       ;vmxon qword ptr [rax]
-    xor rax, rax                   ;到达=无异常=FAIL(返回0)
-    ret
-GeptVirusVmxOn ENDP
 END

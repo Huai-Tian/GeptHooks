@@ -87,6 +87,11 @@ volatile LONG g_geptVcpuCpu = -1;
 volatile LONG g_geptParkedMask = 0;
 volatile LONG64 g_flExitCounts[GEPT_EXIT_REASON_MAX] = { 0 };
 
+//v1.2: 日志系统总开关(默认0=关闭)——FlInit读服务注册表键的LogEnable
+//DWORD(=1开启); 关闭时T1/T2/看门狗线程全部不创建, 全部Fl*接口为
+//空操作=零后台线程零文件I/O零观测面(框架交付形态的隐蔽性基线)
+volatile LONG g_flEnabled = 0;
+
 //===== v3.33/v3.34: 蓝屏黑匣子 + 自旋看门狗 =====
 //(设计动机与v3.33 DPC版失败判读见common.h GEPT_BLACKBOX注释)
 static GEPT_RING_ENTRY g_flRing[GEPT_RING_SIZE];   //BSS: 非分页自动清零
@@ -267,6 +272,10 @@ static VOID FlDrainTempLocked(VOID);        //前置声明: T1(或T1退出后的
 //任意IRQL(含VM-exit): 无锁写环形缓冲, seq最后写作为提交标记
 VOID FlRingPush(CHAR tag, ULONG cpu, ULONG reason, ULONG64 a, ULONG64 b, ULONG64 c)
 {
+	if (!g_flEnabled)
+	{
+		return;    //v1.2: 日志关闭=零观测面(VM-exit热路径仅此一次判断)
+	}
 	LONG idx = InterlockedIncrement(&g_flRingHead) - 1;
 	PGEPT_RING_ENTRY e = &g_flRing[idx & (GEPT_RING_SIZE - 1)];
 	e->a = a;
@@ -436,9 +445,9 @@ VOID FlLog(const char* fmt, ...)
 	char buf[512];
 	va_list args;
 	LARGE_INTEGER tick;
-	if (KeGetCurrentIrql() != PASSIVE_LEVEL)
+	if (!g_flEnabled || KeGetCurrentIrql() != PASSIVE_LEVEL)
 	{
-		return;
+		return;    //v1.2: 日志未开启=空操作
 	}
 	va_start(args, fmt);
 	RtlStringCbVPrintfA(buf, sizeof(buf), fmt, args);
@@ -471,9 +480,9 @@ VOID FlLogSpin(const char* fmt, ...)
 	//卸载路径全程DISPATCH_LEVEL(VmxStopCpu的日志全走本函数=同核无线程
 	//切换+日志仍同步落盘, 两全)。原PASSIVE门是v3.25"KEEP检查点IF=0"时代
 	//的保守限制, 并非自旋本身限制
-	if (KeGetCurrentIrql() > DISPATCH_LEVEL)
+	if (!g_flEnabled || KeGetCurrentIrql() > DISPATCH_LEVEL)
 	{
-		return;
+		return;    //v1.2: 日志未开启=空操作
 	}
 	va_start(args, fmt);
 	RtlStringCbVPrintfA(buf, sizeof(buf), fmt, args);
@@ -505,6 +514,10 @@ VOID FlLogSpin(const char* fmt, ...)
 //a值/最后[HB]的r18计数=精确死亡迭代号
 VOID FlArmLaunchWatch(VOID)
 {
+	if (!g_flEnabled)
+	{
+		return;    //v1.2: 日志未开启=空操作(不触碰事件对象/不睡眠)
+	}
 	g_flLaunchHot = 1;
 	KeSetEvent(&g_flKickT1, IO_NO_INCREMENT, FALSE);
 	LARGE_INTEGER warm;
@@ -515,6 +528,10 @@ VOID FlArmLaunchWatch(VOID)
 //DriverEntry末尾调用: 放行T2的Desktop镜像(避开加载窗口期的过滤驱动死锁)
 VOID FlMarkEntryDone(VOID)
 {
+	if (!g_flEnabled)
+	{
+		return;    //v1.2: 日志未开启=空操作
+	}
 	g_flEntryDone = TRUE;
 	KeSetEvent(&g_flKickT2, IO_NO_INCREMENT, FALSE);
 }
@@ -857,11 +874,36 @@ static HANDLE FlOpenOneFile(PCWSTR path)
 	return NT_SUCCESS(st) ? hFile : NULL;
 }
 
-//DriverEntry最先调用: 只初始化同步对象+创建两个写线程, 零文件I/O
+//DriverEntry最先调用: 读服务注册表键LogEnable开关(默认0=日志系统整体
+//关闭——T1/T2/看门狗线程全部不创建, 零文件I/O, 全部Fl*接口空操作=框架
+//交付形态零观测面); LogEnable=1才初始化同步对象+创建写线程/看门狗线程
 //(v3.2: Temp文件由T1线程自己打开)
-VOID FlInit(VOID)
+VOID FlInit(PCUNICODE_STRING ServiceRegPath)
 {
 	HANDLE hThread = NULL;
+	//v1.2: 注册表开关——本驱动服务键(如...\Services\GeptHooks)下
+	//DWORD值LogEnable(缺省/读失败=0=保持默认关闭)
+	if (ServiceRegPath != NULL && ServiceRegPath->Buffer != NULL)
+	{
+		ULONG enable = 0;
+		RTL_QUERY_REGISTRY_TABLE q[2];
+		RtlZeroMemory(q, sizeof(q));
+		q[0].Flags = RTL_QUERY_REGISTRY_DIRECT;
+		q[0].Name = L"LogEnable";
+		q[0].EntryContext = &enable;
+		q[0].DefaultType = REG_DWORD;
+		q[0].DefaultData = &enable;
+		q[0].DefaultLength = sizeof(ULONG);
+		if (NT_SUCCESS(RtlQueryRegistryValues(RTL_REGISTRY_ABSOLUTE,
+			ServiceRegPath->Buffer, q, NULL, NULL)) && enable != 0)
+		{
+			g_flEnabled = 1;
+		}
+	}
+	if (!g_flEnabled)
+	{
+		return;    //默认路径: 什么都不创建, 零线程零文件零看门狗
+	}
 	//v3.33: 黑匣子静态字段(动态字段由看门狗DPC在触发时快照)
 	RtlCopyMemory(g_flBlackBox.magic, "GEPTBB01", 8);
 	RtlStringCbCopyA(g_flBlackBox.build, sizeof(g_flBlackBox.build),
@@ -916,6 +958,10 @@ VOID FlInit(VOID)
 //DriverUnload最后调用: 停线程+最终排空+关Temp(T2有界等待, 可能卡死在Desktop写)
 VOID FlShutdown(VOID)
 {
+	if (!g_flEnabled)
+	{
+		return;    //v1.2: 日志未开启=无任何线程/文件需要收尾
+	}
 	//v3.33: 最先解除看门狗——卸载期间HB可能停顿(线程退出/最终排空),
 	//不解除=可能把健康卸载误判成冻结蓝屏
 	FlWdDisarm();

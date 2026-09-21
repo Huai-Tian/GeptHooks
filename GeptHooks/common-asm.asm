@@ -92,31 +92,10 @@ CmTripleFaultPark PROC
     jmp CmTripleFaultPark
 CmTripleFaultPark ENDP
 
-;v3.47 Phase1: VMFUNC裸往返自测(main.c在各核KEEP后逐核调用, 在guest内
-;执行)。语义: vmfunc(EAX=0=EPTP switching, ECX=索引)——切到list[1]再切
-;回list[0]。v3.48起list[0]=clean/list[1]=hooked(真实双EPT), 本往返=
-;真实视图切换环。验证: "vmfunc指令在non-root可执行(secondary ctl bit13
-;+VMFUNC control已配)且EPTP-list项合法(否则VM-exit rsn59→case59推RIP
-;跳过→自测降级, 绝非#UD)"。全链路零VM-Exit(这正是VMFUNC方案隐藏性
-;优于violation方案的本质)。
-;**调用前提: 该核g_vcpu[n].bVmfuncOn=1**——未启用时guest执行vmfunc=
-;#UD→蓝屏0x1E@c000001d, main.c必须先判。
-;v3.47c机器码修正: **VMFUNC=0F 01 D4**(SDM指令表)。
-;v3.47b曾误写0F 01 C4=**VMXOFF**——从看雪帖子抄的机器码本身就是错的
-;(帖子4.2节_emit 0xC4), 未与SDM核对。实测铁证: cpu0在+0x1085执行出
-;VM-exit reason 26(VMXOFF instruction)→handler无case 26→#UD未处理
-;→蓝屏0x7E@(C000001D, GeptHooks+0x1085)。教训: 机器码唯一权威=
-;SDM, 论坛"完整实现"连opcode都可能错
-CmVmfuncTest PROC
-    xor eax, eax        ;EAX=0: function 0 = EPTP switching
-    mov ecx, 1          ;ECX=1: 切到EPTP-list[1](v3.48=hooked视图)
-    db 0Fh, 01h, 0D4h   ;vmfunc (0F 01 D4, SDM; 绝非C4=vmxoff!)
-    xor eax, eax        ;EAX=0
-    xor ecx, ecx        ;ECX=0: 切回EPTP-list[0](clean视图)
-    db 0Fh, 01h, 0D4h   ;vmfunc
-    ret
-CmVmfuncTest ENDP
-
+;v1.2: CmVmfuncTest(VMFUNC裸往返自测)已随main.c自测代码退役删除——
+;开发期验证专用, 框架交付不需要(验证史见NOTES.md)。CmVmfuncSwitch保留:
+;GeptApi.c GeptViewSwitch每次hook触发/归位都经它执行真实EPTP切换
+;
 ;v3.48 Phase2: 单次VMFUNC EPTP切换(guest内调用, 零VM-Exit)。
 ;rcx=EPTP-list索引(0=clean/1=hooked), C侧ULONG参数零扩展到RCX天然合法。
 ;语义(SDM §28.5.7.3): 成功=新EPTP写回EPT_POINTER字段+后续翻译走新表

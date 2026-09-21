@@ -43,6 +43,12 @@
 #define EXIT_REASON_TPR_BELOW_THRESHOLD 43
 #define EXIT_REASON_EPT_VIOLATION       48
 #define EXIT_REASON_EPT_CONFIG          49
+//v3.53: INVEPT/INVVPID编码(权威源: Linux asm/vmx.h EXIT_REASON_INVEPT/
+//INVVPID, 与本工程硬件实证锚点18/26/31/32/48/54/55/59全表吻合)。
+//INVEPT指令页(SDM原文): "not in VMX operation→#UD"且non-root无条件
+//VMexit——与VMXOFF同族, 缺case=落default'U'逃生(病毒DoS面, 见v3.53)
+#define EXIT_REASON_INVEPT              50
+#define EXIT_REASON_INVVPID             53
 #define EXIT_REASON_WBINVD              54
 #define EXIT_REASON_XSETBV              55
 //v3.48: VMFUNC失败exit(SDM §28.5.7.2/28.5.7.3: 函数未启用/EAX无效/EPTP-list

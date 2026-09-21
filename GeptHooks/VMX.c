@@ -525,6 +525,34 @@ void VmxMsrReadHandler(PGUEST_REGS GuestRegs)
 	GuestRegs->rdx = (msrValue >> 32) & 0xFFFFFFFF;
 }
 
+//v3.53 v1.0.1: 向guest注入#UD(非法指令)——VMX指令族exit的裸机精确仿真。
+//SDM裁决(VMCALL/VMXOFF/VMCLEAR/INVEPT四指令页Operation节原文一致,
+//覆盖ZO/m64/寄存器三种指令形态): "IF not in VMX operation THEN #UD"
+//——guest视角它从未成功进入VMX operation(它的VMXON被伪造VMfail拒绝),
+//裸机上这些指令=#UD, 注入#UD=行为逐位一致, 病毒探针零泄漏。
+//字段编码(SDM Vol3C Table 24-13原文, 双权威=KVM vmx.h INTR_TYPE族):
+//  bit31=valid | bits10:8=**3(硬件异常——0是外部中断! 凭记忆写0=
+//  注入成vector6外部中断=完全不同事件, v3.47d式事故)** | bit11=0
+//  (#UD无错误码: SDM错误码向量表8/10-14/17不含6) | bits7:0=vector 6
+//  → 0x80000306。硬件保证: "VM exits clear the valid bit"(§24.8.3,
+//  每次VM-exit自清valid位=注入永不重复; handler顶部腰带为该行为的
+//  保险)
+//调用方纪律: ①绝不推进RIP(异常必须在本指令派发, 推进=异常地址错位
+//=病毒#UD处理器的返回点异常=可观测泄漏) ②return早退绕过尾部推进
+//(外部中断case同款模式)
+static VOID VmxInjectUd(ULONG cpu, ULONG reason, ULONG64 rip)
+{
+	__vmx_vmwrite(VM_ENTRY_INTR_INFO_FIELD, 0x80000306);
+	//采样环事件('B'=v3.53专用, 首次+每4096次——病毒狂喷时MHz级,
+	//不采样=刷爆环挤掉别人的死因证据; 采样由T1异步落盘)
+	static volatile LONG s_udCnt[64] = { 0 };
+	LONG n = InterlockedIncrement(&s_udCnt[cpu & 63]);
+	if (n == 1 || (n & 0xFFF) == 0)
+	{
+		FlRingPush('B', cpu, reason, rip, (ULONG64)(ULONG)n, 0);
+	}
+}
+
 void VmxExitHandler(PGUEST_REGS GuestRegs)
 {
 
@@ -539,6 +567,20 @@ void VmxExitHandler(PGUEST_REGS GuestRegs)
 	__vmx_vmread(GUEST_RSP, &guestRsp);
 	__vmx_vmread(EXIT_QUALIFICATION, &exitQual);
 	vmexitReason = vmexitReason & 0xFFFF;
+	//v3.53: 事件注入保险腰带——SDM Vol3C §24.8.3裁决: "VM exits clear
+	//the valid bit (bit 31)", 即每次VM-exit硬件**自清**valid位=注入
+	//永不重复(理论零成本空转)。保留为对该裁决的运行时保险: 若某构建
+	//行为与SDM不符(残留valid), 不清=此后每次vmresume重复注入#UD=无限
+	//异常环。代价: 每exit一次vmread(~30cyc, exit本身~1000cyc且VMFUNC
+	//hook零exit, 可忽略)
+	{
+		ULONG64 staleIntr = 0;
+		__vmx_vmread(VM_ENTRY_INTR_INFO_FIELD, &staleIntr);
+		if (staleIntr & 0x80000000ULL)
+		{
+			__vmx_vmwrite(VM_ENTRY_INTR_INFO_FIELD, 0);
+		}
+	}
 	//v3.7通用环路检测: 同一(reason,rip)连续重复>500次=不可解exit循环
 	//(修不好的violation/推进不了的fault无限重入)。500次在微秒级完成,
 	//先于持锁线程的锁级联冻结触发——v3.10起走逃生(vmx_off回真机)而非
@@ -573,9 +615,17 @@ void VmxExitHandler(PGUEST_REGS GuestRegs)
 					vmexitReason != EXIT_REASON_INVLPG &&
 					vmexitReason != EXIT_REASON_HLT &&
 					vmexitReason != EXIT_REASON_MWAIT_INSTRUCTION &&
-					!(vmexitReason == EXIT_REASON_VMCALL &&
-						guestRip >= (ULONG64)(ULONG_PTR)CmGuestProbe &&
-						guestRip < (ULONG64)(ULONG_PTR)CmVmCall) &&
+					//v3.53: VMX指令族(18-27+INVEPT/INVVPID)整体豁免——
+					//v1.0.1起该族全部确定性处置: 已知vmcall码做实工/
+					//未知码注入#UD/其余指令注入#UD/VMXON伪造VMfail, 每次
+					//exit都有guest可见进展(异常派发经guest自身IDT), 病毒
+					//同RIP狂喷属合法形态(裸机上同样狂喷同样吃#UD), 绝非
+					//"不可解环路"。v3.20的探针区间豁免被本条吸收覆盖
+					//(__vmx_on自测/探针vmcall全部落在已知码集合内)
+					!(vmexitReason >= EXIT_REASON_VMCALL &&
+						vmexitReason <= EXIT_REASON_VMXON) &&
+					vmexitReason != EXIT_REASON_INVEPT &&
+					vmexitReason != EXIT_REASON_INVVPID &&
 					InterlockedIncrement(&s_sameCnt[cpuD]) > 500)
 				{
 					VmxExitStormEscape('D', vmexitReason, guestRip, exitQual,
@@ -805,6 +855,75 @@ void VmxExitHandler(PGUEST_REGS GuestRegs)
 		{
 			FlRingPush('Y', KeGetCurrentProcessorNumber(), 18,
 				GuestRegs->rbx, 0, 0);
+		}
+		//v3.53 v1.0.1: 未知vmcall功能码——内部功能码穷举可复核
+		//(grep CmVmCall(: 1=VmxStopCpu/2=EptSetHook/7=还原字节,
+		//+探针3/4/6/0x5ABE全在链上), 能走到这的=外来者(病毒探针/
+		//第三方驱动)。裸机故事: VMCALL不在VMX operation=**#UD**
+		//(SDM VMCALL指令页Operation节首行), 旧版静默放行(跳过+
+		//推进RIP)=病毒观察到"VMCALL没#UD"=hypervisor在场信号泄漏
+		else
+		{
+			VmxInjectUd(KeGetCurrentProcessorNumber(), 18, guestRip);
+			__vmx_vmwrite(GUEST_RIP, guestRip);
+			return;
+		}
+	}
+	break;
+	//=============== v3.53 v1.0.1: VMX指令族exit(安全修复+互斥仲裁) ===============
+	//双重身份: ①安全修复——此前该族无case全落default 'U'逃生(vmx_off
+	//回真机重执行): 内核态病毒狂喷VMXOFF=0x7E蓝屏(v3.47c实证死法,
+	//当时凶手是自己人的错误opcode; C000001D+GeptHooks+0x1085铁证),
+	//狂喷VMXON更糟=逃生后真机重执行可能真的成功=病毒抢走VMX root
+	//=脑裂 ②互斥仲裁——同框架junior实例的__vmx_on被伪造VMfail=
+	//全核失败→main.c汇总干净退出; 零签名/零共享对象/零新增可扫描
+	//物(仲裁者是VT-x硬件本身, 对抗场景无单点失效——签名互斥方案的
+	//死穴, 用户裁决)
+	case EXIT_REASON_VMCLEAR:
+	case EXIT_REASON_VMLAUNCH:
+	case EXIT_REASON_VMPTRLD:
+	case EXIT_REASON_VMPTRST:
+	case EXIT_REASON_VMREAD:
+	case EXIT_REASON_VMRESUME:
+	case EXIT_REASON_VMWRITE:
+	case EXIT_REASON_VMXOFF:
+	case EXIT_REASON_INVEPT:
+	case EXIT_REASON_INVVPID:
+	{
+		VmxInjectUd(KeGetCurrentProcessorNumber(), vmexitReason, guestRip);
+		//异常在本指令派发: RIP原样写回+早退(绝不推进——见VmxInjectUd
+		//调用方纪律①)
+		__vmx_vmwrite(GUEST_RIP, guestRip);
+		return;
+	}
+	case EXIT_REASON_VMXON:
+	{
+		//家族唯一例外: VMXON是VMX operation的**入口**指令, 裸机
+		//(不在VMX operation)时走FEATURE_CONTROL检查+操作数校验→
+		//#GP(0)或VMfailInvalid(SDM VMXON指令页Operation节), 绝不#UD。
+		//我们不可能让它成功(=嵌套虚拟化), 伪造VMfailInvalid:
+		//CF=1, ZF=0, PF/AF/SF/OF清0(SDM §31.2; MSVC __vmx_on内建
+		//按此返回2=VMfailInvalid)——故事="VMXON操作数无效"。
+		//同框架junior的__vmx_on拿非0→bLaunchFailed逐核累积→
+		//main.c v3.53全败汇总干净退出=互斥闭环
+		//残余泄漏(文档化, 非阻塞): FEATURE_CONTROL=5的机器上裸机
+		//vmxon(合法操作数)会成功, 伪造失败与之矛盾——v1.1用MSR 0x3A
+		//读伪造(Phase5 GeptMsr API现成)闭环"BIOS锁VT"故事
+		ULONG64 vmxonFlags = 0;
+		__vmx_vmread(GUEST_RFLAGS, &vmxonFlags);
+		vmxonFlags &= ~((1ULL << 2) | (1ULL << 4) | (1ULL << 6) |
+			(1ULL << 7) | (1ULL << 11));   //PF/AF/ZF/SF/OF清0
+		vmxonFlags |= 1ULL;                //CF=1=VMfailInvalid
+		__vmx_vmwrite(GUEST_RFLAGS, vmxonFlags);
+		//RIP正常推进(VMfail=指令"执行完毕"的返回语义, 与#UD的
+		//"fault在指令处"不同)——落尾部通用推进
+		static volatile LONG s_vmonCnt[64] = { 0 };
+		LONG n = InterlockedIncrement(&s_vmonCnt[
+			KeGetCurrentProcessorNumber() & 63]);
+		if (n == 1 || (n & 0xFFF) == 0)
+		{
+			FlRingPush('B', KeGetCurrentProcessorNumber(), 27,
+				guestRip, (ULONG64)(ULONG)n, 0);
 		}
 	}
 	break;

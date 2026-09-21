@@ -36,6 +36,7 @@ HVM_RESTORE_ALL_NOSEGREGS MACRO
 ENDM
 EXTERN	 HookTestTarget:PROC
 EXTERN g_jmp_testtarget:DQ
+EXTERN g_geptDummyVmxonPa:DQ     ;v3.53: VMXON探针哑操作数(PA=0, main.c定义)
 EXTERN	 GeptCallbackDispatch:PROC   ;v3.50: API detour分发器(GeptApi.c)
 EXTERN	 GeptViewSwitch:PROC         ;v3.50: 带VT开关检查的视图切换(GeptApi.c)
 .CODE
@@ -139,4 +140,35 @@ AsmHookTestTarget proc
     mov     r11, r10
     jmp qword ptr[g_jmp_testtarget]
 AsmHookTestTarget endp
+
+;==== v3.53 v1.0.1: 病毒模拟探针(DriverEntry自测专用, 非hook目标, ====
+;==== 与AsmHookTestTarget同页无害——本页永不被EPT hook)            ====
+;机器码纪律(v3.47c铁律): VMX指令一律SDM出处手编, 绝不用论坛/记忆值
+;  VMXOFF = 0F 01 C4 (SDM VMXOFF页"0F 01 C4 VMXOFF"; v3.47c硬件实证
+;            exit rsn26铁证双确认)
+;  VMXON  = F3 0F C7 /6 (SDM VMXON页"F3 0F C7 /6 VMXON m64";
+;            ModRM=30h→[rax]形, lea免手算disp32)
+
+;VMXOFF探针: guest内执行→VM-exit rsn26→宿主case26注入#UD→内核SEH
+;捕获(异常码应=0xC000001D STATUS_ILLEGAL_INSTRUCTION)。**v3.47c确切
+;死法的正规判据重放**: 当年这条机器码蓝屏过整机(无case落'U'逃生),
+;现在它活着穿过新case=安全修复的毕业判据。仅可在in-guest核调用
+;(裸机上=真VMXOFF, 自测流程保证此刻全核in-guest)
+GeptVirusVmxDetectOff PROC
+    db 0Fh, 01h, 0C4h             ;vmxoff
+    ret                            ;到达=宿主未注入#UD(自测判FAIL)
+GeptVirusVmxDetectOff ENDP
+
+;VMXON探针: guest内执行→VM-exit rsn27→宿主case27伪造VMfailInvalid
+;(CF=1)→setc捕获CF→返回1=VT-x原生互斥仲裁在场的活体证据(同框架
+;junior实例的__vmx_on走的就是这条路→VMfail→干净退出)。哑操作数
+;PA=0: 宿主伪造VMfail不读操作数(SDM: non-root下VMexit替代指令执行);
+;裸机上PA=0非4KB对齐同样VMfailInvalid——探针在两种环境都无副作用
+GeptVirusVmxOn PROC
+    lea rax, [g_geptDummyVmxonPa] ;操作数地址(哑QWORD)
+    db 0F3h, 0Fh, 0C7h, 30h       ;vmxon qword ptr [rax]
+    setc al                       ;CF=1=伪造的VMfailInvalid
+    movzx rax, al
+    ret
+GeptVirusVmxOn ENDP
 END

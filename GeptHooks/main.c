@@ -141,15 +141,37 @@
 //    位图exit→分发→回调伪造值→rax:rdx, 未拦截=#GP) + LSTAR
 //    canary(读监控原值+写报警, 持续到卸载——运行期写LSTAR=有
 //    东西在patch syscall入口=安全信号)
-#define GEPT_BUILD_TAG "v3.52"
+//v3.53: **v1.0.1——VMX指令族exit处置(安全修复+VT-x原生互斥)**。
+//三重身份: ①安全修复: 19-27/50/53族此前无case全落default 'U'逃生
+//(vmx_off回真机重执行)——内核态病毒狂喷VMXOFF=0x7E蓝屏(v3.47c实证
+//死法), 狂喷VMXON=逃生后真机重执行可能成功=病毒抢VMX root脑裂;
+//未知vmcall码旧版静默放行=裸机VMCALL本应#UD=hypervisor在场信号泄漏
+//②互斥仲裁(用户裁决: 拒绝签名互斥——对抗场景单点失效): 同框架
+//junior实例的vmxon在宿主guest内=rsn27 exit→宿主伪造VMfailInvalid
+//→junior全核失败→**本版新增的全败汇总干净退出**。零签名/零共享
+//对象/零新增可扫描物, 仲裁者=VT-x硬件本身 ③裸机精确仿真(SDM四
+//指令页原文): 家族"not in VMX operation→#UD"→注入#UD(编码=SDM
+//Vol3C Table 24-13: 0x80000306, type3=硬件异常); 唯VMXON例外(入口
+//指令)→伪造VMfailInvalid(CF=1,ZF=0)。'D'环路检测同步豁免该族
+//(每次exit都有guest可见进展)
+//自测判据: 病毒模拟探针(hook.asm)——VMXOFF探针异常码应=0xC000001D
+//(v3.47c死法重放为毕业判据), VMXON探针CF应=1
+#define GEPT_BUILD_TAG "v3.53"
 
 //v3.33: 构建标签全局副本——黑匣子(common.h GEPT_BLACKBOX)在FlInit时
 //拷入, 蓝屏DMP解析时自证二进制版本
 CHAR g_geptBuildTag[24] = GEPT_BUILD_TAG;
 
 ULONG64 g_jmp_testtarget = 0;
+//v3.53: VMXON探针哑操作数(hook.asm GeptVirusVmxOn引用)——PA=0:
+//宿主伪造VMfail不读操作数(SDM: non-root下VMexit替代指令执行);
+//裸机上PA=0非4KB对齐同样VMfailInvalid, 探针在两种环境都无副作用
+ULONG64 g_geptDummyVmxonPa = 0;
 VOID GeptTestTarget();
 VOID AsmHookTestTarget();
+//v3.53: 病毒模拟探针(hook.asm, 仅DriverEntry自测调用)
+VOID GeptVirusVmxDetectOff();
+ULONG64 GeptVirusVmxOn();
 
 //v3.45: NtClose拦截计数器(DemoNtCloseCallback每调用+1; 卸载时落盘总结)
 //(v3.51: 旧HookNtClose监控回调随AsmHookNtClose重放路径一并退役——
@@ -458,10 +480,52 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObjct, PUNICODE_STRING pRegPath)
 
 	//各核启动结果落盘: 哪些核进了guest/哪些失败, 一目了然
 	FlLog("全部核心启动流程完成, 各核状态:");
-	for (ULONG i = 0; i < cpuCount; i++)
 	{
-		FlLog("cpu%d inGuest=%d launchFailed=%d vmxon=%d",
-			i, g_vcpu[i].bInGuest, g_vcpu[i].bLaunchFailed, g_vcpu[i].bVmxOn);
+		ULONG inGuestTotal = 0;
+		for (ULONG i = 0; i < cpuCount; i++)
+		{
+			FlLog("cpu%d inGuest=%d launchFailed=%d vmxon=%d",
+				i, g_vcpu[i].bInGuest, g_vcpu[i].bLaunchFailed, g_vcpu[i].bVmxOn);
+			if (g_vcpu[i].bInGuest)
+			{
+				inGuestTotal++;
+			}
+		}
+		//v3.53 v1.0.1: junior全败汇总——零核in-guest=本驱动VT启动全败。
+		//两大成因: ①Hyper-V/VBS占用(传统形态) ②**同框架宿主已在场**
+		//(新形态: 我们的vmxon在宿主guest内执行→rsn27 exit→宿主伪造
+		//VMfailInvalid→__vmx_on逐核返回失败=VT-x原生互斥仲裁生效,
+		//零签名零共享对象零暴露面)。旧版此形态=误导性STAGE日志+空载
+		//常驻; 现在: 手动释放全部资源(DriverEntry失败时I/O管理器卸载
+		//映像**不调DriverUnload**, 必须在此自清)+返回失败=sc start
+		//报错干净退出, 宿主零扰动(互斥协议: 后到者让位)
+		if (inGuestTotal == 0)
+		{
+			FlLog("DriverEntry: **零核in-guest——VT启动全败**。成因: "
+				"Hyper-V/VBS占用 或 同框架宿主hypervisor已在场(其仲裁者对"
+				"guest内vmxon伪造VMfailInvalid)。释放全部资源后干净退出, "
+				"系统不受影响, 先到宿主继续服务");
+			for (ULONG i = 0; i < cpuCount; i++)
+			{
+				if (g_vcpu[i].bVmxOn)
+				{
+					//防御性: vmxon成功但未进guest的核做标准停核
+					//(junior全败形态下vmxon全失败bVmxOn=0, 此分支
+					//理论上空转——保险不伤)
+					KeSetSystemAffinityThread((KAFFINITY)1 << i);
+					VmxStopCpu();
+					KeSetSystemAffinityThread(allCpus);
+				}
+			}
+			for (ULONG i = 0; i < cpuCount; i++)
+			{
+				VmxFreeCpuResources(i);
+			}
+			EptShutdownHighMappings();
+			FlShutdown();
+			Log("v1.0.1: junior refused (VT held by host/occupied), clean exit");
+			return STATUS_UNSUCCESSFUL;
+		}
 	}
 
 	//v3.47 Phase1: VMFUNC全核自测——逐核亲和性切换, 在该核guest内执行
@@ -612,6 +676,35 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObjct, PUNICODE_STRING pRegPath)
 			"=残留硬件转换~1-2k cyc(SDM: 无法软件扣除); 若offset未被应用"
 			"=全成本2.5k+且卸载't'事件=0; 最终裁决看卸载't'=累计隐藏总时长)",
 			hideOk);
+	}
+
+	//==== v3.53 v1.0.1: 病毒模拟自测(VMX指令族exit处置的终审) ====
+	//在当前核的guest内真实执行VMXOFF/VMXON——模拟内核态病毒的反虚拟化
+	//探针(安全软件用本框架调试病毒的场景里, 病毒真会做的事)。仅依赖
+	//VT不依赖hook, 任何stage都跑; VT已确认≥1核in-guest(否则上方已退出)
+	{
+		//①VMXOFF探针: 期望宿主case26注入#UD→内核SEH捕获→异常码
+		//=0xC000001D(STATUS_ILLEGAL_INSTRUCTION)=裸机行为逐位一致
+		//(裸机上该指令同样#UD——病毒探针零泄漏)。这是**v3.47c确切
+		//死法的正规判据重放**: 当年这条机器码蓝屏过整机, 现在它必须
+		//活着穿过新case; 无异常=新case未注入(FAIL), 蓝屏='U'逃生回归
+		NTSTATUS udCode = STATUS_SUCCESS;
+		__try
+		{
+			GeptVirusVmxDetectOff();
+			//到达=无异常=宿主未注入#UD(判FAIL, udCode仍=0)
+		}
+		__except (udCode = GetExceptionCode(), EXCEPTION_EXECUTE_HANDLER)
+		{
+		}
+		//②VMXON探针: 期望宿主case27伪造VMfailInvalid(CF=1)→探针
+		//setc返回1=VT-x原生互斥仲裁在场的活体证据(同框架junior实例
+		//的__vmx_on走的就是这条路)
+		ULONG64 vmonCf = GeptVirusVmxOn();
+		FlLog("[v1.0.1] 病毒模拟自测: VMXOFF探针异常码=0x%X(应C000001D="
+			"#UD注入=裸机一致) VMXON探针CF=%llu(应1=伪造VMfailInvalid=互斥"
+			"仲裁在场)——两项全对=VMX指令族处置毕业(v3.47c死法已封死)",
+			udCode, (unsigned long long)vmonCf);
 	}
 
 #if GEPT_HOOK_STAGE == 0

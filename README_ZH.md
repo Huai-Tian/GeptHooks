@@ -36,6 +36,12 @@ CPUID 的 `0x40000000-0x4000000F` 叶子全部归零（不泄漏任何 hyperviso
 - **MSR 拦截（读伪造 / 写监控）—— v3.52，v1.1 补枚举**
 通过每核 MSR 位图可钩取任意 MSR：读回调返回值即客户机可见值（可伪造），写回调可放行或静默丢弃。未钩取的 MSR 保持零开销直通。安装 / 移除 / 枚举（`GeptMsrHookEnumerate`）与函数钩子 API 完全对称。实测演示：保留 MSR 读回 `DEADBEEFCAFEBABE`；LSTAR canary 计数 syscall 入口探测并在写入时报警。
 
+- **可选文件日志，默认关闭 —— v1.2**
+整套观测设施（双写盘线程、二进制事件环、蓝屏黑匣子看门狗）为调试而保留，但**默认关闭**：未开启前零后台线程、零文件 I/O、零观测面。启动驱动前按服务开启：`reg add HKLM\SYSTEM\CurrentControlSet\Services\GeptHooks /v LogEnable /t REG_DWORD /d 1 /f`——权威日志写入 `C:\Windows\Temp\gept_log.txt`（桌面尽力镜像一份）。注意：开启状态下若日志停滞 30 秒，看门狗会**主动蓝屏（0xDEADC0DE）**以抓取内存转储——这是调试手段而非交付行为。
+
+- **干净的交付形态 —— v1.2**
+驱动入口不再运行任何开发期自测或演示钩子：分配各核 VT 资源 → 逐核启动虚拟化 → 执行 VT-x 原生互斥仲裁（第二个实例 `sc start` 干净失败退出）→ 常驻。GeptHooks 以源码形态集成——把框架文件加入你自己的驱动工程，在 `DriverEntry` 完成全核接管后即可调用 API（启动 / 卸载标准序列见 `main.c`）。
+
 ## 📐 零 VM-Exit 钩子的工作原理
 
 ```
@@ -75,6 +81,12 @@ sc start GeptHooks
 ```
 sc stop GeptHooks
 sc delete GeptHooks
+```
+
+可选：启动前开启调试文件日志（默认关闭；写入内容与看门狗注意事项见上方功能列表）：
+
+```
+reg add HKLM\SYSTEM\CurrentControlSet\Services\GeptHooks /v LogEnable /t REG_DWORD /d 1 /f
 ```
 
 ## 🧩 API 使用
@@ -184,6 +196,7 @@ GeptMsrHookEnumerate(NULL, &MsrCount);   // 枚举live的MSR钩子
 | Phase 5 | MSR 数据面 API | 保留 MSR 读伪造为 `DEADBEEFCAFEBABE`；LSTAR canary 两次读相等、写 0 次 |
 | v1.1 | 栈参数转发 + MSR 枚举 | 六参自测四证明（读回 flags=7 / 栈参改写 / 寄存器改写 / 加法靶 25553→16665）；MSR 枚举 live=2 |
 | v1.1d | 全核 IPI 原子卸载 | 静置压力 3/3 全绿：每核原子"vmcall 退出+清 VMXE+双 TLB 冲刷"，卸载留痕 8×'v'+8×'r' 全齐 |
+| v1.2 | 交付清理：移除开发自测，日志默认关闭 | DriverEntry 收敛为框架生命周期（分配→逐核启动→仲裁→常驻）；加载期零演示钩子；`LogEnable` 注册表开关统辖全部观测设施 |
 
 ## ⚠️ 项目状态
 

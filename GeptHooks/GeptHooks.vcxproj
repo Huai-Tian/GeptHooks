@@ -84,6 +84,7 @@
     <ClCompile Include="common.c" />
     <ClCompile Include="ept.c" />
     <ClCompile Include="GeptApi.c" />
+    <ClCompile Include="GeptMsr.c" />
     <ClCompile Include="LDasm.c" />
     <ClCompile Include="main.c" />
     <ClCompile Include="PageHook.c" />
@@ -94,11 +95,11 @@
     <ClInclude Include="CPU.h" />
     <ClInclude Include="ept.h" />
     <ClInclude Include="GeptApi.h" />
+    <ClInclude Include="GeptMsr.h" />
     <ClInclude Include="LDasm.h" />
     <ClInclude Include="PageHook.h" />
     <ClInclude Include="reg.h" />
     <ClInclude Include="VMX.h" />
-    <ClInclude Include="winApiDef.h" />
   </ItemGroup>
   <ItemGroup>
     <MASM Include="common-asm.asm" />

@@ -1,5 +1,4 @@
 ﻿#include"common.h"
-#include"winApiDef.h"
 #include"CPU.h"
 #include"VMX.h"
 #include<ntstrsafe.h>

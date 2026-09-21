@@ -1,7 +1,6 @@
 #include <intrin.h>
 #include"PageHook.h"
 #include"LDasm.h"
-#include"winApiDef.h"
 #include"common.h"
 #include"VMX.h"
 LIST_ENTRY g_PageList = { 0 };

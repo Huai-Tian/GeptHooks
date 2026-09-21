@@ -1,10 +1,11 @@
 #include<ntifs.h>
+#include<intrin.h>
 #include"common.h"
-#include"winApiDef.h"
 #include"PageHook.h"
 #include"VMX.h"
 #include"ept.h"
 #include"GeptApi.h"
+#include"GeptMsr.h"
 
 //分阶段联调开关:
 //0 = 仅开启虚拟化(vmlaunch+EPT恒等映射), 用于先验证VT层稳定
@@ -126,7 +127,21 @@
 //  ④main.c STAGE2: 硬编码prologue校验+hookLen==22强校验+AsmHookNtClose
 //    重放路径全部退役删除(hook.asm同步删除); 新增replay自测
 //    (GeptApiSelfTestReplay: NtClose(伪句柄-1)应返回0xC0000008)
-#define GEPT_BUILD_TAG "v3.51"
+//v3.52: **Phase 5——MSR数据伪装**(看雪图谱4.3, 简易API第二面)。
+//GeptMsr.c/h新增(配套重构: 删winApiDef.h——与PageHook.h的
+//KeGenericCallDpc族原型纯重复; 删VMX.c死代码VmxSetMsrRw——
+//从未被调用, 位图逻辑由GeptMsr.c接管):
+//  ①GeptMsrHookInstall/Remove: 全核MSR位图置位/清位+**回读自检**
+//    (任一in-guest核位图读回不符=拒绝——伪造自测在guest内真执行
+//    rdmsr, 位图失效=未拦截=#GP蓝屏, 绝不带病上机)
+//  ②读回调返回值=rdmsr可见值(伪造); 写回调TRUE=放行/FALSE=静默丢弃
+//  ③RDMSR/WRMSR exit handler接线(GeptMsrDispatch*); 位图零开销:
+//    未hook的MSR仍直通(硬件按位图判定, 不产生exit)
+//  ④demo: 保留MSR(0xC00000B0)伪造自测(全链路证明: guest rdmsr→
+//    位图exit→分发→回调伪造值→rax:rdx, 未拦截=#GP) + LSTAR
+//    canary(读监控原值+写报警, 持续到卸载——运行期写LSTAR=有
+//    东西在patch syscall入口=安全信号)
+#define GEPT_BUILD_TAG "v3.52"
 
 //v3.33: 构建标签全局副本——黑匣子(common.h GEPT_BLACKBOX)在FlInit时
 //拷入, 蓝屏DMP解析时自证二进制版本
@@ -168,6 +183,55 @@ static ULONG64 DemoNtCloseCallback(PVOID Context, ULONG64 Arg1, ULONG64 Arg2,
 	//按**当前核**能力分派(VMFUNC核直call原入口/fallback核重定位跳板),
 	//线程迁移到异类核亦正确
 	return GeptCallOriginal(Arg1, Arg2, Arg3, Arg4);
+}
+
+//v3.52 Phase5: MSR canary计数器(卸载时落盘总结)
+static volatile LONG g_geptMsrForgeHits = 0;    //保留MSR伪造命中
+static volatile LONG g_geptLstarReadCount = 0;  //LSTAR读计数
+static volatile LONG g_geptLstarWriteCount = 0; //LSTAR写计数(应为0)
+
+//保留MSR(0xC00000B0)伪造回调: 直接返回标记值——该MSR真读=#GP,
+//**绝不调GeptMsrReadReal**。纪律: VM-exit上下文=只Interlocked+采样
+//环事件(与DemoNtCloseCallback同源)
+static ULONG64 DemoMsrForgeRead(PVOID Context, ULONG32 Msr)
+{
+	UNREFERENCED_PARAMETER(Context);
+	UNREFERENCED_PARAMETER(Msr);
+	LONG n = InterlockedIncrement(&g_geptMsrForgeHits);
+	if (n == 1 || (n & 0xFFFF) == 0)
+	{
+		FlRingPush('M', KeGetCurrentProcessorNumber(), 0,
+			(ULONG64)(ULONG)n, 0, 0);
+	}
+	return 0xDEADBEEFCAFEBABEULL;
+}
+
+//LSTAR读回调: 原值透传——拦截链路已由保留MSR自测证明, 这里不改
+//语义只监控(谁在读syscall入口: AV/EDR的典型探测行为)
+static ULONG64 DemoMsrLstarRead(PVOID Context, ULONG32 Msr)
+{
+	UNREFERENCED_PARAMETER(Context);
+	ULONG64 real = GeptMsrReadReal(Msr);
+	LONG n = InterlockedIncrement(&g_geptLstarReadCount);
+	if (n == 1 || (n & 0xFFFF) == 0)
+	{
+		FlRingPush('M', KeGetCurrentProcessorNumber(), 1,
+			(ULONG64)(ULONG)n, real, 0);
+	}
+	return real;
+}
+
+//LSTAR写回调: 报警+放行(监控模式不改变行为)。系统运行期不该写
+//LSTAR——计数>0=有代码在patch syscall入口(经典攻击行为), 写必是
+//异常事件故每次推环事件(合法频率=0, 无风暴风险)
+static BOOLEAN DemoMsrLstarWrite(PVOID Context, ULONG32 Msr, ULONG64 Value)
+{
+	UNREFERENCED_PARAMETER(Context);
+	UNREFERENCED_PARAMETER(Msr);
+	LONG n = InterlockedIncrement(&g_geptLstarWriteCount);
+	FlRingPush('M', KeGetCurrentProcessorNumber(), 2,
+		(ULONG64)(ULONG)n, Value, 0);
+	return TRUE;
 }
 
 VOID HookTestTarget()
@@ -236,6 +300,11 @@ void DriverUload(PDRIVER_OBJECT pDriverObjct)
 		FlLog("Unload: [STAGE2总结] NtClose共拦截%ld次(hook已随EPT解除, 系统回到原生NtClose)",
 			g_geptNtCloseCount);
 	}
+	//v3.52: MSR canary总结——LSTAR读计数+写报警定格(位图已随vmx_off
+	//失效, rdmsr回到原生直通; 写>0=运行期有人patch syscall入口)
+	FlLog("Unload: [STAGE2-MSR总结] LSTAR读%ld次/写%ld次(写>0=运行期patch "
+		"syscall入口=安全信号); 伪造自测命中%ld次",
+		g_geptLstarReadCount, g_geptLstarWriteCount, g_geptMsrForgeHits);
 	FlLog("Unload: 完成, 关闭文件日志");
 	FlShutdown();
 }
@@ -708,6 +777,61 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObjct, PUNICODE_STRING pRegPath)
 			FlLog("[STAGE2-API] API安装未成(0x%X)——重定位跳板拒绝或资源不足;"
 				"保持无hook状态(STAGE1自测已过, 系统稳定, 不再退回旧asm重放路径)",
 				apiSt);
+		}
+	}
+#endif
+#if GEPT_HOOK_STAGE >= 1
+	//==== v3.52 Phase5: MSR拦截demo(伪造自测+LSTAR canary) ====
+	//仅依赖VT(与EPT hook无关), STAGE1门槛即可; 默认stage=2紧跟
+	//STAGE2-API块之后执行
+	{
+		//--- 1) 保留MSR伪造自测: 全链路终审 ---
+		//0xC00000B0=架构保留MSR(Intel/AMD均未定义, 真读=#GP): 无人
+		//读=零干扰; guest内rdmsr若未被拦截=本行直接#GP蓝屏——Install
+		//的位图回读自检已确保就绪, 这一行是链路的最终裁决(未拦截=
+		//蓝屏, 拦截=拿到伪造标记值)。移除后**不再读**(位图已清=直通
+		//=保留MSR真读=#GP)
+		GEPT_MSR_HOOK msrForge = { 0 };
+		msrForge.Msr = 0xC00000B0;
+		msrForge.OnRead = DemoMsrForgeRead;
+		NTSTATUS msrSt = GeptMsrHookInstall(&msrForge);
+		if (NT_SUCCESS(msrSt))
+		{
+			ULONG64 forged = __readmsr(0xC00000B0);
+			FlLog("[STAGE2-MSR] 伪造自测: rdmsr(保留MSR 0xC00000B0)返回%llX"
+				"(期望DEADBEEFCAFEBABE), 命中%ld次——相等即全链路证明"
+				"(guest RDMSR→位图exit→分发→回调伪造值→rax:rdx)",
+				(unsigned long long)forged, g_geptMsrForgeHits);
+			GeptMsrHookRemove(0xC00000B0);
+		}
+		else
+		{
+			FlLog("[STAGE2-MSR] 伪造自测Install失败(0x%X)——跳过MSR demo(系统不受影响)",
+				msrSt);
+		}
+		//--- 2) LSTAR canary: 读监控(原值)+写报警, 持续监控至卸载 ---
+		//看雪4.3组合技的现代形态: 双EPT下clean视图读syscall入口字节
+		//恒原始(EPT hook天然隐藏), 本canary补数据面——LSTAR读取计数
+		//(谁在探测)+写入报警(运行期patch syscall入口=攻击行为)
+		ULONG64 lstar0 = __readmsr(0xC0000082);    //安装前真实值(KiSystemCall64)
+		GEPT_MSR_HOOK msrLstar = { 0 };
+		msrLstar.Msr = 0xC0000082;
+		msrLstar.OnRead = DemoMsrLstarRead;
+		msrLstar.OnWrite = DemoMsrLstarWrite;
+		NTSTATUS lstarSt = GeptMsrHookInstall(&msrLstar);
+		if (NT_SUCCESS(lstarSt))
+		{
+			ULONG64 lstar1 = __readmsr(0xC0000082); //安装后: 经回调应返回原值
+			FlLog("[STAGE2-MSR] LSTAR canary已装: 读=%llX(安装前=%llX, 应相等"
+				"且读计数=1), 读%ld次/写%ld次(写>0=运行期patch syscall入口"
+				"=安全信号); 持续监控至卸载(卸载总结打印计数)",
+				(unsigned long long)lstar1, (unsigned long long)lstar0,
+				g_geptLstarReadCount, g_geptLstarWriteCount);
+		}
+		else
+		{
+			FlLog("[STAGE2-MSR] LSTAR canary安装失败(0x%X)——MSR监控未生效(系统不受影响)",
+				lstarSt);
 		}
 	}
 #endif

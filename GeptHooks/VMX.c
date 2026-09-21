@@ -2,6 +2,7 @@
 #include"CPU.h"
 #include"reg.h"
 #include"common.h"
+#include"GeptMsr.h"
 #include<intrin.h>
 
 //v3.17: 运行模式开关GEPT_PROBE_EXIT/GEPT_LAUNCH_CPU_LIMIT已移至common.h
@@ -439,37 +440,6 @@ static void VmxRestoreDtrLimits(void)
 	VmxLoadIdtr(dtr);
 }
 
-void VmxSetMsrRw(ULONG64 msrNum, UCHAR rw, BOOLEAN flag)
-{
-	ULONG cpuNumber = KeGetCurrentProcessorNumber();
-	//v3.8: 值拷贝->指针(避免8.4KB压栈, 同VmxSetupVmcs)
-	PVCPU currentCpu = &g_vcpu[cpuNumber];
-	PUCHAR msrBitMapAddr = currentCpu->MsrBitMap;
-	ULONG64 msrByteOffset = 0;
-	ULONG msrBitOffset = 0;
-	if (rw == 1)
-	{
-		msrBitMapAddr += 1024 * 2;
-	}
-	if (msrNum >= 0xC0000000)
-	{
-		msrBitMapAddr += 1024;
-		msrNum -= 0xC0000000;
-	}
-	msrByteOffset = msrNum / 8;
-	msrBitOffset = msrNum % 8;
-	msrBitMapAddr += msrByteOffset;
-	if (flag)
-	{
-		(*msrBitMapAddr) |= 1 << msrBitOffset;
-
-	}
-	else
-	{
-		(*msrBitMapAddr) &= ~(1 << msrBitOffset);
-	}
-}
-
 void VmxCpuidHandler(PGUEST_REGS GuestRegs)
 {
 	//所有leaf先透传真实硬件结果
@@ -540,8 +510,16 @@ void VmxTscCompensate(ULONG64 entryTsc, ULONG64 exitTsc)
 
 void VmxMsrReadHandler(PGUEST_REGS GuestRegs)
 {
-	//v3.8: 移除DbgPrint——本函数在VM-exit上下文执行, DbgPrint内部锁与被中断
-	//线程可能同核重入死锁(位图全零时本case实际不会触发, 属残留地雷)
+	//v3.52 Phase5: MSR hook分发(GeptMsr.c)——位图命中的MSR读进回调,
+	//返回值=伪造值(rax:rdx)。未hook=直通(原逻辑, 位图全零时本case
+	//根本不会触发)。v3.8纪律保持: 绝不DbgPrint(exit上下文重入死锁)
+	ULONG64 forged = 0;
+	if (GeptMsrDispatchRead((ULONG32)GuestRegs->rcx, &forged))
+	{
+		GuestRegs->rax = forged & 0xFFFFFFFF;
+		GuestRegs->rdx = (forged >> 32) & 0xFFFFFFFF;
+		return;
+	}
 	ULONG64 msrValue = __readmsr(GuestRegs->rcx);
 	GuestRegs->rax = msrValue & 0xFFFFFFFF;
 	GuestRegs->rdx = (msrValue >> 32) & 0xFFFFFFFF;
@@ -898,8 +876,14 @@ void VmxExitHandler(PGUEST_REGS GuestRegs)
 	{
 		//WRMSR代执行: rdx:rax=64位值, rcx=MSR号(SDM 25.1.2寄存器映射)
 		//此前缺此case: 落default被"推进RIP"=写被静默丢弃 —— 整机冻结根因C
-		__writemsr(GuestRegs->rcx,
-			((ULONG64)GuestRegs->rdx << 32) | (GuestRegs->rax & 0xFFFFFFFF));
+		//v3.52 Phase5: hook分派(GeptMsr.c)——回调TRUE=放行代写(监控),
+		//FALSE=静默丢弃(guest认为写成功); 未hook=直通(原逻辑)
+		ULONG64 msrVal = ((ULONG64)GuestRegs->rdx << 32)
+			| (GuestRegs->rax & 0xFFFFFFFF);
+		if (GeptMsrDispatchWrite((ULONG32)GuestRegs->rcx, msrVal))
+		{
+			__writemsr(GuestRegs->rcx, msrVal);
+		}
 	}
 	break;
 	case EXIT_REASON_XSETBV:   //55
@@ -1386,8 +1370,8 @@ int VmxSetupVmcs(PVOID GuestRsp)
 	__vmx_vmwrite(VM_ENTRY_MSR_LOAD_COUNT, 0);
 	__vmx_vmwrite(VM_ENTRY_INTR_INFO_FIELD, 0);
 	__vmx_vmwrite(GUEST_ACTIVITY_STATE, 0);   // 处于正常执行指令状态
-	//0xC0000082
-	//VmxSetMsrRw(0xC0000082,0,TRUE);
+	//v3.52: MSR位图在此接线(恒零=全直通); Phase5起GeptMsr.c按核置位
+	//实现RDMSR/WRMSR拦截(原VmxSetMsrRw单核版死代码已删)
 	FlLog("cpu%u VMCS[6/6]: 填充完成, 启用EPT", cpuNumber);
 	//EPT数据已在DriverEntry(PASSIVE_LEVEL)预分配, 此处只写入VMCS
 	if (g_vcpu[cpuNumber].PeptData != NULL)

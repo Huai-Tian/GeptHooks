@@ -4,10 +4,10 @@
 #include<ntifs.h>
 
 //====================================================================
-// v3.50 Phase4: 简易API(用户初衷之二)——普通开发者零虚拟化知识
-// 即可用上虚拟层HOOK(VMFUNC双EPT detour式)
+// 简易API——普通开发者零虚拟化知识即可用虚拟层HOOK
+// (VMFUNC双EPT detour式)
 //
-//语义(看雪图谱4.2+4.4架构红利):
+//语义:
 //  - hook触发=CodePage跳转→GeptStubEntry→vmfunc切clean视图→SAVE_ALL
 //    →用户回调→vmfunc切回hooked视图→ret回调用者(全程零VM-Exit)
 //  - clean视图下原函数字节完好无损→回调内GeptCallOriginal**直接调用**
@@ -15,7 +15,7 @@
 //  - 回调返回值=hook函数的新返回值(完整detour控制权: 可改参数/返回值/
 //    不调用原函数直接拦截)
 //
-//使用纪律(血泪浓缩, 违反=蓝屏/死锁风险):
+//使用纪律(违反=蓝屏/死锁风险):
 //  1. 回调运行在原函数的**任意线程/任意IRQL上下文**(含DISPATCH级):
 //     只做IRQL安全操作(Interlocked*/无锁环事件/GeptCallOriginal);
 //     绝不FlLog(等待落盘线程死锁)/绝不DbgPrint(性能风暴)/绝不分页内存
@@ -26,12 +26,12 @@
 //  3. 已知限制(文档化): 回调执行期间本核处于clean视图——回调里调用
 //     的其他hook目标(或原函数内部调用的其他hook目标)不被拦截;
 //     回调阻塞=本核hook持续失效直到返回
-// 4. v1.1起第5+参数(栈参数)可转发: 安装时GEPT_HOOK.StackArgs=目标
+//  4. 第5+参数(栈参数)可转发: 安装时GEPT_HOOK.StackArgs=目标
 //     函数栈参数个数(≤GEPT_MAX_STACK_ARGS)→回调收到StackArgs指针
 //     (指向触发帧上实参, **可读可写**——写后GeptCallOriginal按改写值
 //     转发)+GeptCallOriginal自动转发; StackArgs=0=旧语义(仅4寄存器参)
 //
-//硬件要求(v3.51 Phase6起): 至少一核VT in-guest即可安装——
+//硬件要求: 至少一核VT in-guest即可安装——
 //  VMFUNC核(Haswell+): 双EPT零VM-Exit detour(隐藏性最优)
 //  无VMFUNC核(老CPU/降级): violation降级——API语义完全等价, 只是
 //    每次触发产生1+次VM-Exit(隐藏性降级); CallOriginal自动走LDE
@@ -57,7 +57,7 @@ typedef struct _GEPT_HOOK
 	PVOID Target;             //目标函数(内核虚拟地址)
 	GEPT_CALLBACK Callback;   //detour回调
 	PVOID Context;            //用户上下文(原样传给回调)
-	ULONG StackArgs;          //v1.1: 目标函数第5+栈参数个数(0=不转发;
+	ULONG StackArgs;          //目标函数第5+栈参数个数(0=不转发;
 	//>0时回调收StackArgs指针+CallOriginal自动
 	//转发; ≤GEPT_MAX_STACK_ARGS, 超限Install拒绝)
 } GEPT_HOOK, * PGEPT_HOOK;
@@ -76,7 +76,7 @@ NTSTATUS GeptHookEnumerate(GEPT_HOOK* Buffer, ULONG* InOutCount);
 //回调内调用原函数(仅回调上下文有效, 其他上下文返回0):
 //VMFUNC核: 切clean视图→直接call Target(原始字节)→归位hooked;
 //fallback核: 经LDE重定位跳板(版本无关, 无prologue硬编码)
-//v1.1: 安装时声明StackArgs>0的hook, 第5+参数自动从触发帧转发
+//声明StackArgs>0的hook, 第5+参数自动从触发帧转发
 //(回调对StackArgs数组的改写一并生效; Arg1-4=本函数实参——
 //经hook.asm GeptCallOrigAsm重建完整调用帧)
 ULONG64 GeptCallOriginal(ULONG64 Arg1, ULONG64 Arg2, ULONG64 Arg3, ULONG64 Arg4);
@@ -90,7 +90,7 @@ VOID GeptViewSwitch(ULONG eptpIndex);
 VOID GeptApiRemoveAll(VOID);
 VOID GeptApiFreeMemory(VOID);
 
-//v3.51: replay自测(仅调试/演示用)——直接调用指定hook的LDE重定位跳板,
+//replay自测(仅调试/演示用)——直接调用指定hook的LDE重定位跳板,
 //执行副本prologue后进入原函数体并正常返回。上机验证重定位生成器:
 //传伪句柄NtCurrentProcess()给NtClose的replay→应返回STATUS_INVALID_HANDLE
 NTSTATUS GeptApiSelfTestReplay(PVOID Target, ULONG64 Arg1);

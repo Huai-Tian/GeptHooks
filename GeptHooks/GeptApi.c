@@ -5,7 +5,7 @@
 #include "VMX.h"
 
 //====================================================================
-// v3.50 Phase4: 简易API实现(VMFUNC双EPT detour)
+// 简易API实现(VMFUNC双EPT detour)
 //
 //触发链: hooked视图hook页(=CodePage, 目标偏移处14B绝对跳转)
 //   → 本hook独享trampoline槽(mov r10,entry; jmp GeptStubEntry)
@@ -13,10 +13,9 @@
 //     → GeptCallbackDispatch(本文件) → 用户回调
 //     → vmfunc(0,1)切回hooked → ret回调用者(rax=回调返回值)
 //
-//为什么无需prologue重放/hookLen机器(相对v3.46跳板的本质简化):
-//clean视图下原函数字节完好→GeptCallOriginal直接call Target原始入口;
-//violation方案里"重放被覆盖的前N字节+jmp回+N"的整套trampoline机器
-//只为绕过被覆盖的指令——双EPT下这问题不存在
+//无需prologue重放/hookLen机器的原因: clean视图下原函数字节完好→
+//GeptCallOriginal直接call Target原始入口(violation方案里重放+跳回
+//的整套trampoline机器只为绕过被覆盖的指令, 双EPT下该问题不存在)
 //
 //Remove语义: 不动EPT结构(hooked PTE仍指CodePage), 只把CodePage里被
 //覆盖的前HookLen字节还原成原页内容(原页从未被修改=权威副本)+全核
@@ -31,7 +30,7 @@ typedef struct _GEPT_API_ENTRY
 	LIST_ENTRY link;
 	GEPT_HOOK pub;        //Target/Callback/Context
 	PVOID Trampoline;     //本hook独享trampoline槽(可执行池页内)
-	PVOID ReplayVA;       //v3.51: LDE重定位跳板(副本prologue+尾jmp回; fallback的GeptCallOriginal+replay自测共用)
+	PVOID ReplayVA;       //LDE重定位跳板(副本prologue+尾jmp回; fallback的GeptCallOriginal+replay自测共用)
 	ULONG ReplayLen;      //重定位覆盖的字节数(=PHHook跳转覆盖长度, 两者同源同长)
 	volatile LONG Removed;//1=已移除(Enumerate跳过; 内存延迟到卸载)
 } GEPT_API_ENTRY, * PGEPT_API_ENTRY;
@@ -51,14 +50,14 @@ static KIRQL s_apiOldIrql = 0;
 
 //每核当前hook(GeptCallbackDispatch设置/嵌套save-restore, GeptCallOriginal读)
 static PGEPT_API_ENTRY volatile s_currentHook[128] = { 0 };
-//v1.1: 每核当前触发帧(与s_currentHook同点位设置/嵌套save-restore——
+//每核当前触发帧(与s_currentHook同点位设置/嵌套save-restore——
 //GeptCallOriginal据此取第5+栈参数源; 回调内嵌套触发另一hook时正确分层)
 static PGUEST_REGS volatile s_currentRegs[128] = { 0 };
 
 //hook.asm的detour stub入口(填进每个trampoline槽)
 extern VOID GeptStubEntry(VOID);
 
-//v1.1: hook.asm的栈参数转发桩(GeptCallOrigAsm的参数块——偏移与
+//hook.asm的栈参数转发桩(GeptCallOrigAsm的参数块——偏移与
 //hook.asm桩注释硬契约, 改一处必须同步另一处):
 //  +00h Target(VMFUNC核=原入口/fallback核=重定位跳板)
 //  +08h StackArgs源  +10h Count  +18h..30h Arg1-4
@@ -91,7 +90,7 @@ static VOID GeptApiUnlock(VOID)
 	KeReleaseSpinLock(&s_apiLock, s_apiOldIrql);
 }
 
-//v3.50: 手动视图切换(asm stub/GeptCallOriginal共用)——VT已关/无VMFUNC核
+//手动视图切换(asm stub/GeptCallOriginal共用)——VT已关/无VMFUNC核
 //安全no-op。卸载竞态防御: vmx_off后non-root执行vmfunc=#UD蓝屏, 本检查把
 //"在途回调跨卸载窗口"缩到check与vmfunc两条指令间被抢占的极小概率
 //(配合DriverUload的GeptApiRemoveAll+2s宽限, 残余风险可忽略)
@@ -107,7 +106,7 @@ VOID GeptViewSwitch(ULONG eptpIndex)
 
 //asm stub调用(rcx=API条目, rdx=GUEST_REGS帧): 设置每核当前hook+触发帧
 //(嵌套save-restore——回调内经线程迁移再触发另一hook时正确嵌套)后进
-//用户回调。v1.1: 声明了StackArgs>0的hook, 回调收第5+参数数组指针
+//用户回调。声明了StackArgs>0的hook, 回调收第5+参数数组指针
 //(=触发帧上实参, regs->rsp+28h——RSP0=guest入口rsp, 栈参在影子空间
 //之上, 见hook.asm GeptStubEntry帧布局注释; 可读可写, 写后
 //GeptCallOriginal按改写值转发)
@@ -142,14 +141,14 @@ ULONG64 GeptCallOriginal(ULONG64 Arg1, ULONG64 Arg2, ULONG64 Arg3, ULONG64 Arg4)
 		}
 		return 0;
 	}
-	//v3.51 Phase6: 双路径——VMFUNC核(双EPT)与fallback核(violation单EPT)
-	//按**当前核**能力分派(混合机器上回调在哪个核触发就走哪条路):
+	//双路径——VMFUNC核(双EPT)与fallback核(violation单EPT)按**当前核**
+	//能力分派(混合机器上回调在哪个核触发就走哪条路):
 	//  VMFUNC核: 切clean视图→直接call原始入口(clean视图原函数字节
 	//    完好, 无重放)→归位hooked。视图切换幂等(SDM §28.5.7.3)
 	//  fallback核: 原函数首字节在CodePage(执行视图)里=14B跳转,
 	//    直接call Target=撞跳转无限递归!→经**重定位跳板**(prologue
 	//    副本+尾jmp+N进入函数体, 跳板页未被hook)——经典Detours语义
-	//v1.1: 声明了StackArgs>0的hook走GeptCallOrigAsm桩——按x64 ABI重建
+	//声明了StackArgs>0的hook走GeptCallOrigAsm桩——按x64 ABI重建
 	//完整调用帧(32B影子+N栈参复制+寄存器装载), 栈参源=触发帧上实参
 	//(回调可能已改写)。两条路径(原入口/重定位跳板)对栈参转发语义等价:
 	//跳板重放的rsp相对指令读**跳板自身等价调用帧**的同偏移
@@ -191,9 +190,8 @@ ULONG64 GeptCallOriginal(ULONG64 Arg1, ULONG64 Arg2, ULONG64 Arg3, ULONG64 Arg4)
 //  <GeptStubEntry64>                      (位置无关, 不依赖±2GB邻近)
 //槽布局(24B/64B): [0..9]=mov r10 | [10..15]=jmp | [16..23]=8B目标指针。
 //**指针必须落t+16**: 指令在t+10长6B→RIP_after=t+16, disp32=0→CPU从
-//t+16读操作数。v3.50b教训: 曾误写t+18→CPU读出[00 00+地址低6B]=非规范
-//地址→#GP(0)于jmp指令本身→蓝屏0x3B@C0000005@槽+0x0A(Install后首次
-//hook触发即崩; 日志铁证: 跳板槽=...A000, 蓝屏RIP=...A00A)
+//t+16读操作数。写错偏移(如t+18)=CPU读出[00 00+地址低6B]=非规范地址
+//→#GP(0)于jmp指令本身→Install后首次hook触发即蓝屏, 故有下方回读自检
 static PVOID GeptAllocTrampoline(PGEPT_API_ENTRY entry)
 {
 	if (s_trampUsed >= (LONG)(sizeof(s_trampPool) / sizeof(s_trampPool[0]) * GEPT_TRAMP_PER_PAGE))
@@ -235,7 +233,7 @@ NTSTATUS GeptHookInstall(const GEPT_HOOK* Hook)
 	{
 		return STATUS_INVALID_PARAMETER;
 	}
-	//v1.1: 栈参数个数上限(=hook.asm GeptCallOrigAsm固定帧32槽, 超限
+	//栈参数个数上限(=hook.asm GeptCallOrigAsm固定帧32槽, 超限
 	//拒绝——绝不让桩复制越界)
 	if (Hook->StackArgs > GEPT_MAX_STACK_ARGS)
 	{
@@ -243,12 +241,11 @@ NTSTATUS GeptHookInstall(const GEPT_HOOK* Hook)
 			Hook->StackArgs, (ULONG)GEPT_MAX_STACK_ARGS, Hook->Target);
 		return STATUS_INVALID_PARAMETER;
 	}
-	//v3.51 Phase6: gate从"全部核VMFUNC"放宽为"至少一核in-guest"——
-	//  VMFUNC核: 双EPT零VM-Exit detour(不变)
-	//  无VMFUNC核(老CPU/降级核): violation降级——EptSetHook按核分派
-	//    (已有逻辑), detour stub统一(GeptViewSwitch按核no-op),
-	//    GeptCallOriginal按核走重定位跳板(见其注释)
-	//零核in-guest(VT启动全败)=PHHook无处布防, 拒绝
+	//安装gate="至少一核in-guest"(零核=VT启动全败, PHHook无处布防, 拒绝):
+	//  VMFUNC核: 双EPT零VM-Exit detour
+	//  无VMFUNC核(老CPU/降级核): violation降级——EptSetHook按核分派,
+	//    detour stub统一(GeptViewSwitch按核no-op), GeptCallOriginal
+	//    按核走重定位跳板(见其注释)
 	{
 		ULONG cpuCount = KeQueryActiveProcessorCount(NULL);
 		ULONG inGuest = 0, vmfuncCores = 0;
@@ -298,11 +295,10 @@ NTSTATUS GeptHookInstall(const GEPT_HOOK* Hook)
 	entry->Removed = 0;
 	entry->ReplayVA = NULL;
 	entry->ReplayLen = 0;
-	//v3.51: LDE重定位跳板(所有路径无条件构建——fallback的CallOriginal
-	//必需+replay自测用; VMFUNC纯核上仅自测用到, 96B成本可忽略)。
+	//LDE重定位跳板(所有路径无条件构建——fallback的CallOriginal必需
+	//+replay自测用; VMFUNC纯核上仅自测用到, 96B成本可忽略)。
 	//MinLen=14=PHHook跳转覆盖长度, 两者同源(PHGetHookLen同款解码循环)
 	//→replay覆盖字节数≡CodePage跳转覆盖字节数, 重放/jmp回严格配套
-	//(v3.46"跳回落点≠重放长度=蓝屏"教训的构造性根除)
 	ULONG replayLen = 0;
 	entry->ReplayVA = PHBuildRelocTrampoline((ULONG64)Hook->Target,
 		sizeof(JMP_OPCODE64), &replayLen);
@@ -321,9 +317,9 @@ NTSTATUS GeptHookInstall(const GEPT_HOOK* Hook)
 		ExFreePool(entry);
 		return STATUS_INSUFFICIENT_RESOURCES;
 	}
-	//PHHook(复用v3.46机器): CodePage整页复制+目标偏移14B绝对跳转→
-	//我们的trampoline槽+DPC逐核EptSetHook(VMFUNC核: hooked表PTE→CodePage
-	//+切hooked视图; fallback核: 拆页+清execute的violation布防——按核自动分派)
+	//PHHook: CodePage整页复制+目标偏移14B绝对跳转→我们的trampoline槽
+	//+DPC逐核EptSetHook(VMFUNC核: hooked表PTE→CodePage+切hooked视图;
+	//fallback核: 拆页+清execute的violation布防——按核自动分派)
 	NTSTATUS st = PHHook(Hook->Target, entry->Trampoline);
 	if (!NT_SUCCESS(st))
 	{
@@ -406,7 +402,7 @@ NTSTATUS GeptHookRemove(PVOID Target)
 	}
 	//字节还原+全核invept(vmcall(7)广播)。此后hooked视图≡clean视图=
 	//hook死透; 已过跳板的在途回调安全完成(槽/条目不动)
-	//(v3.51: 还原长度=ReplayLen——与CodePage跳转覆盖长度同源同长)
+	//(还原长度=ReplayLen——与CodePage跳转覆盖长度同源同长)
 	found->Removed = 1;
 	GEPT_REMOVE_CTX ctx;
 	ULONG off = (ULONG)((ULONG_PTR)Target & (PAGE_SIZE - 1));
@@ -488,10 +484,10 @@ VOID GeptApiRemoveAll(VOID)
 	}
 }
 
-//v3.51 Phase6: replay自测——直接调用指定hook的重定位跳板(执行副本
-//prologue→尾jmp进入原函数体→完整跑完原函数→正常返回)。用于上机验证
-//LDE重定位生成器(任何Windows版本的目标函数, 不依赖本机构建); 传入
-//伪句柄NtCurrentProcess()=安全且确定的判据(NtClose返回
+//replay自测——直接调用指定hook的重定位跳板(执行副本prologue→尾jmp
+//进入原函数体→完整跑完原函数→正常返回)。用于上机验证LDE重定位生成器
+//(任何Windows版本的目标函数, 不依赖本机构建); 传入伪句柄
+//NtCurrentProcess()=安全且确定的判据(NtClose返回
 //STATUS_INVALID_HANDLE 0xC0000008)。仅PASSIVE_LEVEL调试/自测用,
 //**不进任何生产路径**
 NTSTATUS GeptApiSelfTestReplay(PVOID Target, ULONG64 Arg1)

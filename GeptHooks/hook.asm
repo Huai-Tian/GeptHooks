@@ -34,15 +34,10 @@ HVM_RESTORE_ALL_NOSEGREGS MACRO
         pop r14
         pop r15
 ENDM
-EXTERN	 GeptCallbackDispatch:PROC   ;v3.50: API detour分发器(GeptApi.c)
-EXTERN	 GeptViewSwitch:PROC         ;v3.50: 带VT开关检查的视图切换(GeptApi.c)
+EXTERN	 GeptCallbackDispatch:PROC   ;API detour分发器(GeptApi.c)
+EXTERN	 GeptViewSwitch:PROC         ;带VT开关检查的视图切换(GeptApi.c)
 .CODE
-;v1.2: 自测目标与病毒探针(GeptTestTarget/GeptTestTarget6/AsmHookTestTarget/
-;GeptVirusVmxDetectOff/GeptVirusVmxOn)整体退役——开发期验证专用, API使用
-;者不需要(验证史见NOTES.md); 本文件只保留API运行时必需的两个入口:
-;GeptStubEntry(hook触发链)与GeptCallOrigAsm(第5+栈参数转发桩)
-;
-;==== v3.51 Phase4/6: API detour stub(统一版, VMFUNC核+fallback核共用) ====
+;==== API detour stub(VMFUNC核+fallback核共用) ====
 ;进入链: hooked视图hook页(=CodePage)目标偏移处的14B绝对跳转
 ;  → 本hook独享trampoline槽(GeptApi.c生成: mov r10,entry; jmp GeptStubEntry)
 ;  → 此处。r10=API条目(trampoline写入); 栈顶=原调用者返回地址
@@ -51,39 +46,34 @@ EXTERN	 GeptViewSwitch:PROC         ;v3.50: 带VT开关检查的视图切换(Gep
 ;  → SAVE_ALL → 分发器(设置每核当前hook+调用户回调, 返回值=新函数返回值)
 ;  → GeptViewSwitch(1)归位hooked → 回调返回值写帧rax槽
 ;  → RESTORE_ALL → ret回调用者(rax=回调返回值=detour完整控制权)
-;v3.51统一化(Phase 6): 原版入口处裸vmfunc(仅VMFUNC核合法, fallback核
-;=#UD蓝屏)改调GeptViewSwitch——C侧按bVmfuncOn按核判定, fallback核
-;自动no-op=同一stub服务两类核(混合机器正确)
-;v3.51顺带修复两处latent bug(裸vmfunc版靠运气通过v3.50b实测):
-;  ①retval曾存r10/r11跨call GeptViewSwitch——volatile寄存器跨C调用
-;    不保证保存(当前编译器恰好没占用纯属运气); 现改为**立即落帧**
-;    (mov [rsp+28h],rax后不再跨call持有)
-;  ②API条目曾假定r10跨call存活——同理不可靠; 现从帧的r10槽重取
-;    ([rsp+78h]: SAVE_ALL后r10槽=槽写入的entry值, 偏移28h+50h)
+;注意: retval/API条目必须立即落帧或从帧重取——volatile寄存器
+;  (r10/r11/rax)跨C调用不保证保存
 ;帧布局(push序=HVM_SAVE_ALL_NOSEGREGS, rax最低): rax@0 rcx@8 rdx@10h
 ;rbx@18h rbp@20h rsi@30h rdi@38h r8@40h r9@48h r10@50h r11@58h...
 ;sub 28h后帧基=rsp+28h, 故r10槽=rsp+28h+50h=rsp+78h
-;v1.1栈参数布局(触发时guest栈=帧基+80h起, x64 ABI): [+80h]=调用者
+;栈参数布局(触发时guest栈=帧基+80h起, x64 ABI): [+80h]=调用者
 ;返回地址 [+88h..+A7h]=影子空间(调用者分配32B) [+A8h]=第5参
 ;[+B0h]=第6参...——RSP0(=帧基+80h)视角: [RSP0]=返回地址,
 ;[RSP0+28h]=第5参首址(影子空间之上), C侧统一用regs->rsp+28h
 GeptStubEntry PROC
     HVM_SAVE_ALL_NOSEGREGS    ;先保存全部(含槽写入的r10=API条目)
-    lea  rax, [rsp+80h]       ;v1.1: RSP0=guest入口rsp(SAVE_ALL帧高
-                              ;0x80之上; rax此刻已保存在帧内, clobber安全)
+    lea  rax, [rsp+80h]       ;RSP0=guest入口rsp(SAVE_ALL帧高0x80之上;
+                              ;rax此刻已保存在帧内, clobber安全)
     mov  [rsp+20h], rax       ;帧rsp槽=GUEST_REGS.rsp=RSP0(旧值无用——
                               ;双push rbp的假槽, RESTORE时被首个pop rbp
                               ;读后即被真rbp覆盖; C侧栈参数=regs->rsp+28h)
     sub rsp, 28h              ;入口RSP%16==8(jmp到函数入口语义)+16push
                               ;(128B)不改奇偶→此处%16==8; sub 28h(40B)
-                              ;→call点%16==0, x64 ABI正确(v3.43裁决同款)
+                              ;→call点%16==0, x64 ABI正确(绝不能sub 20h:
+                              ;call点错8字节=ABI违规, 被调树的movaps
+                              ;栈对齐指令会#GP蓝屏)
     xor ecx, ecx              ;arg1=0(clean视图)
     call GeptViewSwitch       ;VMFUNC核: vmfunc切clean; fallback核: no-op
                               ;(rcx/rdx/r8-r11可能被clobber——无妨)
     mov rcx, [rsp+78h]        ;arg1=API条目(从帧r10槽重取, 不依赖volatile存活)
     lea rdx, [rsp+28h]        ;arg2=GUEST_REGS帧基(回调取原始rcx/rdx/r8/r9)
     call GeptCallbackDispatch ;rax=用户回调返回值=hook函数的新返回值
-    mov [rsp+28h], rax        ;**retval立即落帧的rax槽**(不跨下个call持有
+    mov [rsp+28h], rax        ;retval立即落帧的rax槽(不跨下个call持有
                               ;volatile; RESTORE的pop rax=新返回值)
     mov ecx, 1                ;arg1=1(hooked视图)
     call GeptViewSwitch       ;VMFUNC核: vmfunc归位; fallback核: no-op
@@ -92,7 +82,7 @@ GeptStubEntry PROC
     ret                       ;回原调用者(栈顶=其返回地址, jmp进入未压新帧)
 GeptStubEntry ENDP
 
-;==== v1.1: CallOriginal第5+栈参数转发桩(GeptApi.c GeptCallOriginal调用) ====
+;==== CallOriginal第5+栈参数转发桩(GeptApi.c GeptCallOriginal调用) ====
 ;rcx=GEPT_ORIG_CALL*(C侧GeptCallOriginal栈上参数块, 偏移硬契约):
 ;  +00h Target(VMFUNC核=原入口/fallback核=重定位跳板)
 ;  +08h StackArgs源(=触发帧上第5+实参, 回调可已改写)  +10h Count(N)
@@ -101,13 +91,12 @@ GeptStubEntry ENDP
 ;(从源逐个复制到[rsp+20h..])+rcx/rdx/r8/r9装载+call点16对齐。
 ;栈帧精算(入口rsp%16==8): push rbp→0(rbp=帧锚, rbp%16==0); push
 ;rbx/rsi/rdi/rcx(4×8=20h)→rsp%16==0; sub 120h(288B, 16倍数)→call点
-;%16==0 OK。固定布局的**本质优点**: arg5恒在[rsp+20h](影子之上),
+;%16==0 OK。固定布局的本质优点: arg5恒在[rsp+20h](影子之上),
 ;与N奇偶无关——动态sub方案的N奇偶对齐补偿问题构造性不存在
 ;120h=影子20h+栈参区100h(32槽×8B, N≤32只填前N槽, 余槽callee不读)
 ;PROC FRAME+unwind指令(.pushreg/.allocstack/.setframe): 被调Target
 ;抛#GP/#PF且上层SEH捕获时, 内核unwinder可正确穿越本帧走栈
-;(缺unwind信息=异常派发期二次崩溃; v3.53起宿主会向guest注入
-;#GP/#UD, 异常穿越本帧属真实可达路径, 纯防御纵深)
+;(缺unwind信息=异常派发期二次崩溃)
 GeptCallOrigAsm PROC FRAME
     push rbp
     .pushreg rbp

@@ -41,12 +41,11 @@ CmGeustRip PROC
  ret
 CmGeustRip ENDP
 
-;v3.13落地探针: vmlaunch成功后guest执行的第一段代码(GUEST_RIP指向此处)。
-;v3.20改为四段(把接管冻结的死亡窗口切成可观测片段); v3.36中断直投版:
+;落地探针: vmlaunch成功后guest执行的第一段代码(GUEST_RIP指向此处):
 ;  ①vmcall(rcx=5ABE)'W'   : 自证"入口转换+EPT取指+exit+RIP推进+vmresume"
-;  ②512次vmcall(rcx=4)循环(≈6ms)——v3.36直投(pin=0): 期间到达的中断在
-;    non-root直接经guest IDT交付ISR(硬件原生路径, VMM零参与), 不积压
-;    不丢失; 若日志出现rsn=1事件=配置异常(直投下理论不可达)
+;  ②512次vmcall(rcx=4)循环(≈6ms)——期间到达的中断在non-root直接经
+;    guest IDT交付ISR(硬件原生路径, VMM零参与), 不积压不丢失;
+;    若日志出现rsn=1事件=中断直投配置异常(直投下理论不可达)
 ;  ③vmcall(rcx=6)'Y'      : 循环完成标记(handler推'Y', rbx=0)
 ;  ④vmcall(rcx=3)         : KEEP模式(接管)直接放行→jmp CmGeustRip恢复栈
 ;                           →ret回VMXInitCpuStart(non-root)→'Q'→FlLog;
@@ -57,9 +56,7 @@ CmGeustRip ENDP
 CmGuestProbe PROC
     mov rcx, 5ABEh    ;GEPT_PROBE_MAGIC, 必须与common.h保持一致
     vmcall            ;'W': handler推环标记后通用RIP推进放行
-    mov rbx, 512      ;v3.36: 保持512次(≈6ms)——直投模式下循环期间中断
-                      ;原样直投ISR(LAPIC IRR零积压), 循环长度已无安全含义,
-                      ;留此值纯粹为与v3.29-3.35的观测数据可比
+    mov rbx, 512      ;512次vmcall(≈6ms): 观测窗口, 兼容历史日志数据
 gept_probe_loop:
     mov rcx, 4        ;'L': handler按rbx采样推环(每1024次1条)
     vmcall
@@ -78,12 +75,12 @@ vmcall
 ret
 CmVmCall ENDP
 
-;v3.35: 三重故障park本体(永不返回)——VmxTripleFaultPark在vmx_off+清债后
-;跳入此循环。sti+hlt: hlt在IF=1下被任意中断(IPI/时钟/设备)唤醒, ISR在本核
-;VMM栈上运行并返回, 然后继续hlt。**效果: 本核退出虚拟化但持续服务中断**
-;——TLB-flush等IPI广播的发送核等待解除, 级联冻结被从根上切断, 机器存活,
-;T1把'T'+环尾事件全部落盘(对比v3.10的_disable+__halt: IF=0停核=IPI永不
-;处理=发送核自旋持锁=全机冻结=v3.30-34五连"零事件+看门狗死"的统一解释)。
+;三重故障park本体(永不返回)——VmxTripleFaultPark在vmx_off+清债后
+;跳入此循环。sti+hlt: hlt在IF=1下被任意中断(IPI/时钟/设备)唤醒, ISR在
+;本核VMM栈上运行并返回, 然后继续hlt。效果: 本核退出虚拟化但持续服务
+;中断——TLB-flush等IPI广播的发送核等待解除, 级联冻结被切断, 机器存活。
+;注意: 绝不能用IF=0的停核(_disable+__halt)=IPI永不处理=发送核自旋
+;持锁=全机冻结。
 ;约束: 代码页/VMM栈绝不能释放(驱动不得卸载——main.c卸载守卫拒绝)。
 ;不触碰任何GPR/栈(唤醒的ISR帧在RSP之下瞬态使用), 纯3指令循环
 CmTripleFaultPark PROC
@@ -92,17 +89,13 @@ CmTripleFaultPark PROC
     jmp CmTripleFaultPark
 CmTripleFaultPark ENDP
 
-;v1.2: CmVmfuncTest(VMFUNC裸往返自测)已随main.c自测代码退役删除——
-;开发期验证专用, 框架交付不需要(验证史见NOTES.md)。CmVmfuncSwitch保留:
-;GeptApi.c GeptViewSwitch每次hook触发/归位都经它执行真实EPTP切换
-;
-;v3.48 Phase2: 单次VMFUNC EPTP切换(guest内调用, 零VM-Exit)。
+;单次VMFUNC EPTP切换(guest内调用, 零VM-Exit)。
 ;rcx=EPTP-list索引(0=clean/1=hooked), C侧ULONG参数零扩展到RCX天然合法。
 ;语义(SDM §28.5.7.3): 成功=新EPTP写回EPT_POINTER字段+后续翻译走新表
 ;+VPID0组合映射自动失效; 失败(项非法/ECX>=512)=VM-exit reason 59
-;(handler case59推RIP跳过+自测判FAIL降级)。vmfunc不改任何寄存器/标志
-;(SDM: "does not modify the state of any registers"), 纯切换语义
-;机器码0F 01 D4(SDM指令表, v3.47c裁决)
+;(handler case59推RIP跳过)。vmfunc不改任何寄存器/标志(SDM:
+;"does not modify the state of any registers"), 纯切换语义。
+;机器码纪律: VMFUNC=0F 01 D4(SDM指令表)——绝不凭记忆/论坛写opcode
 CmVmfuncSwitch PROC
     xor eax, eax        ;EAX=0: function 0 = EPTP switching
     db 0Fh, 01h, 0D4h   ;vmfunc (0F 01 D4, SDM)

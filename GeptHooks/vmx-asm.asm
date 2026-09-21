@@ -36,11 +36,11 @@ HVM_RESTORE_ALL_NOSEGREGS MACRO
 ENDM
 EXTERN	 VmxExitHandler:PROC
 EXTERN	 VmxResumeFailedEntry:PROC
-EXTERN	 VmxTscCompensate:PROC    ;v3.49 Phase3: TSC补偿(exit驻留时长扣除)
+EXTERN	 VmxTscCompensate:PROC    ;TSC补偿(exit驻留时长扣除)
 .CODE
 VmxVmexitHandler PROC
 	HVM_SAVE_ALL_NOSEGREGS
-	;v3.49 Phase3(隐藏, 看雪图谱4.4 TSC补偿): exit入口rdtsc——必须在
+	;(TSC补偿): exit入口rdtsc——必须在
 	;HVM_SAVE之后(易失寄存器此时可自由用, guest值已在栈帧上)。
 	;rdtsc在root模式读裸TSC(无offset语义, offset只作用于non-root)
 	rdtsc
@@ -70,8 +70,8 @@ VmxVmexitHandler PROC
 	jz	VmxResumeFailed   ;ZF=1: VMfailInvalid
 	ret
 VmxResumeFailed:
-	;vmresume失败: 原版直接ret, 栈上无有效返回地址=未定义行为
-	;改为进入C侧记录'R'标记后停掉本核(其余核由心跳日志继续观测)
+	;vmresume失败: 不能直接ret(栈上无有效返回地址=未定义行为),
+	;进入C侧记录'R'标记后停掉本核(其余核由心跳日志继续观测)
 	sub	rsp, 20h          ;20h: call时保持RSP 16字节对齐(x64 ABI)+影子空间
 	call	VmxResumeFailedEntry   ;noreturn
 VmxVmexitHandler ENDP
@@ -83,17 +83,14 @@ VmxJumGuest PROC
     ret
 VmxJumGuest ENDP
 
-;v3.39: C上下文vmx_off跳回guest的专用出口(带非易失GPR恢复)。
+;C上下文vmx_off跳回guest的专用出口(带非易失GPR恢复)。
 ;rcx=GuestRegs帧地址(VMM栈上, 布局=HVM_SAVE_ALL_NOSEGREGS的push序),
 ;rdx=目标RSP, r8=目标RIP。
 ;为什么必须恢复: x64 ABI下vmcall=调用边界, 调用者(CmVmCall的ret之后
 ;的VmxStopCpu等)只保证非易失GPR(rbx/rbp/rsi/rdi/r12-r15)跨调用有效
 ;——而exit handler的C代码(编译器自由使用它们)早已覆盖; 旧VmxJumGuest
-;只切RSP+JMP, 跳回后调用者拿handler残留的垃圾寄存器继续跑。
-;v3.38 KEEP模式首次成功卸载即实测翻车: "cpu3509829504"垃圾参数打印
-;+卸载循环垃圾索引访问g_vcpu→蓝屏0x7E@(0xC0000005, driver+0x558F1)。
-;v3.16 EXIT模式从未暴露: 探针vmcall落点=jmp CmGeustRip, pop链从
-;guest栈恢复了全部寄存器。
+;只切RSP+JMP, 跳回后调用者拿handler残留的垃圾寄存器继续跑
+;(垃圾参数打印+垃圾索引访问g_vcpu→蓝屏0x7E)。
 ;帧偏移(push序rax,rcx,rdx,rbx,rbp,rbp,rsi,rdi,r8..r15, 与C结构
 ;GUEST_REGS字段偏移一致): rbx+18h rbp+28h rsi+30h rdi+38h
 ;r12+60h r13+68h r14+70h r15+78h。易失寄存器(rax/rcx/rdx/r8-r11)
@@ -112,7 +109,7 @@ VmxJumGuestRegs PROC
     ret
 VmxJumGuestRegs ENDP
 
-;v3.39: 恢复GDTR/IDTR——VM-exit无条件把两个limit压成0xFFFF(SDM 27.5,
+;恢复GDTR/IDTR——VM-exit无条件把两个limit压成0xFFFF(SDM 27.5,
 ;host-state区只有base无limit字段), vmx_off回真机后残留。rcx=10字节描述符
 ;(WORD limit@+0, QWORD base@+2, 与reg.asm GetGdtBase的sgdt读侧同布局)
 VmxLoadGdtr PROC
@@ -128,11 +125,11 @@ invd
 ret
 VmxInvd ENDP
 
-;v3.46: 返回VMfail标志——invept执行后RFLAGS.ZF=1表示VMfail(指令无效,
+;返回VMfail标志——invept执行后RFLAGS.ZF=1表示VMfail(指令无效,
 ;什么都没失效), sete al→TRUE=失败, FALSE=成功。此前裸ret不检查:
 ;CPU只支持single-context(EPT_VPID_CAP bit26=0)时type2(all-context)
 ;VMfail被静默吞掉, EPT TLB从未失效——已布防hook对热函数(NtClose等
-;TLB常驻)数小时不触发, 直到TLB自然逐出才生效(v3.45蓝屏延迟根源)
+;TLB常驻)数小时不触发, 直到TLB自然逐出才生效(延迟生效的蓝屏根源)
 VmxInvept PROC
     invept rcx, OWORD PTR [rdx]
     sete al

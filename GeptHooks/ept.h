@@ -154,36 +154,36 @@ typedef union _EPT_EXITDATA
 }EPT_EXITDATA, * PEPT_EXITDATA;
 
 NTSTATUS EptInitEptData(ULONG cpuNumber);
-//v3.18: 释放共享高区页表(512GB-256TB预建页, DriverUload/回滚调用, 幂等)
-//(v3.48: 兼释放双EPT标记页一对)
+//释放共享高区页表(512GB-256TB预建页, DriverUload/回滚调用, 幂等)
+//(兼释放双EPT标记页一对)
 VOID EptShutdownHighMappings(VOID);
-//v3.13: vmlaunch前EPT软件自检门(PASSIVE级, FlLog逐项落盘)。
+//vmlaunch前EPT软件自检门(PASSIVE级, FlLog逐项落盘)。
 //返回失败项数(0=通过)。VmxSetupVmcs据此决定是否放弃vmlaunch
-//v3.48: 追加[7][8][9]=hooked EPT自检(双视图第二套表, 见函数尾)
+//追加[7][8][9]=hooked EPT自检(双视图第二套表, 见函数尾)
 ULONG EptVerifyTables(ULONG cpuNumber, ULONG64 guestRspVa);
 void EptExitHandler(PGUEST_REGS GuestRegs);
 void EptSetHook(ULONG64 orginalPagePFN, ULONG64 codePagePFN);
-//v3.48 Phase2(双EPT): walker全部带显式PEPT_DATA参数——软件走查/改写
+//(双EPT): walker全部带显式PEPT_DATA参数——软件走查/改写
 //必须明确目标视图(传错表=改错页表=静默错译)。clean=g_vcpu[n].PeptData,
 //hooked=g_vcpu[n].PeptDataHooked, 当前视图=EptGetActiveData()
 PEPT_PDE_2M EptGetPde2B(PEPT_DATA ept, ULONG64 PFN);
 BOOLEAN EptPdeToPte(PEPT_PDE_2M pde2M);
 PEPT_PTE EptGetPte(PEPT_DATA ept, ULONG64 PFN);
 void EptUpdatePageAcess(PEPT_DATA ept, ULONG64 gpa, UCHAR acess, PPAGE_HOOK_ENTRY pageEntry);
-//v3.48: 本核**当前视图**的EPT——vmread EPT_POINTER比对clean/hooked EPTP
+//本核**当前视图**的EPT——vmread EPT_POINTER比对clean/hooked EPTP
 //(SDM §28.5.7.3: VMFUNC切换会写回EPT_POINTER字段, 字段值=真相)。
 //仅VMX root+VMCS已加载上下文可调(exit handler/EptSetHook)
 PEPT_DATA EptGetActiveData(VOID);
-VOID EptInveptCurrent(VOID);   //v3.46: 统一invept入口(能力探测+EPTP填充+VMfail留痕)
-VOID EptInveptBothViews(VOID); //v3.48: vmx_off前双视图invept(all-context短路; single-context型CPU逐视图失效)
+VOID EptInveptCurrent(VOID);   //统一invept入口(能力探测+EPTP填充+VMfail留痕)
+VOID EptInveptBothViews(VOID); //vmx_off前双视图invept(all-context短路; single-context型CPU逐视图失效)
 BOOLEAN EptBuildHighMapping(ULONG64 gpa);
 extern BOOLEAN g_bEpt1GbPage;
 
-//==== v3.48 Phase2: 双EPT标记页 ====
+//==== 双EPT标记页 ====
 //hooked EPT里把pageA的GPA改译到pageB物理页(EptInitEptData布防);
 //guest内读同一VA: clean视图=GEPT_MARK_A / hooked视图=GEPT_MARK_B
-//=VMFUNC切换的是真实独立EPT的直接软件证据(Phase1 no-op验证的功能升级,
-//自测+launch前EPT自检[8]双保险)。全核共用一对页, EptShutdownHighMappings释放
+//=VMFUNC切换的是真实独立EPT的直接软件证据(区别于no-op往返验证)。
+//全核共用一对页, EptShutdownHighMappings释放
 extern PVOID g_geptMarkVA;         //pageA虚拟地址(GPA=PA_A恒等, 自测读它)
 extern ULONG64 g_geptMarkPaB;      //pageB物理地址(hooked视图翻译目标)
 #define GEPT_MARK_A 0x5450454E41454C43ULL   //小端内存=ASCII "CLEANEPT"

@@ -4,20 +4,20 @@
 #include<ntifs.h>
 
 //====================================================================
-// v3.52 Phase5: MSR拦截简易API(看雪图谱4.3 MSR数据伪装)
+// MSR拦截简易API(MSR数据伪装)
 //
-//原理: 每核MSR位图(VMCS MSR_BITMAP, v3.15起已接线但恒零=全直通)
-//置位后, guest内RDMSR/WRMSR对该MSR产生VM-exit → 分发到用户回调:
+//原理: 每核MSR位图(VMCS MSR_BITMAP)置位后, guest内RDMSR/WRMSR对该
+//MSR产生VM-exit → 分发到用户回调:
 //  - 读回调返回值=rdmsr可见值(伪造: 可返回假地址/假数据)
 //  - 写回调返回TRUE=放行代写, FALSE=静默丢弃(guest认为写成功)
 //位图零开销: 未hook的MSR仍直通(硬件按位图判定, 不产生exit)
 //
 //与EPT hook(GeptApi)的关系: 互补能力——EPT hook管"执行/内存视图",
 //MSR hook管"寄存器数据面"(LSTAR/调试寄存器配置/平台信息MSR等)。
-//看雪4.3组合技(LSTAR读伪造+syscall入口EPT hook)在双EPT架构下
-//clean视图天然返回原始字节, 本API提供任意MSR的读伪造/写监控
+//EPT hook下clean视图读syscall入口字节恒原始(EPT hook天然隐藏),
+//本API提供任意MSR的读伪造/写监控
 //
-//使用纪律(与GEPT_CALLBACK同源, 血泪浓缩):
+//使用纪律(与GEPT_CALLBACK同源, 违反=蓝屏/死锁风险):
 //  1. 回调运行在VM-exit上下文(任意线程/任意IRQL, 被中断线程可能
 //     持任意锁): 只做Interlocked*/无锁环事件/GeptMsrReadReal;
 //     绝不FlLog(死锁)/绝不DbgPrint/绝不阻塞
@@ -42,7 +42,7 @@ typedef struct _GEPT_MSR_HOOK
 } GEPT_MSR_HOOK, * PGEPT_MSR_HOOK;
 
 //安装(PASSIVE_LEVEL): 全核位图置位+**回读自检**(任一in-guest核位图
-//读回不符=拒绝, 绝不带病上机——伪造自测在guest内真执行rdmsr,
+//读回不符=拒绝, 绝不带病上机——伪造场景在guest内真执行rdmsr,
 //位图失效=未拦截=#GP蓝屏)。同MSR重复安装=拒绝
 NTSTATUS GeptMsrHookInstall(const GEPT_MSR_HOOK* Hook);
 
@@ -50,7 +50,7 @@ NTSTATUS GeptMsrHookInstall(const GEPT_MSR_HOOK* Hook);
 //无动态内存, 卸载无需释放)
 NTSTATUS GeptMsrHookRemove(ULONG32 Msr);
 
-//v1.1: 枚举live MSR hook(Buffer=NULL时*InOutCount返回数量)——
+//枚举live MSR hook(Buffer=NULL时*InOutCount返回数量)——
 //与GeptHookEnumerate对称的管理面API
 NTSTATUS GeptMsrHookEnumerate(GEPT_MSR_HOOK* Buffer, ULONG* InOutCount);
 

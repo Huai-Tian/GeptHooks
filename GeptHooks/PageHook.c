@@ -42,9 +42,8 @@ NTSTATUS PHHook(PVOID pFun, PVOID pHook)
 	{
 		memset(CodePage + page_offset + sizeof(JMP_OPCODE64), 0x90, offset);
 	}
-	//v3.43: 副本+跳板构建完成落盘——蓝屏窗口(<1s)内的第一锚点。
-	//此后任何死亡, 文件日志最后一行=本行或下一锚点, 死亡点二分粒度
-	//收敛到"分配/复制/写跳板"与"DPC广播"两个子窗口
+	//副本+跳板构建完成落盘——此后的死亡可用日志锚点二分定位到
+	//"分配/复制/写跳板"与"DPC广播"两个子窗口
 	FlLog("[PHHook] 副本就绪: 原页PFN=%llX CodePagePFN=%llX va=%p 跳板%uB hookLen=%u(页内偏移%u)",
 		(unsigned long long)((MmGetPhysicalAddress(pFun).QuadPart) >> 12),
 		(unsigned long long)((MmGetPhysicalAddress(CodePage).QuadPart) >> 12),
@@ -73,7 +72,7 @@ NTSTATUS PHHook(PVOID pFun, PVOID pHook)
 		HOOK_CONTEXT hookContext = { 0 };
 		hookContext.CodePagePFN = pHookListEntry->CodePagePFN;
 		hookContext.OriginalPagePFN = pHookListEntry->OriginalPagePFN;
-		//v3.43: 广播前后双锚点——广播内=8核并行vmcall(2)→EptSetHook
+		//广播前后双锚点——广播内=全核并行vmcall(2)→EptSetHook
 		//(VM-exit上下文: 拆2M页×2+分配pte页+清execute+invept)。
 		//蓝屏/冻结发生在两锚点之间=exit上下文的EptSetHook路径
 		FlLog("[PHHook] DPC广播开始: 8核vmcall(2)→EptSetHook(拆页+清execute), 环'S'rsn=21/22/23按核留痕");
@@ -95,15 +94,11 @@ void PHInitJmpCode(PJMP_OPCODE64 pjmpCode, ULONG64 jmpTo)
 
 ULONG PHGetHookLen(ULONG64 codeAddr, ULONG codeSize, BOOLEAN is64)
 {
-	//v3.46根因修复(v3.45蓝屏0x3B@nt!NtClose+0xE的裁决): 旧版
-	//ldasm(codeAddr,...)永远解码**第一条指令**(src推进了却没用上),
-	//返回值=ceil(codeSize/首指令长)×首指令长:
-	//  GeptTestTarget: 首条mov(3B)×5=15, 恰好等于真实整指令边界(前5条
-	//    指令全是3B)——STAGE1毕业全靠这个巧合掩盖了bug
-	//  NtClose: 首条push rbx(2B)×7=14, 真实边界=22(2+1+2+2+2+4+9)
-	//    →g_jmp_ntclose=NtClose+14≠asm重放22B→跳板重放22B后jmp+14
-	//    落进mov rax,gs:[188h]指令中间(第2字节48)→错误解码
-	//    mov rax,[0x188](绝对地址,丢GS前缀)→#PF→0x3B
+	//注意: 必须顺序推进src逐条解码到累计长度≥codeSize——旧实现
+	//"永远重复解码第一条指令"返回值=ceil(codeSize/首指令长)×首指令长,
+	//只有当目标前几条指令恰好等长时才碰巧正确; 首条指令长与后续
+	//不等的目标(如push rbx 2B开头)会得到错误的整指令边界→跳板
+	//重放长度与跳回点错位→跳进指令中间=取指#PF蓝屏
 	ULONG64 src = codeAddr;
 	ULONG all_len = 0;
 	ldasm_data ldData = { 0 };
@@ -155,11 +150,10 @@ VOID PHHookCallBackDpc(_In_ struct _KDPC* Dpc, _In_opt_ PVOID DeferredContext, _
 	PHOOK_CONTEXT hookContext = (PHOOK_CONTEXT)DeferredContext;
 	if (hookContext != NULL)
 	{
-		//v3.41守卫: 仅已进入guest(KEEP)的核才能vmcall——真机上执行vmcall
-		//=非法指令#UD=蓝屏0x1E@c000001d。KeGenericCallDpc广播到**所有**核,
-		//若任一核launch失败/逃生后留在真机, 旧版无条件vmcall会把"单核启动
-		//失败(本可安全降级)"升级成"整机蓝屏"。v3.40实测8核全inGuest=1,
-		//此守卫当前是纯防御, 但STAGE 2(NtClose全系统调用)前必须就位
+		//守卫: 仅已进入guest(KEEP)的核才能vmcall——真机上执行vmcall
+		//=非法指令#UD=蓝屏。KeGenericCallDpc广播到**所有**核,
+		//若任一核launch失败/逃生后留在真机, 无条件vmcall会把
+		//"单核启动失败(本可安全降级)"升级成"整机蓝屏"
 		ULONG hc = KeGetCurrentProcessorNumber();
 		if (g_vcpu[hc].bInGuest)
 		{
@@ -183,7 +177,7 @@ VOID PHHookCallBackDpc(_In_ struct _KDPC* Dpc, _In_opt_ PVOID DeferredContext, _
 	}
 }
 
-//v3.51 Phase6: LDE重定位生成器实现(接口契约见PageHook.h头注释)。
+//LDE重定位生成器实现(接口契约见PageHook.h头注释)。
 //保守策略逐条:
 //  ①ldasm逐指令解码, F_INVALID/超长=拒
 //  ②相对分支(F_IMM+F_RELATIVE: E8/E9/EB/jcc/loop)=拒——prologue按编译器
@@ -192,11 +186,11 @@ VOID PHHookCallBackDpc(_In_ struct _KDPC* Dpc, _In_opt_ PVOID DeferredContext, _
 //  ③RIP-relative数据寻址(F_DISP+F_RELATIVE: lea/mov/call[rsp+X]等):
 //    按绝对有效地址重算disp32(公式: 新disp=有效地址-新RIP_after);
 //    新旧指令位置差使disp超±2GB=拒(disp32装不下)
-//  ④尾接 FF 25 00000000 + <Target+Len>(与API trampoline槽同款位置无关
-//    绝对跳转, v3.50b off-by-2教训: 指针落在指令RIP_after处)
+//  ④尾接 FF 25 00000000 + <Target+Len>(位置无关绝对跳转; 指针必须
+//    落在指令RIP_after处, 见GeptAllocTrampoline同款注释)
 //  ⑤回扫自检: 生成后**按CPU视角**重新解码——逐指令长度与原始序列一致+
 //    字节比对(disp区4字节除外)+边界精确==Len+尾跳转6字节码核对——
-//    生成器自身回归当场拦截(v3.50b铁律: 运行时生成的机器码必须回读自检)
+//    生成器自身回归当场拦截(铁律: 运行时生成的机器码必须回读自检)
 PVOID PHBuildRelocTrampoline(ULONG64 Target, ULONG MinLen, PULONG OutLen)
 {
 	if (OutLen != NULL)

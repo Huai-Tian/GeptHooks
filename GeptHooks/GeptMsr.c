@@ -5,7 +5,7 @@
 #include "VMX.h"
 
 //====================================================================
-// v3.52 Phase5: MSR拦截简易API实现(接口契约见GeptMsr.h头注释)
+// MSR拦截简易API实现(接口契约见GeptMsr.h头注释)
 //
 //条目模型(与GeptApi同款架构纪律):
 //  - 静态数组(GEPT_MSR_MAX个, 零动态内存→卸载无需释放流程)
@@ -224,8 +224,8 @@ NTSTATUS GeptMsrHookInstall(const GEPT_MSR_HOOK* Hook)
 	}
 	InterlockedExchange(&e->Removed, 0);    //发布(字段+位图已就绪)
 	GeptMsrUnlock();
-	//回读自检(v3.50b铁律: 上机证据链靠它——伪造自测在guest内真执行
-	//rdmsr, 位图任一核失效=未拦截=#GP蓝屏, 必须当场拦截而非上机暴露)
+	//回读自检铁律: 伪造场景在guest内真执行rdmsr, 位图任一核失效
+	//=未拦截=#GP蓝屏, 必须当场拦截而非上机暴露
 	for (ULONG i = 0; i < cpuCount; i++)
 	{
 		if (!g_vcpu[i].bInGuest)
@@ -293,7 +293,7 @@ NTSTATUS GeptMsrHookRemove(ULONG32 Msr)
 	return STATUS_SUCCESS;
 }
 
-//v1.1: 枚举live MSR hook——与GeptApi.c GeptHookEnumerate同款语义
+//枚举live MSR hook——与GeptApi.c GeptHookEnumerate同款语义
 //(Buffer=NULL→*InOutCount=数量; 容量不足→STATUS_BUFFER_TOO_SMALL
 //并回填所需数量)。条目字段逐个复制(不拷Removed——那是内部状态)
 NTSTATUS GeptMsrHookEnumerate(GEPT_MSR_HOOK* Buffer, ULONG* InOutCount)

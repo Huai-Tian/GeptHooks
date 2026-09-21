@@ -37,39 +37,30 @@ BOOLEAN EptIsSupportEpt()
 //bit17: EPT 1GB大页支持(用于超512GB区域的动态映射)
 BOOLEAN g_bEpt1GbPage = FALSE;
 
-//==================== v3.8根因修复: EPT内存类型按真实RAM布局 ====================
-//v3.7实测冻结形态: 日志停在"cpu0 vmlaunch...", 之后零行零[HB]零蓝屏。
-//根因: EptInitEptData把0-512GB**全部**标成memoryType=6(WB可缓存), 但物理
-//空间里布满MMIO洞(LAPIC 0xFEE00000 / IOAPIC 0xFEC00000 / HPET 0xFED00000 /
-//AHCI/USB/GPU低地址BAR, 全部<4GB)。被虚拟化核一旦运行设备ISR:
-//  写MMIO寄存器(清中断原因) -> 写进CPU缓存行永不抵达设备 -> 中断永远pending
-//  -> ISR风暴独占该核; 读MMIO寄存器 -> 拿到stale缓存值 -> I/O永不完成。
-//两者都表现为整机冻结(所有核等待磁盘/中断响应), 无bugcheck。
-//触发链=vmlaunch成功后T1的第一次落盘ZwWriteFile -> AHCI完成中断落在被虚拟化
-//的cpu0上(设备IRQ普遍倾向cpu0) -> 秒级冻结。与"冻结点=最后日志是vmlaunch、
-//成功日志永远写不出、零[HB]"完全吻合。
-//修复: MmGetPhysicalMemoryRanges获取真实RAM布局, 2MB大页**完全**落在RAM内
-//才WB, 否则(纯MMIO或RAM/MMIO边界页)UC。UC只损失性能, 绝不损失正确性。
-//位图32KB(512GB/2MB/8), DriverEntry里建一次, 全部核共用。
+//==================== EPT内存类型按真实RAM布局 ====================
+//根因: 若把0-512GB**全部**标成memoryType=6(WB可缓存), 物理空间里的
+//MMIO洞(LAPIC 0xFEE00000 / IOAPIC 0xFEC00000 / HPET 0xFED00000 /
+//AHCI/USB/GPU低地址BAR, 全部<4GB)会被错误缓存:
+//  写MMIO寄存器(清中断原因) -> 写进CPU缓存行永不抵达设备 -> 中断永远
+//  pending -> ISR风暴独占该核; 读MMIO寄存器 -> 拿到stale缓存值 ->
+//  I/O永不完成。两者都表现为整机冻结(所有核等待磁盘/中断响应), 无bugcheck。
+//修复: MmGetPhysicalMemoryRanges获取真实RAM布局, 2MB大页**完全**落在
+//RAM内才WB, 否则(纯MMIO或RAM/MMIO边界页)UC。UC只损失性能, 绝不损失
+//正确性。位图32KB(512GB/2MB/8), DriverEntry里建一次, 全部核共用。
 #define EPT_2M_FRAME_COUNT (EPT_PREALLOC_PAGES * EPT_PREALLOC_PAGES)   //262144
 #define EPT_RAM_BITMAP_BYTES (EPT_2M_FRAME_COUNT / 8)                  //32KB
 static UCHAR g_eptRamBitmap[EPT_RAM_BITMAP_BYTES];    //BSS自动清零: 1=该2MB页完全在RAM内
 static BOOLEAN g_eptRamBitmapReady = FALSE;
 
-//==================== v3.18: 高区(512GB-256TB)EPT预建 ====================
-//v3.17实测判读: 单核接管(cpu0)后<20ms全机冻结——L287"vmlaunch..."后连[F]
-//环事件都没被T1排空(T1钉在真机核上也死了), 与v3.12/v3.13全核接管冻结
-//完全同签名; 而探针自测模式(不运行OS)37次全过 => 凶手=OS在EPT下的某行为。
-//头号嫌疑(证据链): GPU ReBAR高地址MMIO(>512GB, v3.5模块清单已证nvlddmkm/
-//igdkmd64在跑)被cpu0上的线程/DPC/ISR触碰 → EPT violation →
-//EptBuildHighMapping在**VM-exit上下文**执行ExAllocatePoolWithTag——
-//若被中断者持池锁(DPC抢占线程)或处于DIRQL(ISR): 池锁自旋永不出来 →
-//cpu0楔死 → 全局池锁被卡 → 所有核的池分配全部自旋 → 整机冻结(含T1的
-//ZwWriteFile→IRP分配), 画面卡死。与"瞬杀全机+屏幕死+日志戛然而止"
-//三特征完全吻合。
+//==================== 高区(512GB-256TB)EPT预建 ====================
+//根因: GPU ReBAR等高地址MMIO(>512GB)被线程/DPC/ISR触碰时, 若走惰性
+//建表路径, EptBuildHighMapping会在**VM-exit上下文**执行
+//ExAllocatePoolWithTag——若被中断者持池锁(DPC抢占线程)或处于DIRQL
+//(ISR): 池锁自旋永不出来 → 该核楔死 → 全局池锁被卡 → 所有核的池
+//分配全部自旋 → 整机冻结(含日志线程的ZwWriteFile→IRP分配), 画面卡死。
 //修复: DriverEntry(PASSIVE级)一次性预建pml4[1..511]全部511个pdpt页
-//(每页512个1GB UC恒等大页, 覆盖512GB-256TB全部物理地址空间), 8核EPT
-//共享同一批页表 → 任何高地址MMIO访问**直接翻译成功, 零exit零分配**。
+//(每页512个1GB UC恒等大页, 覆盖512GB-256TB全部物理地址空间), 全部核
+//EPT共享同一批页表 → 任何高地址MMIO访问**直接翻译成功, 零exit零分配**。
 //惰性路径保留为兜底: 预建后HighPdptVa非空+pdpte已present → 原路径
 //退化为纯读+invept, 任意IRQL安全。内存代价: 511×8KB≈4MB NonPaged(共享)。
 static PVOID g_eptHighPdptVa[512];     //共享高区pdpt页(4KB对齐后; [0]未用)
@@ -99,9 +90,7 @@ static VOID EptBuildRamBitmap(VOID)
 	{
 		ULONG64 base = (ULONG64)r->BaseAddress.QuadPart;
 		ULONG64 end = base + (ULONG64)r->NumberOfBytes.QuadPart;
-		//v3.14: 区间逐条落盘——v3.13实测WB=4023个2M页(约7.9GB), 但EPT_DATA
-		//(物理0x277BFE000≈9.9GB)与驱动代码页(≈10.6GB)都存在且标了WB,
-		//说明RAM延伸至少到10.6GB, 位图却只标了约一半——区间明细是裁决依据
+		//区间逐条落盘(WB总量与RAM真实布局的核对依据)
 		if (rangeCnt < 32)
 		{
 			FlLog("RAM区间[%u]: %llX - %llX (%llu MB)",
@@ -137,11 +126,11 @@ static ULONG EptMemTypeFor2MFrame(ULONG64 frame2m)
 	return 0;
 }
 
-//==================== v3.48 Phase2: 双EPT标记页 ====================
+//==================== 双EPT标记页 ====================
 //功能: hooked EPT里把pageA的GPA改译到pageB物理页。guest内读同一VA:
 //  clean视图(恒等)   → 读到 GEPT_MARK_A "CLEANEPT"
 //  hooked视图(remap) → 读到 GEPT_MARK_B "HOOKEDPT"
-//B值的出现=VMFUNC切换到的是**真实独立翻译的第二套EPT**(Phase1的
+//B值的出现=VMFUNC切换到的是**真实独立翻译的第二套EPT**(区别于
 //no-op往返验证升级为功能验证)。分配在EptInitEptData首次调用(PASSIVE),
 //释放走EptShutdownHighMappings(unload/回滚, 幂等)
 PVOID g_geptMarkVA = NULL;      //pageA虚拟地址(GPA=PA_A, 恒等映射)
@@ -211,14 +200,10 @@ static BOOLEAN EptBuildMarkRemap(PEPT_DATA hooked)
 	return TRUE;
 }
 
-//==================== v3.13: vmlaunch前EPT软件自检门 ====================
-//v3.12实测: 控制字段修复后vmlaunch首次真正成功, 却在"cpu0 vmlaunch..."后
-//250ms内整机冻结——T1(钉在未虚拟化核上, 250ms心跳)连一条[HB]都没来得及发,
-//二进制环零标记(=零exit零逃逸零三重故障)。guest落地窗口的全部代码路径
-//(CmGeustRip恢复栈/EPT硬件走查取指)从未被v3.11b执行过(8核全在entry检查
-//阶段就fail返回), 属"黑盒死区"——EPT若把落地代码页静默错译到别的物理帧
-//(权限位全对、不触发violation/misconfig), guest执行的就是"别的内存的内容",
-//整机瞬间混乱冻结且零日志, 与实测形态完全吻合。
+//==================== vmlaunch前EPT软件自检门 ====================
+//动机: EPT若把落地代码页静默错译到别的物理帧(权限位全对、不触发
+//violation/misconfig), guest执行的就是"别的内存的内容"=整机瞬间混乱
+//冻结且零日志——"死在黑盒里"零信息。
 //本函数在launch前用**软件走查**复演硬件EPT翻译, 把"死在黑盒里"变成
 //"launch前精确报错+安全放弃"(失败核留在root模式, 系统存活, T1继续记录):
 //  [1] EPTP: 保留位清零/walkLen=3/PML4物理地址==MmGetPhysicalAddress(pml4)
@@ -385,7 +370,7 @@ ULONG EptVerifyTables(ULONG cpuNumber, ULONG64 guestRspVa)
 			}
 		}
 	}
-	//[6] v3.18: 高区链——511个pml4[1..511]全部指向共享pdpt页, 抽查
+	//[6] 高区链——511个pml4[1..511]全部指向共享pdpt页, 抽查
 	//首(pml4[1]/pdpt[0]=512GB,帧512)尾(pml4[511]/pdpt[511]=256TB-1GB,帧262143)
 	//两片1GB UC恒等叶。接管后GPU等高MMIO全靠这批页直接翻译(零exit零分配)
 	{
@@ -432,7 +417,7 @@ ULONG EptVerifyTables(ULONG cpuNumber, ULONG64 guestRspVa)
 			}
 		}
 	}
-	//==================== v3.48 Phase2: hooked EPT自检 ====================
+	//==================== hooked EPT自检 ====================
 	//双视图的第二套表在launch前用软件走查复演(把"死在黑盒"变成launch前
 	//精确报错): [7]深拷贝自指链 [8]叶全扫+标记remap [9]高区共享链。
 	//任一FAIL=该核vmlaunch放弃(与clean自检同处置)——hooked表结构错的
@@ -632,13 +617,13 @@ NTSTATUS EptInitEptData(ULONG cpuNumber)
 	}
 	//MmAllocateContiguousMemory不清零(文档明示)! 残留垃圾会让pml4[1..511]/pdpte/pde
 	//的保留位随机置1: 轻则EPT misconfig无限重试(整机卡死), 重则翻译到随机物理页
-	//(静默数据损坏)。myVt原版同样漏了这行, 作者测试机碰巧拿到清零页才"能用"。
+	//(静默数据损坏)。原实现同样漏了这行, 碰巧拿到清零页才"能用"。
 	//这是vmlaunch成功后仍卡死的头号根因。
 	RtlZeroMemory(currentVcpu->PeptData, sizeof(EPT_DATA));
 
-	//v3.8: 先建RAM位图(首次调用时), PDE内存类型由位图决定(见EptBuildRamBitmap)
+	//先建RAM位图(首次调用时), PDE内存类型由位图决定(见EptBuildRamBitmap)
 	EptBuildRamBitmap();
-	//v3.48: 双EPT标记页(全核共用一对, 首次调用时分配)
+	//双EPT标记页(全核共用一对, 首次调用时分配)
 	EptAllocMarkPages();
 
 	for (size_t i = 0; i < EPT_PREALLOC_PAGES; i++)
@@ -652,7 +637,7 @@ NTSTATUS EptInitEptData(ULONG cpuNumber)
 			currentVcpu->PeptData->pde[i][k].fileds.present = 1;
 			currentVcpu->PeptData->pde[i][k].fileds.execute = 1;
 			currentVcpu->PeptData->pde[i][k].fileds.write = 1;
-			//v3.8: 完全RAM的2M页=WB, MMIO洞/边界页=UC(整机冻结根因修复)
+			//完全RAM的2M页=WB, MMIO洞/边界页=UC(整机冻结根因修复)
 			currentVcpu->PeptData->pde[i][k].fileds.memoryType =
 				EptMemTypeFor2MFrame(i * EPT_PREALLOC_PAGES + k);
 			currentVcpu->PeptData->pde[i][k].fileds.ps = 1;
@@ -667,9 +652,9 @@ NTSTATUS EptInitEptData(ULONG cpuNumber)
 	currentVcpu->PeptData->pml4[0].fileds.execute = 1;
 	currentVcpu->PeptData->pml4[0].fileds.write = 1;
 	currentVcpu->PeptData->pml4[0].fileds.physicalAddr = MmGetPhysicalAddress(&(currentVcpu->PeptData->pdpte)).QuadPart / PAGE_SIZE;
-	//v3.18: 预建+链接高区(512GB-256TB)——所有核共享同一批pdpt页, 任何
+	//预建+链接高区(512GB-256TB)——所有核共享同一批pdpt页, 任何
 	//高地址MMIO(GPU ReBAR等)直接翻译, 彻底消除exit上下文的池分配死锁
-	//(v3.17单核接管<20ms全机冻结的头号根因, 见文件头注释)
+	//(高地址MMIO走exit上下文建表=整机冻结根因, 见文件头注释)
 	if (EptPrebuildHighMappings())
 	{
 		for (ULONG i = 1; i < 512; i++)
@@ -685,7 +670,7 @@ NTSTATUS EptInitEptData(ULONG cpuNumber)
 			//HighPdptRawVa保持NULL: 共享页由EptShutdownHighMappings统一释放
 		}
 	}
-	//==== v3.48 Phase2: hooked视图EPT(每核一份深拷贝)——hook的世界 ====
+	//==== hooked视图EPT(每核一份深拷贝)——hook的世界 ====
 	//**必须深拷贝**: 浅memcpy会把clean表里的自指物理地址一起抄过来
 	//(pml4[0]→clean pdpte / pdpte[i]→clean pde[i])=pml4以下两套EPT
 	//共享同一批物理页表→任何一侧重拆2M页另一侧同步被改, 双视图名存实亡。
@@ -694,7 +679,7 @@ NTSTATUS EptInitEptData(ULONG cpuNumber)
 	//  ②重指自指链: hooked pml4[0]→hooked pdpte, hooked pdpte[i]→hooked pde[i]
 	//  ③EptpHooked=clean EPTP全位复制后仅换PML4物理地址——内存类型/
 	//    walkLen/A/D位天然一致=SDM §28.5.7.3 EPTP-list项有效性判据自动满足
-	//分配失败不致命: bVmfuncOn核的hook自动走v3.46 violation方案(fallback)
+	//分配失败不致命: bVmfuncOn核的hook自动走violation方案(fallback)
 	currentVcpu->PeptDataHooked =
 		(PEPT_DATA)MmAllocateContiguousMemory(sizeof(EPT_DATA), phys);
 	if (currentVcpu->PeptDataHooked != NULL)
@@ -739,12 +724,12 @@ NTSTATUS EptInitEptData(ULONG cpuNumber)
 }
 
 //EPT页表页专用分配: 保证4KB对齐且exit上下文安全(<=DISPATCH的NonPaged分配)
-//v3.6根因: ExAllocatePoolWithTag只保证16字节对齐(pool header 0x10偏移),
+//根因: ExAllocatePoolWithTag只保证16字节对齐(pool header 0x10偏移),
 //而写入页表项时 MmGetPhysicalAddress(p)/PAGE_SIZE 会截断物理地址低12位
 //-> EPT硬件从截断后的(错误)物理地址读页表, 软件写的条目硬件永远看不见
 //-> 该gpa永远violation/misconfig -> exit无限循环 -> 持锁线程拖死全系统(整机冻结)
 //方案: 分配2页, 内部向上对齐到4KB边界(零出的4KB恰好完整落在自己的raw块内,
-//顺带修复原版RtlZeroMemory(pdpt,PAGE_SIZE)越界清零相邻pool块16字节的bug)
+//不会越界清零相邻pool块)
 //raw指针必须由调用方保存, 卸载时用它ExFreePool(对齐指针不能用于释放)
 static PVOID EptAllocAlignedPage(PVOID* rawOut)
 {
@@ -761,7 +746,7 @@ static PVOID EptAllocAlignedPage(PVOID* rawOut)
 	return aligned;
 }
 
-//v3.18: 预建全部高区pdpt页(PASSIVE级, 首个EptInitEptData时执行一次, 幂等)
+//预建全部高区pdpt页(PASSIVE级, 首个EptInitEptData时执行一次, 幂等)
 //511页×512个1GB UC恒等大页 = 512GB-256TB全覆盖。8核EPT共享同一批页。
 static BOOLEAN EptPrebuildHighMappings(VOID)
 {
@@ -803,8 +788,8 @@ static BOOLEAN EptPrebuildHighMappings(VOID)
 	return TRUE;
 }
 
-//v3.18: 释放共享高区页表(DriverUload/DriverEntry回滚调用, 幂等)
-//(v3.48: 兼释放双EPT标记页一对——此时已vmx_off/未launch, 无翻译引用)
+//释放共享高区页表(DriverUload/DriverEntry回滚调用, 幂等)
+//(兼释放双EPT标记页一对——此时已vmx_off/未launch, 无翻译引用)
 VOID EptShutdownHighMappings(VOID)
 {
 	for (ULONG i = 1; i < 512; i++)
@@ -817,7 +802,7 @@ VOID EptShutdownHighMappings(VOID)
 		}
 	}
 	g_eptHighReady = FALSE;
-	//v3.48: 标记页(全局一对)
+	//标记页(全局一对)
 	if (s_geptMarkVB != NULL)
 	{
 		MmFreeContiguousMemory(s_geptMarkVB);
@@ -851,7 +836,7 @@ BOOLEAN EptBuildHighMapping(ULONG64 gpa)
 		pdpt = (PEPT_PDPTE)EptAllocAlignedPage(&raw);
 		if (pdpt == NULL || raw == NULL)
 		{
-			//v3.7: 不DbgPrint(exit上下文重入风险), 失败由调用方'A'自毁留痕
+			//不DbgPrint(exit上下文重入风险), 失败由调用方'A'自毁留痕
 			return FALSE;
 		}
 		RtlZeroMemory(pdpt, PAGE_SIZE);
@@ -862,7 +847,7 @@ BOOLEAN EptBuildHighMapping(ULONG64 gpa)
 		eptData->pml4[pml4Idx].fileds.write = 1;
 		eptData->pml4[pml4Idx].fileds.execute = 1;
 		eptData->pml4[pml4Idx].fileds.physicalAddr = MmGetPhysicalAddress(pdpt).QuadPart / PAGE_SIZE;
-		//v3.48: 同一pdpt页同时链进hooked EPT(共享, 与高区预建同语义)——
+		//同一pdpt页同时链进hooked EPT(共享, 与高区预建同语义)——
 		//否则hooked视图下同一MMIO gpa的violation永远修不好(改的是clean表)
 		//→'X'风暴。本机1GB大页+预建全覆盖, 此路径为dormant防御代码
 		if (g_vcpu[cpuNumber].PeptDataHooked != NULL)
@@ -874,7 +859,7 @@ BOOLEAN EptBuildHighMapping(ULONG64 gpa)
 			g_vcpu[cpuNumber].PeptDataHooked->pml4[pml4Idx].fileds.physicalAddr =
 				MmGetPhysicalAddress(pdpt).QuadPart / PAGE_SIZE;
 		}
-		//v3.7: 信息不DbgPrint(exit上下文重入风险), 函数尾部FlRingPush('H')已记录
+		//信息不DbgPrint(exit上下文重入风险), 函数尾部FlRingPush('H')已记录
 	}
 	if (pdpt[pdpteIdx].fileds.present)
 	{
@@ -897,12 +882,11 @@ BOOLEAN EptBuildHighMapping(ULONG64 gpa)
 	else
 	{
 		//无1GB支持: 建pdt页, 512个2M大页恒等, UC
-		//(pdt的raw指针未跟踪: 该路径仅无1GB支持的旧CPU走, 现代Intel均有1GB;
-		// 原版本就泄漏pdt不释放, 保持同粒度, 4KB对齐修复才是关键)
+		//(pdt的raw指针未跟踪不释放: 仅无1GB支持的旧CPU走此路径, 泄漏量极小)
 		PEPT_PDE_2M pdt = (PEPT_PDE_2M)EptAllocAlignedPage(NULL);
 		if (pdt == NULL)
 		{
-			//v3.7: 不DbgPrint(exit上下文重入风险), 失败由调用方'A'自毁留痕
+			//不DbgPrint(exit上下文重入风险), 失败由调用方'A'自毁留痕
 			return FALSE;
 		}
 		RtlZeroMemory(pdt, PAGE_SIZE);
@@ -927,10 +911,10 @@ BOOLEAN EptBuildHighMapping(ULONG64 gpa)
 	return TRUE;
 }
 
-//v3.48 Phase2: 本核**当前视图**的EPT。SDM §28.5.7.3裁决: VMFUNC切换会把
+//本核**当前视图**的EPT。SDM §28.5.7.3裁决: VMFUNC切换会把
 //新EPTP写回EPT_POINTER字段(切换跨exit/entry持久)——vmread该字段即真相。
 //仅VMX root+VMCS已加载上下文可调(exit handler/EptSetHook); vmread失败或
-//无hooked EPT=返回clean(兜底语义, fallback核恒返回clean=v3.46行为)
+//无hooked EPT=返回clean(兜底语义, fallback核恒返回clean=violation方案行为)
 PEPT_DATA EptGetActiveData(VOID)
 {
 	ULONG cpu = KeGetCurrentProcessorNumber();
@@ -959,8 +943,8 @@ void EptExitHandler(PGUEST_REGS GuestRegs)
 	__vmx_vmread(GUEST_PHYSICAL_ADDRESS, &gpa);
 	//文件日志: violation完整四元组(gpa/rip/qual)入环形缓冲, 心跳线程落盘
 	FlRingPush('V', KeGetCurrentProcessorNumber(), 48, gpa, guestRip, eptExit.ALL);
-	//v3.48: 双EPT——violation发生在**当前视图**的表上。VMFUNC核hooked视图
-	//(hook页W=0的写兜底/写后X=0的执行回切)与fallback核clean视图的v3.46
+	//双EPT——violation发生在**当前视图**的表上。VMFUNC核hooked视图
+	//(hook页W=0的写兜底/写后X=0的执行回切)与fallback核clean视图的violation
 	//互切由同一逻辑处理, 区别只是act指向哪套表(vmread EPT_POINTER裁决)
 	PEPT_DATA act = EptGetActiveData();
 	//判断这个地址所在页是否被我们hook过
@@ -969,8 +953,8 @@ void EptExitHandler(PGUEST_REGS GuestRegs)
 	if (pageEntry == NULL)
 	{
 		//未被hook的页发生EPT违规(典型原因: 物理地址超出512GB恒等映射范围, 如PCIe高地址MMIO)
-		//原版直接return -> 同一指令无限重试 -> 整机卡死
-		//v3.48: 恢复路径同样作用于ACTIVE视图的表(改clean修不了hooked视图的violation)
+		//直接return会令同一指令无限重试 -> 整机卡死
+		//恢复路径同样作用于ACTIVE视图的表(改clean修不了hooked视图的violation)
 		PEPT_PDE_2M pde2M = EptGetPde2B(act, gpa);
 		if (pde2M != NULL)
 		{
@@ -990,7 +974,7 @@ void EptExitHandler(PGUEST_REGS GuestRegs)
 				pde2M->fileds.execute = 1;
 			}
 			//必须刷新EPT缓存, 否则旧翻译仍在, 同一指令继续violation
-			//v3.46: 统一入口(能力探测+VMfail留痕, 见EptInveptCurrent注释)
+			//统一入口(能力探测+VMfail留痕, 见EptInveptCurrent注释)
 			EptInveptCurrent();
 			//'P'环路检测: 无hook时该分支恢复的是本就全权限的PDE/PTE——若同一
 			//gpa反复走到这里(>100), 说明violation根源不在权限(结构性bug:
@@ -1015,12 +999,12 @@ void EptExitHandler(PGUEST_REGS GuestRegs)
 			if (EptBuildHighMapping(gpa))
 			{
 				//映射已建立, 刷新EPT缓存后重执行同一指令(此次能通过)
-				//v3.46: 统一入口(能力探测+VMfail留痕)
+				//统一入口(能力探测+VMfail留痕)
 				EptInveptCurrent();
 				//风暴检测: 同一gpa建好映射后仍反复violation=页表结构性bug
 				//(如对齐错误/硬件读到错位页表)。正常流程建好一次后不再violation;
 				//阈值1000次(~毫秒级)后停本核自毁, 避免持锁线程在exit循环里
-				//拖死全系统(锁级联=整机冻结零日志, v3.5实测形态)
+				//拖死全系统(锁级联=整机冻结零日志)
 				static volatile ULONG64 s_stormGpa[128] = { 0 };
 				static volatile LONG s_stormCnt[128] = { 0 };
 				ULONG cpu = KeGetCurrentProcessorNumber();
@@ -1055,7 +1039,7 @@ void EptExitHandler(PGUEST_REGS GuestRegs)
 		EptUpdatePageAcess(act, gpa, 3, pageEntry);
 	}
 	//刷新页表缓存TLB
-	//v3.46: 统一入口(能力探测+VMfail留痕)——视图切换后若invept无效,
+	//统一入口(能力探测+VMfail留痕)——视图切换后若invept无效,
 	//vmresume重取指仍命中旧TLB条目=同一条指令再violation=本核活锁
 	EptInveptCurrent();
 
@@ -1067,14 +1051,14 @@ void EptExitHandler(PGUEST_REGS GuestRegs)
 void EptSetHook(ULONG64 orginalPagePFN, ULONG64 codePagePFN)
 {
 	ULONG cpuHook = KeGetCurrentProcessorNumber();
-	//==== v3.48 Phase2: VMFUNC主路径(看雪图谱4.2的零VM-Exit hook) ====
-	//与v3.46方案的本质区别: 不在clean EPT清execute(=不再依赖violation触发)
+	//==== VMFUNC主路径(零VM-Exit hook) ====
+	//与violation方案的本质区别: 不在clean EPT清execute(=不再依赖violation触发)
 	//而是hooked EPT里hook页PTE→CodePage(X=1,R=1,W=0)+本核整体切入hooked
 	//视图——hook触发=纯翻译切换,**零VM-Exit**; clean视图下原页字节完好
 	//(读/CRC校验看到的是原始字节, 隐蔽性根基)。
 	//vmwrite(EPT_POINTER)切视图的合法性=SDM §28.5.7.3(VMFUNC切换的本质
-	//就是写该字段, 见NOTES Phase2设计依据)。
-	//写hook页(W=0)→violation→EptUpdatePageAcess在hooked表上按v3.46语义
+	//就是写该字段)。
+	//写hook页(W=0)→violation→EptUpdatePageAcess在hooked表上按violation方案语义
 	//互切(切原页W=1/X=0→写落原页→下次执行violation→切回CodePage)——
 	//读写兜底与fallback共用同一套骨架, 只是act=hooked表
 	if (g_vcpu[cpuHook].bVmfuncOn && g_vcpu[cpuHook].PeptDataHooked != NULL)
@@ -1106,7 +1090,7 @@ void EptSetHook(ULONG64 orginalPagePFN, ULONG64 codePagePFN)
 			return;
 		}
 		//hook页PTE→CodePage: X=1(执行零VM-Exit) R=1(执行中读同页数据的
-		//指令不violation, v3.43活锁教训) W=0(写→violation兜底)
+		//指令不violation, 活锁教训) W=0(写→violation兜底)
 		pte->fileds.physicalAddr = codePagePFN;
 		pte->fileds.present = 1;
 		pte->fileds.execute = 1;
@@ -1117,12 +1101,12 @@ void EptSetHook(ULONG64 orginalPagePFN, ULONG64 codePagePFN)
 		//刷新页表缓存TLB(all-context覆盖两套EPT的全部EP4TA缓存;
 		//VMFUNC切换自带的VPID0组合映射失效不覆盖root侧vmwrite路径)
 		EptInveptCurrent();
-		//v3.48布防标记: rsn=24=VMFUNC路径专属(区别于v3.46的23)
+		//布防标记: rsn=24=VMFUNC路径专属(区别于violation方案的23)
 		FlRingPush('S', cpuHook, 24, orginalPagePFN, codePagePFN,
 			g_vcpu[cpuHook].EptpHooked.ALL);
 		return;
 	}
-	//==== v3.46 violation方案(fallback: 无VMFUNC/无hooked EPT/标记自测FAIL的核) ====
+	//==== violation方案(fallback: 无VMFUNC/无hooked EPT/标记自测FAIL的核) ====
 	//相当于有了GPA 要获取HPA
 	ULONG64 oPFN = orginalPagePFN << 12;
 	ULONG64 cPFN = codePagePFN << 12;
@@ -1131,7 +1115,7 @@ void EptSetHook(ULONG64 orginalPagePFN, ULONG64 codePagePFN)
 	PEPT_PDE_2M cPed2M = EptGetPde2B(g_vcpu[cpuHook].PeptData, cPFN);
 	if (oPde2M == NULL || cPed2M == NULL)
 	{
-		//v3.42: 中止留痕(>512GB或页表越界: hook静默未建立, 原版完全无声)
+		//中止留痕(>512GB或页表越界: hook静默未建立)
 		FlRingPush('n', cpuHook, 2,
 			orginalPagePFN, codePagePFN, 0);
 		return;
@@ -1147,7 +1131,7 @@ void EptSetHook(ULONG64 orginalPagePFN, ULONG64 codePagePFN)
 				orginalPagePFN, 0, 0);
 			return;
 		}
-		//v3.43: 三步'S'之一(拆原页完成)——b=新pte表物理帧号。
+		//三步'S'之一(拆原页完成)——b=新pte表物理帧号。
 		//DMP环判读: 死在本步与'S'rsn=23之间=拆分/分配/取pte路径
 		FlRingPush('S', cpuHook, 21,
 			orginalPagePFN, ((PEPT_PDE)oPde2M)->fileds.physicalAddr, 0);
@@ -1163,7 +1147,7 @@ void EptSetHook(ULONG64 orginalPagePFN, ULONG64 codePagePFN)
 				0, codePagePFN, 0);
 			return;
 		}
-		//v3.43: 三步'S'之二(拆CodePage的2M完成)——b=新pte表物理帧号
+		//三步'S'之二(拆CodePage的2M完成)——b=新pte表物理帧号
 		FlRingPush('S', cpuHook, 22,
 			codePagePFN, ((PEPT_PDE)cPed2M)->fileds.physicalAddr, 0);
 	}
@@ -1178,13 +1162,13 @@ void EptSetHook(ULONG64 orginalPagePFN, ULONG64 codePagePFN)
 	}
 	pte->fileds.execute = 0;
 	//刷新页表缓存TLB
-	//v3.46: 统一入口(能力探测+VMfail留痕)——布防后若invept无效, 热函数
+	//统一入口(能力探测+VMfail留痕)——布防后若invept无效, 热函数
 	//的旧exec TLB条目继续存活=hook对TLB常驻函数(NtClose)数小时不触发
-	//(v3.45蓝屏的延迟根源); 留痕'e'事件可判读
+	//(曾经的蓝屏延迟根源); 留痕'e'事件可判读
 	EptInveptCurrent();
-	//v3.42: **布防完成标记**(每核一条, DMP解析判别: 8×S rsn=23=全核armed,
+	//**布防完成标记**(每核一条, DMP解析判别: 8×S rsn=23=全核armed,
 	//<8=有核死在EptSetHook路径=拆页/分配问题; 与'n'互斥)
-	//v3.43: rsn从2改为23(21/22/23=拆原页/拆Code页/清execute三步)
+	//rsn从2改为23(21/22/23=拆原页/拆Code页/清execute三步)
 	FlRingPush('S', cpuHook, 23,
 		orginalPagePFN, codePagePFN, 0);
 }
@@ -1202,16 +1186,15 @@ PEPT_PDE_2M EptGetPde2B(PEPT_DATA ept, ULONG64 PFN)
 	ULONG pdpteIndex = (PFN >> 30) & 0x1FF;
 	//PDE
 	ULONG pdeindex = (PFN >> 21) & 0x1FF;
-	//v3.48: 显式EPT_DATA(双EPT)——恒等区(pml4[0])内直接索引目标表的pde数组
+	//显式EPT_DATA(双EPT)——恒等区(pml4[0])内直接索引目标表的pde数组
 	return &(ept->pde[pdpteIndex][pdeindex]);
 }
 
 BOOLEAN EptPdeToPte(PEPT_PDE_2M pde2M)
 {
 	BOOLEAN status = TRUE;
-	//v3.6: 必须4KB对齐(原版ExAllocatePool只16字节对齐, physicalAddr截断低12位
-	//=EPT硬件读错位页表, Stage1拆分即触发不可解风暴)。原版本就泄漏ppte不释放,
-	//raw指针不跟踪保持同粒度(每次泄漏2页, 仅调试期可接受)
+	//必须4KB对齐(ExAllocatePool只16字节对齐, physicalAddr截断低12位
+	//=EPT硬件读错位页表)。raw指针未跟踪不释放(每次泄漏2页, 仅hook安装时发生)
 	PEPT_PTE ppte = (PEPT_PTE)EptAllocAlignedPage(NULL);
 	if (ppte == NULL)
 	{
@@ -1223,7 +1206,7 @@ BOOLEAN EptPdeToPte(PEPT_PDE_2M pde2M)
 		ppte[i].fileds.present = 1;
 		ppte[i].fileds.write = 1;
 		ppte[i].fileds.execute = 1;
-		//必须继承源2M页的内存类型! 原版漏设=0(UC不可缓存),
+		//必须继承源2M页的内存类型! 漏设=0(UC不可缓存),
 		//拆分后整个2MB内核代码区取指全部直通内存, 性能塌方表现为整机卡死
 		ppte[i].fileds.memoryType = pde2M->fileds.memoryType;
 		ppte[i].fileds.physicalAddr = (pde2M->fileds.physicalAddr) * 512 + i;
@@ -1258,15 +1241,15 @@ PEPT_PTE EptGetPte(PEPT_DATA ept, ULONG64 PFN)
 	return &ptt[pteIndex];
 }
 
-//v3.46: 统一invept入口(替代裸VmxInvept(2,&ctx))——能力探测+正确EPTP
-//+VMfail留痕。v3.45蓝屏的**延迟根源**: 旧代码invept type2(all-context)
+//统一invept入口(替代裸VmxInvept(2,&ctx))——能力探测+正确EPTP
+//+VMfail留痕。曾经的蓝屏**延迟根源**: 旧代码invept type2(all-context)
 //不检查VMfail——CPU若不支持all-context(EPT_VPID_CAP bit26=0, 仅支持
 //single-context bit25=1), invept静默VMfail=什么都没失效: 已布防hook
 //对热函数(NtClose等TLB常驻函数)数小时不触发(旧exec条目存活), 直到
-//TLB自然逐出才第一次走进跳板(撞上PHGetHookLen的hookLen bug蓝屏
-//0x3B@NtClose+0xE)。STAGE1冷函数(GeptTestTarget首次调用, 无TLB条目,
-//靠walk触发violation)从未暴露此问题。invept类型(SDM): 1=single-
-//context(desc的EPTP字段匹配失效), 2=all-context(全失效, desc忽略)
+//TLB自然逐出才第一次走进跳板。冷函数(首次调用, 无TLB条目, 靠walk
+//触发violation)从不暴露此问题。
+//invept类型(SDM): 1=single-context(desc的EPTP字段匹配失效),
+//2=all-context(全失效, desc忽略)
 VOID EptInveptCurrent(VOID)
 {
 	EPT_CTX ctx = { 0 };
@@ -1282,7 +1265,7 @@ VOID EptInveptCurrent(VOID)
 	if (cap & (1ULL << 25))
 	{
 		//single-context: 必须填当前VMCS的EPTP(desc.EPTP匹配失效,
-		//ctx全零=EPTP 0匹配不到任何缓存=静默no-op, v3.45旧代码同款陷阱)
+		//ctx全零=EPTP 0匹配不到任何缓存=静默no-op, 曾实测的同款陷阱)
 		__vmx_vmread(EPT_POINTER, &ctx.PEPT);
 		if (!VmxInvept(1, &ctx))
 		{
@@ -1291,12 +1274,12 @@ VOID EptInveptCurrent(VOID)
 	}
 	//两种类型都VMfail/都不支持(理论不可能: 支持INVEPT则至少其一)——
 	//'e'环事件留痕(a=EPT_VPID_CAP): 此时EPT TLB无法软件失效, hook
-	//生效时点退化为"TLB自然逐出后"(v3.45的延迟形态), DMP可判读
+	//生效时点退化为"TLB自然逐出后"(延迟形态), DMP可判读
 	FlRingPush('e', KeGetCurrentProcessorNumber(), 0, cap, 0, 0);
 }
 
-//v3.48: vmx_off前的双视图invept(rcx==1卸载/逃生/probe-exit路径)——
-//v3.15起vmx_off前invept防"EPT派生TLB残留→下轮sc start重用物理页静默
+//vmx_off前的双视图invept(rcx==1卸载/逃生/probe-exit路径)——
+//vmx_off前invept防"EPT派生TLB残留→下轮sc start重用物理页静默
 //错译"。双EPT下all-context型CPU一次覆盖两套(bit26, 本机形态, 短路);
 //single-context-only型CPU的invept只失效desc.PEPT匹配的视图→必须逐
 //视图失效(INVEPT single-context接受任意EPTP, 不要求=当前, SDM INVEPT)
@@ -1322,11 +1305,11 @@ VOID EptInveptBothViews(VOID)
 	VmxInvept(1, &ctx);
 }
 
-//v3.48: 显式EPT_DATA(双EPT)——互切发生在violation所在的ACTIVE视图表上:
+//显式EPT_DATA(双EPT)——互切发生在violation所在的ACTIVE视图表上:
 //  VMFUNC核hooked视图: 写hook页(W=0)→切原页(R/W/X=0)→写落原页→下次执行
 //    violation(X=0)→切回CodePage(X=1,R=1,W=0)——hook页读永远直通,
-//    只有写会短暂走原页(CodePage副本stale=已知限制, 同v3.46语义)
-//  fallback核clean视图: v3.46原语义(执行↔读写互切)
+//    只有写会短暂走原页(CodePage副本stale=已知限制, 同violation方案语义)
+//  fallback核clean视图: violation方案原语义(执行<->读写互切)
 void EptUpdatePageAcess(PEPT_DATA ept, ULONG64 gpa, UCHAR acess, PPAGE_HOOK_ENTRY pageEntry)
 {
 	//获取pte
@@ -1335,7 +1318,7 @@ void EptUpdatePageAcess(PEPT_DATA ept, ULONG64 gpa, UCHAR acess, PPAGE_HOOK_ENTR
 	{
 		return;
 	}
-	//v3.43: 视图切换留痕('x')——a=1读/2写/3执行, b=gpa, c=Code页PFN。
+	//视图切换留痕('x')——a=1读/2写/3执行, b=gpa, c=Code页PFN。
 	//DMP环判读: hook触发后无'x'=violation根本没走到切视图(死在
 	//EptExitHandler查表前); 有'x'3后死=死在vmresume后的guest执行
 	FlRingPush('x', KeGetCurrentProcessorNumber(), acess, gpa,
@@ -1360,7 +1343,7 @@ void EptUpdatePageAcess(PEPT_DATA ept, ULONG64 gpa, UCHAR acess, PPAGE_HOOK_ENTR
 	else if (acess == 3)
 	{
 		ppte->fileds.physicalAddr = pageEntry->CodePagePFN;
-		//保持可读(原版为0=仅执行): "执行中读同页数据"的指令(如mov rax,[rip+X])
+		//保持可读(勿设为仅执行): "执行中读同页数据"的指令(如mov rax,[rip+X])
 		//会在读视图/执行视图间无限互切, RIP永不前进=活锁卡死
 		//代价: 读内存会看到跳板字节(对调试无影响, 隐蔽性以后用VMFUNC双EPT解决)
 		ppte->fileds.present = 1;

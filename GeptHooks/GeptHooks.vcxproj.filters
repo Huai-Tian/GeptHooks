@@ -49,12 +49,12 @@
     <ClCompile Include="GeptApi.c">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="GeptMsr.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="common.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="winApiDef.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="VMX.h">
@@ -76,6 +76,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="GeptApi.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="GeptMsr.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

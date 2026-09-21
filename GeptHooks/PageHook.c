@@ -6,7 +6,6 @@
 LIST_ENTRY g_PageList = { 0 };
 NTSTATUS PHHook(PVOID pFun, PVOID pHook)
 {
-	Log("PHHook: Ä¿±ê=%p Ìø°å=%p", pFun, pHook);
 	NTSTATUS status = STATUS_SUCCESS;
 	PHYSICAL_ADDRESS phys = { 0 };
 	phys.QuadPart = MAXULONG64;

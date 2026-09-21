@@ -547,10 +547,11 @@ void VmxExitHandler(PGUEST_REGS GuestRegs)
 					vmexitReason != EXIT_REASON_CPUID &&
 					vmexitReason != EXIT_REASON_EXTERNAL_INTERRUPT &&
 					vmexitReason != EXIT_REASON_PENDING_INTERRUPT &&
-					//已模拟的指令exit豁免——RDTSC计时自旋/INVLPG
-					//同指令高重复(上下文切换同一invlpg调用点)/HLT空闲自旋
-					//都是合法同(reason,rip)高频形态
+					//已模拟的指令exit豁免——RDTSC/RDTSCP计时自旋/INVLPG
+				//同指令高重复(上下文切换同一invlpg调用点)/HLT空闲自旋
+				//都是合法同(reason,rip)高频形态
 					vmexitReason != EXIT_REASON_RDTSC &&
+					vmexitReason != EXIT_REASON_RDTSCP &&
 					vmexitReason != EXIT_REASON_INVLPG &&
 					vmexitReason != EXIT_REASON_HLT &&
 					vmexitReason != EXIT_REASON_MWAIT_INSTRUCTION &&
@@ -561,6 +562,11 @@ void VmxExitHandler(PGUEST_REGS GuestRegs)
 						vmexitReason <= EXIT_REASON_VMXON) &&
 					vmexitReason != EXIT_REASON_INVEPT &&
 					vmexitReason != EXIT_REASON_INVVPID &&
+					//CR访问exit(28)豁免——CR4.VMXE影子化的MOV to CR4:
+					//恶意bit13翻转循环每轮exit但写落地+RIP推进=有guest
+					//可见进展(裸机同构仅慢); 不豁免则500次后'D'逃生逐核
+					//拆VT=hook静默失效
+					vmexitReason != EXIT_REASON_CR_ACCESS &&
 					InterlockedIncrement(&s_sameCnt[cpuD]) > 500)
 				{
 					VmxExitStormEscape('D', vmexitReason, guestRip, exitQual,
@@ -595,6 +601,37 @@ void VmxExitHandler(PGUEST_REGS GuestRegs)
 	break;
 	case EXIT_REASON_VMCALL:
 	{
+		//VMCALL签名门(安全, P0-2): 内部vmcall(CmVmCall/落地探针)在
+		//r10/r11携带128位签名(GEPT_VMCALL_SIG0/1, common.h), 进case
+		//先校验。威胁模型: 病毒穷举vmcall功能码——撞rcx=1=本核退VT
+		//(DoS+强泄漏), 撞rcx=2=EptSetHook病毒可控PFN拆页, 撞rcx=7=
+		//memcpy任意写原语(≤128B)+invept。不符→'u'环留痕(采样防MHz级
+		//狂喷刷爆环, 同'B'模式)+#UD注入(裸机VMCALL=不在VMX operation
+		//→#UD, 语义逐位一致零新增泄漏面)
+		//CPL纵深防御(vmread GUEST_CS_SELECTOR低2位): x64 Windows内核
+		//CS恒0x10(RPL0), 合法内部vmcall必CPL0; 用户态vmcall裸机=#UD
+		//(SDM VMCALL页"CPL>0→#UD")——签名万一泄漏用户态仍不可达
+		{
+			ULONG64 vmcallCsSel = 0;
+			__vmx_vmread(GUEST_CS_SELECTOR, &vmcallCsSel);
+			if ((vmcallCsSel & 3) != 0 ||
+				GuestRegs->r10 != GEPT_VMCALL_SIG0 ||
+				GuestRegs->r11 != GEPT_VMCALL_SIG1)
+			{
+				static volatile LONG s_sigCnt[64] = { 0 };
+				ULONG sigCpu = KeGetCurrentProcessorNumber();
+				LONG sn = InterlockedIncrement(&s_sigCnt[sigCpu & 63]);
+				if (sn == 1 || (sn & 0xFFF) == 0)
+				{
+					FlRingPush('u', sigCpu, 18, guestRip,
+						GuestRegs->rcx, vmcallCsSel);
+				}
+				VmxInjectUd(sigCpu, 18, guestRip);
+				//异常在本指令派发: RIP原样写回+早退(绝不推进)
+				__vmx_vmwrite(GUEST_RIP, guestRip);
+				return;
+			}
+		}
 		if (GuestRegs->rcx == 1)//表示要退出vt
 		{
 			//exit上下文禁止DbgPrint(同核重入死锁)——日志只FlRingPush
@@ -827,25 +864,130 @@ void VmxExitHandler(PGUEST_REGS GuestRegs)
 	}
 	case EXIT_REASON_VMXON:
 	{
-		//注入#GP(0)——"BIOS锁VT"故事的行为面:
-		//  泄漏机理: 本机FEATURE_CONTROL(0x3A)真值=5(锁+VMX启用)对
+		//注入#GP(0)或#UD——按guest可见CR4.VMXE(=CR4_READ_SHADOW bit13)
+		//分流, 裸机逐位一致(SDM VMXON指令页Protected Mode Exceptions):
+		//  shadow.VMXE=1→#GP(0): 0x3A=1(锁+VMX禁用)的裸机行为
+		//    ("If the value of the IA32_FEATURE_CONTROL MSR does not
+		//    support entry to VMX operation in the current processor
+		//    mode"→#GP(0))——配套MSR hook伪造0x3A读=1, 读/行为互证
+		//  shadow.VMXE=0→#UD: 裸机"If executed with CR4.VMXE = 0"→#UD。
+		//    guest经MOV to CR4把VMXE"清0"后(case28处置: 真值保持1仅
+		//    shadow落地0)再vmxon——裸机此形态=#UD, 恒#GP(0)反而泄漏
+		//泄漏机理: 本机FEATURE_CONTROL(0x3A)真值=5(锁+VMX启用)若对
 		//guest可读——病毒"读0x3A=5→vmxon应成功"与宿主的失败处置
-		//矛盾=hypervisor在场信号。裸机行为权威(SDM VMXON指令页
-		//Protected Mode Exceptions: "If IA32_FEATURE_CONTROL MSR does
-		//not indicate VMX operation enabled, #GP(0)"):
-		//  a) 0x3A=1(锁+VMX禁用)的裸机: vmxon=**#GP(0)**
-		//  b) 0x3A=5(锁+VMX启用)的裸机: vmxon(合法操作数)=成功
-		//两针合壁(配套MSR hook伪造0x3A读=1): ①读面=0x3A读回1
-		//("BIOS锁VT"标准形态) ②行为面=vmxon→#GP(0)(=a的裸机行为
-		//逐位一致)——读/行为互相印证, 双探针病毒零泄漏。
+		//矛盾=hypervisor在场信号; 两针合壁(main.c内置0x3A读伪造=1+
+		//本case注入)后读/行为互相印证, 双探针病毒零泄漏
 		//互斥仲裁: 同框架junior的__vmx_on在宿主guest内→本case注入
-		//#GP→junior侧SEH捕获→干净失败→main.c全败汇总路径不变
-		VmxInjectGp(KeGetCurrentProcessorNumber(), 27, guestRip);
+		//异常→junior侧SEH捕获→干净失败→main.c全败汇总路径不变
+		//(junior必先经MOV to CR4置VMXE=1(VMXInitCpuStart的FIXED0
+		//合成)→case28置shadow=1→此处#GP(0), 仲裁行为与v1.2等价)
+		ULONG64 cr4ShadowForVmxon = 0;
+		__vmx_vmread(CR4_READ_SHADOW, &cr4ShadowForVmxon);
+		if (cr4ShadowForVmxon & 0x2000)
+		{
+			VmxInjectGp(KeGetCurrentProcessorNumber(), 27, guestRip);
+		}
+		else
+		{
+			VmxInjectUd(KeGetCurrentProcessorNumber(), 27, guestRip);
+		}
 		//异常在本指令派发: RIP原样写回+早退(绝不推进——异常
 		//派发经guest自身IDT, 推进=异常地址错位)
 		__vmx_vmwrite(GUEST_RIP, guestRip);
 		return;
 	}
+	case EXIT_REASON_CR_ACCESS:   //28
+	{
+		//CR4.VMXE影子化(隐藏, P0-3, SDM 28.1.3/28.3)。布防:
+		//VmxSetupVmcs写CR4_GUEST_HOST_MASK=bit13+CR4_READ_SHADOW=真值
+		//清bit13。效果(SDM §28.3原文语义):
+		//  读: MOV from CR4的masked位(bit13)喂shadow(=0,"BIOS未开VT"
+		//  故事), 其余位喂真值——硬件直读零exit
+		//  写: 源操作数masked位==shadow→不exit(硬件落地其余位);
+		//  ≠shadow→exit到本case
+		//exitQualification(SDM Table 30-3): bits3:0=CR号 bits5:4=访问
+		//类型(0=MOV to/1=MOV from/2=CLTS/3=LMSW) bits11:8=GPR号
+		//(0=RAX..4=RSP..15=R15; GUEST_REGS字段序=寄存器号序,帧偏移
+		//=寄存器号×8)
+		ULONG crNum = (ULONG)(exitQual & 0xF);
+		ULONG accType = (ULONG)((exitQual >> 4) & 3);
+		ULONG gprIdx = (ULONG)((exitQual >> 8) & 0xF);
+		//源操作数: MOV to CR的GPR读值; 目的GPR=RSP时帧上rsp槽是asm
+		//压栈占位值(非真RSP)——改用硬件保存的GUEST_RSP
+		ULONG64 srcVal = (gprIdx == 4)
+			? guestRsp
+			: *(PULONG64)((PUCHAR)GuestRegs + gprIdx * 8);
+		//'c'环留痕(采样防刷, 同'B'模式): rsn=28, a=rip, b=exitQual,
+		//c=源操作数值
+		static volatile LONG s_crCnt[64] = { 0 };
+		ULONG crCpu = KeGetCurrentProcessorNumber();
+		LONG crn = InterlockedIncrement(&s_crCnt[crCpu & 63]);
+		if (crn == 1 || (crn & 0xFFF) == 0)
+		{
+			FlRingPush('c', crCpu, 28, guestRip, exitQual, srcVal);
+		}
+		if (crNum == 4)
+		{
+			ULONG64 cr4Mask = 0, curCr4 = 0, cr4Shd = 0;
+			__vmx_vmread(CR4_GUEST_HOST_MASK, &cr4Mask);
+			__vmx_vmread(GUEST_CR4, &curCr4);
+			if (accType == 0)      //MOV to CR4: 唯一理论可达形态
+			{
+				//host-owned位(mask)保持当前GUEST_CR4(VMXE恒1——VMX
+				//operation的物理前提), 其余位=guest写值; shadow=写值
+				//原样(裸机MOV to CR4读回即所写: 写1读1/写0读0)。恶意
+				//bit13翻转循环: 每轮exit但写落地+RIP推进=有guest可见
+				//进展(裸机同构仅慢), 已加入'D'环路豁免防逐核拆VT
+				__vmx_vmwrite(GUEST_CR4,
+					(srcVal & ~cr4Mask) | (curCr4 & cr4Mask));
+				__vmx_vmwrite(CR4_READ_SHADOW, srcVal);
+			}
+			else if (accType == 1) //MOV from CR4: 硬件直喂shadow零exit
+			{
+				//防御性模拟(SDM §28.3): dst=(真值&~mask)|(shadow&mask)
+				__vmx_vmread(CR4_READ_SHADOW, &cr4Shd);
+				ULONG64 cr4ReadVal = (curCr4 & ~cr4Mask) | (cr4Shd & cr4Mask);
+				if (gprIdx == 4)
+				{
+					__vmx_vmwrite(GUEST_RSP, cr4ReadVal);
+				}
+				else
+				{
+					*(PULONG64)((PUCHAR)GuestRegs + gprIdx * 8) = cr4ReadVal;
+				}
+			}
+		}
+		else if (crNum == 0)
+		{
+			//CR0(mask=0本不exit)——防御性同公式处理
+			ULONG64 cr0Mask = 0, curCr0 = 0;
+			__vmx_vmread(CR0_GUEST_HOST_MASK, &cr0Mask);
+			__vmx_vmread(GUEST_CR0, &curCr0);
+			if (accType == 0)
+			{
+				__vmx_vmwrite(GUEST_CR0,
+					(srcVal & ~cr0Mask) | (curCr0 & cr0Mask));
+				__vmx_vmwrite(CR0_READ_SHADOW, srcVal);
+			}
+			else if (accType == 1)
+			{
+				ULONG64 cr0Shd = 0;
+				__vmx_vmread(CR0_READ_SHADOW, &cr0Shd);
+				ULONG64 cr0ReadVal = (curCr0 & ~cr0Mask) | (cr0Shd & cr0Mask);
+				if (gprIdx == 4)
+				{
+					__vmx_vmwrite(GUEST_RSP, cr0ReadVal);
+				}
+				else
+				{
+					*(PULONG64)((PUCHAR)GuestRegs + gprIdx * 8) = cr0ReadVal;
+				}
+			}
+		}
+		//其余形态(CLTS/LMSW=CR0 mask=0不exit; CR3/CR8=无exiting控制)
+		//理论不可达: 'c'环留痕已够, 只推进RIP
+	}
+	break;
 	case EXIT_REASON_INVD:
 	{
 
@@ -867,12 +1009,29 @@ void VmxExitHandler(PGUEST_REGS GuestRegs)
 	//r16/r14计数>0则证明该CPU布局成立, 这些模拟就是必需的)
 	case EXIT_REASON_RDTSC:
 	{
-		//TSC直通: root读真实TSC回填rax/rdx。不碰ecx(RDTSC本就不写
-		//ecx; RDTSCP才写——罕见, 暂不管)。每次exit走完整handler,
-		//计数留痕(r16)
-		ULONG64 tsc = __rdtsc();
+		//TSC直通+offset(防御, P1): 硬件直通路径(procCtl bit12=0)下
+		//RDTSC=真TSC+TSC_OFFSET(SDM 28.3); 本case(布局使bit12必须
+		//为1的CPU触发exit)回填同样必须加offset——回填裸TSC=guest
+		//时间线前跳=可检测特征。不碰ecx(RDTSC本就不写ecx)
+		ULONG64 tscOff = 0;
+		__vmx_vmread(TSC_OFFSET, &tscOff);
+		ULONG64 tsc = __rdtsc() + tscOff;
 		GuestRegs->rax = tsc & 0xFFFFFFFF;
 		GuestRegs->rdx = tsc >> 32;
+	}
+	break;
+	case EXIT_REASON_RDTSCP:   //51
+	{
+		//RDTSCP exit(防御, P1): 本机must-1集不含bit12=死代码, 换CPU
+		//布局即触发; 无case落default'U'逃生(vmx_off)=灾难臂。
+		//SDM 28.3: EAX:EDX=TSC+TSC_OFFSET; ECX=IA32_TSC_AUX(0x840)
+		//bits31:0(能触发本exit=ctls2 rdtscp位已开=CPU支持, 0x840可读)
+		ULONG64 tscOffP = 0;
+		__vmx_vmread(TSC_OFFSET, &tscOffP);
+		ULONG64 tscP = __rdtsc() + tscOffP;
+		GuestRegs->rax = tscP & 0xFFFFFFFF;
+		GuestRegs->rdx = tscP >> 32;
+		GuestRegs->rcx = __readmsr(MSR_IA32_TSC_AUX) & 0xFFFFFFFF;
 	}
 	break;
 	case EXIT_REASON_INVLPG:
@@ -1247,6 +1406,12 @@ int VmxSetupVmcs(PVOID GuestRsp)
 	__vmx_vmwrite(GUEST_CR0, __readcr0());
 	__vmx_vmwrite(GUEST_CR3, __readcr3());
 	__vmx_vmwrite(GUEST_CR4, __readcr4());
+	//CR4.VMXE影子化(隐藏, P0-3): mask=bit13(VMXE归host管)——guest读
+	//CR4的bit13=shadow(0, "BIOS未开VT"故事), 其余位=真值零exit; guest
+	//写CR4改bit13→exit28(见handler)保真值VMXE=1其余位落地。GUEST_CR4
+	//保持真值(VMXE=1): VM-entry按它加载真实CR4=VMXON region持续有效
+	__vmx_vmwrite(CR4_GUEST_HOST_MASK, 0x2000);
+	__vmx_vmwrite(CR4_READ_SHADOW, __readcr4() & ~0x2000ULL);
 	__vmx_vmwrite(GUEST_DR7, __readdr(7));
 	__vmx_vmwrite(HOST_CR0, __readcr0());
 	__vmx_vmwrite(HOST_CR3, __readcr3());

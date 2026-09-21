@@ -53,24 +53,43 @@ CmGeustRip ENDP
 ;全程不触碰RSP(GUEST_RSP=CmGuestRsp保存值, 供CmGeustRip的add/pop/ret恢复;
 ;直投的ISR帧在RSP之下瞬态使用, 与探针零冲突), 也不依赖GPR语义
 ;(VMCS不保存GPR, rbx由本探针自行赋值, CmGeustRip的pop会从栈恢复全部寄存器)
+;全部四段vmcall携带VMCALL签名r10/r11(GEPT_VMCALL_SIG0/1, 与common.h
+;同步——exit handler的VMCALL case校验不符→#UD)。每段vmcall前重新装载:
+;直投中断的ISR会clobber易失寄存器r10/r11(探针循环期间中断常态到达)
 CmGuestProbe PROC
     mov rcx, 5ABEh    ;GEPT_PROBE_MAGIC, 必须与common.h保持一致
+    mov r10, 9E3779B97F4A7C15h    ;VMCALL签名SIG0(与common.h同步)
+    mov r11, 0BF58476D1CE4E5B9h   ;VMCALL签名SIG1(与common.h同步)
     vmcall            ;'W': handler推环标记后通用RIP推进放行
     mov rbx, 512      ;512次vmcall(≈6ms): 观测窗口, 兼容历史日志数据
 gept_probe_loop:
     mov rcx, 4        ;'L': handler按rbx采样推环(每1024次1条)
+    mov r10, 9E3779B97F4A7C15h    ;签名每轮重装: 直投ISR会clobber r10/r11
+    mov r11, 0BF58476D1CE4E5B9h
     vmcall
     dec rbx
     jnz gept_probe_loop
     mov rcx, 6        ;'Y': 循环完成(handler推'Y', 携带rbx=0)
+    mov r10, 9E3779B97F4A7C15h
+    mov r11, 0BF58476D1CE4E5B9h
     vmcall
     mov rcx, 3        ;按GEPT_PROBE_EXIT(common.h开关)分流
+    mov r10, 9E3779B97F4A7C15h
+    mov r11, 0BF58476D1CE4E5B9h
     vmcall            ;KEEP=放行; EXIT=vmx_off回真机跳到下一条
     jmp CmGeustRip    ;KEEP: guest续跑恢复栈; EXIT: 真机执行(纯jmp安全)
 CmGuestProbe ENDP
 
+;C侧内部vmcall统一入口(P0-2签名门配套):
+;rcx=功能码(C ABI第1参, mov rax,rcx保留历史双份), rdx/r8/r9=参数。
+;r10/r11=VMCALL签名(GEPT_VMCALL_SIG0/1, 与common.h同步)——全部C侧
+;调用方(卸载vmcall(1)/布防vmcall(2)/还原vmcall(7))经此装载, 签名
+;校验在exit handler的VMCALL case。r10/r11=易失寄存器, C调用方跨调用
+;无保持义务, 零破坏
 CmVmCall PROC
 mov rax,rcx
+mov r10, 9E3779B97F4A7C15h    ;GEPT_VMCALL_SIG0(与common.h同步)
+mov r11, 0BF58476D1CE4E5B9h   ;GEPT_VMCALL_SIG1(与common.h同步)
 vmcall
 ret
 CmVmCall ENDP

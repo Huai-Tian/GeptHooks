@@ -5,11 +5,13 @@
 #include"VMX.h"
 #include"ept.h"
 #include"GeptApi.h"
+#include"GeptMsr.h"
+#include"CPU.h"
 
 //构建标签: 会打进日志第一行, 用于核对测试机跑的是不是本次编译的
 //二进制(见DriverEntry横幅)。**代码每次改动必须同步修改!**
 //不用__DATE__/__TIME__——用户侧VS环境对其报"未声明的标识符"
-#define GEPT_BUILD_TAG "v1.2"
+#define GEPT_BUILD_TAG "v1.3c"
 
 //构建标签全局副本——黑匣子(GEPT_BLACKBOX)在FlInit时拷入,
 //蓝屏DMP解析时自证二进制版本
@@ -18,6 +20,18 @@ CHAR g_geptBuildTag[24] = GEPT_BUILD_TAG;
 //本驱动=框架生命周期模板: 资源分配→串行逐核启动VT→互斥仲裁→常驻。
 //API使用方式: 把框架文件加入你自己的驱动工程, DriverEntry完成全核
 //接管后即可调用GeptHookInstall/GeptMsrHookInstall(见README)
+
+//0x3A(IA32_FEATURE_CONTROL)读伪造回调(P0-1): 恒返1=锁定位置1+VMX禁用
+//("BIOS锁VT"标准形态)——与vmxon注入#GP(0)读/行为互证(裸机读到1且
+//vmxon失败=一致, 见VMX.c case EXIT_REASON_VMXON), 并让后到junior的
+//CommCheckBios在第一层即干净退出。exit上下文纪律: 只返回值零副作用
+//(GeptMsr.h回调契约)
+static ULONG64 GeptFeatCtlOnRead(PVOID Context, ULONG32 Msr)
+{
+	UNREFERENCED_PARAMETER(Context);
+	UNREFERENCED_PARAMETER(Msr);
+	return 1;
+}
 
 void DriverUload(PDRIVER_OBJECT pDriverObjct)
 {
@@ -28,7 +42,6 @@ void DriverUload(PDRIVER_OBJECT pDriverObjct)
 	if (g_geptParkedMask != 0)
 	{
 		FlLog("Unload: 拒绝卸载! cpu掩码%X在三重故障park中(代码页/VMM栈被park核占用, 机器应存活)——请收集日志后重启系统", g_geptParkedMask);
-		Log("unload refused: parked mask=%X, reboot to clean", g_geptParkedMask);
 		return;
 	}
 	FlLog("Unload: 开始关闭VT(全核IPI原子退出)");
@@ -53,6 +66,12 @@ void DriverUload(PDRIVER_OBJECT pDriverObjct)
 	//(实现: VmxStopAllIpi, 见VMX.c)
 	KeIpiGenericCall(VmxStopAllIpi, 0);
 	FlLog("Unload: 全核IPI退出完成(每核原子vmcall(1)+清VMXE+双PGE冲刷, 环'v'×%u核留痕, 零调度零窗口)", cpuCount);
+	//认知核查项(v1.3, 不改行为): CPUID exit计数终值——定案CPUID
+	//handler是否活跃(历史证据自相矛盾: 控制字段未见CPUID exiting位
+	//vs v3.49自测"单次CPUID(1exit)≈2k cyc"表明exit在发生)。
+	//>0=透传修改路径在跑; =0=native直通; 两者guest侧均裸机一致
+	FlLog("Unload: CPUID exit计数终值=%lld (r10; >0=handler活跃 /=0=直通, 均裸机一致)",
+		(LONGLONG)g_flExitCounts[EXIT_REASON_CPUID]);
 	FlLog("Unload: VT已关闭, 释放资源");
 	//PASSIVE_LEVEL释放全部资源(含EPT_DATA与动态页表)
 	for (ULONG i = 0; i < cpuCount; i++)
@@ -70,12 +89,17 @@ void DriverUload(PDRIVER_OBJECT pDriverObjct)
 
 NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObjct, PUNICODE_STRING pRegPath)
 {
+	//注册表路径已不使用: 日志开关v1.3c起由构建配置统辖(DBG宏,
+	//common.h)——攻防形态下注册表值=可被AV/EDR静态签名的暴露面
+	UNREFERENCED_PARAMETER(pRegPath);
 	pDriverObjct->DriverUnload = DriverUload;
 
 	//文件日志最先初始化(之后无论在哪一步卡死, 日志都保留现场)。
-	//默认关闭: FlInit读本驱动服务注册表键的LogEnable DWORD(=1才
-	//启用), 关闭时后续所有FlLog均为空操作, 零后台线程零文件I/O
-	FlInit(pRegPath);
+	//开关=构建配置(v1.3c终态, 无编译期宏无注册表): Debug构建(DBG=1)
+	//时完整观测(T1/T2/看门狗, 调试专用——看门狗30s冻结会主动蓝屏
+	//0xDEADC0DE); Release构建时FlInit/FlLog/FlShutdown均为空操作宏,
+	//零后台线程零文件I/O零注册表读取
+	FlInit();
 
 	//预分配必须在PASSIVE_LEVEL: 每核VMXON/VMCS/VMM栈/MSR位图/EPT_DATA
 	//绝不能推迟到DPC(DISPATCH_LEVEL)里分配
@@ -127,14 +151,12 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObjct, PUNICODE_STRING pRegPath)
 			} while (mod != start && cnt < 400);
 		}
 	}
-	Log("cpu数=%d, 开始预分配VT资源", cpuCount);
 	for (ULONG i = 0; i < cpuCount; i++)
 	{
 		//面包屑: 每步都落盘, 卡死时最后一行即精确卡点
 		FlLog("cpu%u/%u: VMX资源分配(4块连续内存)...", i, cpuCount);
 		if (VMXInitCpuAlloc(i) != 0)
 		{
-			Log("cpu%d 资源预分配失败(连续内存不足?), 回滚", i);
 			FlLog("cpu%u VMX资源分配失败! 回滚返回(此时sc start应报错而非挂起)", i);
 			for (ULONG j = 0; j <= i; j++)
 			{
@@ -147,7 +169,6 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObjct, PUNICODE_STRING pRegPath)
 		FlLog("cpu%u: EPT_DATA分配(2MB连续)+建表...", i);
 		if (!NT_SUCCESS(EptInitEptData(i)))
 		{
-			Log("cpu%d EPT初始化失败, 回滚", i);
 			FlLog("cpu%u EPT初始化失败! 回滚返回(此时sc start应报错而非挂起)", i);
 			for (ULONG j = 0; j <= i; j++)
 			{
@@ -159,7 +180,6 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObjct, PUNICODE_STRING pRegPath)
 		}
 		FlLog("cpu%u: 预分配OK", i);
 	}
-	Log("预分配完成, 启动VT(串行逐核)");
 	FlLog("预分配完成, 串行逐核启动VT(每步落盘, 冻结时最后一行=精确卡点)");
 
 	//串行逐核启动(PASSIVE级+亲和性切换): 不用KeGenericCallDpc——
@@ -244,9 +264,25 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObjct, PUNICODE_STRING pRegPath)
 			}
 			EptShutdownHighMappings();
 			FlShutdown();
-			Log("junior refused (VT held by host/occupied), clean exit");
 			return STATUS_UNSUCCESSFUL;
 		}
+	}
+	//框架内置MSR hook(P0-1): 0x3A读伪造恒返1——**框架语义非demo, 勿在
+	//清理时剥离**(v1.2曾误当demo拆掉: 互斥双层防线降级单层+读/行为
+	//矛盾泄漏——病毒读0x3A真值5而vmxon被#GP="读到5却失败"=读/行为
+	//矛盾=hypervisor铁证)。双重作用: ①互斥第一层(junior的
+	//CommCheckBios读1→VT环境检查失败→干净退出, sc start报1062)
+	//②隐藏层(0x3A=1+CR4.VMXE影子0+vmxon #GP(0)三层"BIOS锁VT"故事
+	//自洽)。GeptMsrHookInstall的in-guest gate恰在此满足(上面已判定
+	//inGuestTotal>0); 位图直写硬件每次exit现查=PASSIVE装一次即时
+	//生效无需DPC
+	{
+		GEPT_MSR_HOOK featCtlHook = { 0 };
+		featCtlHook.Msr = MSR_IA32_FEATURE_CONTROL;   //0x3A
+		featCtlHook.OnRead = GeptFeatCtlOnRead;
+		NTSTATUS msrSt = GeptMsrHookInstall(&featCtlHook);
+		FlLog("框架内置0x3A读伪造(恒返1): %s——互斥第一层+vmxon #GP(0)读/行为互证",
+			NT_SUCCESS(msrSt) ? "安装OK" : "安装失败(不影响VT运行, 详见[MSR]行)");
 	}
 	//放行Desktop镜像: 到此驱动加载窗口期结束, 用户目录文件操作
 	//不再有过滤驱动死锁风险

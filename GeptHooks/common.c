@@ -30,7 +30,22 @@ BOOLEAN CommCheckCr4()
 	}
 	return FALSE;
 }
-//==================== 冻结存活文件日志 ====================
+
+//==================== 常驻全局(与日志无关, 两种构建都在) ====================
+//当前虚拟化目标核(-1=未启动), main.c启动循环置位(Debug构建的T1心跳读它)
+volatile LONG g_geptVcpuCpu = -1;
+//三重故障park核位掩码(bit i=cpu i已park)——main.c卸载守卫读它
+//(park核的VMM栈/代码页仍被占用, 驱动绝不能卸载)
+volatile LONG g_geptParkedMask = 0;
+//launch热轮询标志(VMX.c置位/清零)——Debug构建下T1据此进入1ms热节奏
+volatile LONG g_flLaunchHot = 0;
+//探针窗口写盘护卫(VMX.c置位/清零)——Debug构建下T1护卫期间停写盘
+volatile LONG g_flWriteGuard = 0;
+//exit精确计数(VMX.c exit handler无条件累加; Debug构建的HB/黑匣子/卸载总结读)
+volatile LONG64 g_flExitCounts[GEPT_EXIT_REASON_MAX] = { 0 };
+
+#if DBG
+//==================== 冻结存活文件日志(仅Debug构建编译, v1.3c) ====================
 //架构铁律: **DriverEntry/DriverUnload调用路径上零文件I/O**——驱动加载
 //窗口期杀软/过滤驱动可能扣住文件写请求形成循环等待(Desktop用户目录
 //最重), 直接同步写=DriverEntry挂死(sc start无输出)且拖死日志线程。
@@ -61,22 +76,14 @@ static LONG g_flT2Seq = 0;                //T2(Desktop)已写行游标(仅T2触�
 static volatile LONG g_flWriteFailsT1 = 0;
 static volatile LONG g_flWriteFailsT2 = 0;
 static volatile LONG g_flT1Lag = 0;     //FlLog等待T1落盘超时(500ms)累计次数
-volatile LONG g_flLaunchHot = 0;        //launch热轮询标志(见common.h)
-volatile LONG g_flWriteGuard = 0;       //探针窗口写盘护卫(见common.h)
 //护卫武装时刻(T1侧, 100ns单位)——置位时由T1记下, 超时未清=guest已
 //挂死, T1强制解除并补写(否则护卫解除依赖probe返回, guest挂死则
 //T1活着也永远不写盘)
 volatile LONG64 g_flWriteGuardTsc = 0;
-//当前虚拟化目标核(-1=未启动, main.c启动前置位)。T1心跳pend字段读它
-volatile LONG g_geptVcpuCpu = -1;
-//三重故障park核位掩码(bit i=cpu i已park)——main.c卸载守卫读它
-//(park核的VMM栈/代码页仍被占用, 驱动绝不能卸载)
-volatile LONG g_geptParkedMask = 0;
-volatile LONG64 g_flExitCounts[GEPT_EXIT_REASON_MAX] = { 0 };
 
-//日志系统总开关(默认0=关闭)——FlInit读服务注册表键的LogEnable
-//DWORD(=1开启); 关闭时T1/T2/看门狗线程全部不创建, 全部Fl*接口为
-//空操作=零后台线程零文件I/O零观测面(框架交付形态的隐蔽性基线)
+//日志系统运行态标志: Debug构建FlInit置1(全部Fl*接口激活); Release
+//构建本文件日志区整体不编译(#if DBG), 本定义不存在——调用点已被
+//common.h的空操作宏消除
 volatile LONG g_flEnabled = 0;
 
 //===== 蓝屏黑匣子 + 自旋看门狗 =====
@@ -309,7 +316,11 @@ VOID FlRingExit(ULONG cpu, ULONG reason, ULONG64 rip, ULONG64 qual)
 	//已模拟的must-1指令exit(16 RDTSC/14 INVLPG/12 HLT/36 MWAIT)在OS
 	//接管后持续高频(RDTSC~1M/s)——环采样各限32条防刷爆;
 	//HB的r12/r14/r16/r36计数仍精确=各指令真实流量
-	if ((reason == 16 || reason == 14 || reason == 12 || reason == 36) &&
+	//28 CR访问(CR4.VMXE影子化: 病毒bit13翻转自旋=每次写必exit)与
+	//51 RDTSCP(计时自旋)同性质——各限32条; 'c'环事件(case28自带
+	//采样)与r28/r51计数仍精确
+	if ((reason == 16 || reason == 14 || reason == 12 || reason == 36 ||
+		reason == 28 || reason == 51) &&
 		g_flExitCounts[reason] > 32)
 	{
 		return;
@@ -812,35 +823,13 @@ static HANDLE FlOpenOneFile(PCWSTR path)
 	return NT_SUCCESS(st) ? hFile : NULL;
 }
 
-//DriverEntry最先调用: 读服务注册表键LogEnable开关(默认0=日志系统整体
-//关闭——T1/T2/看门狗线程全部不创建, 零文件I/O, 全部Fl*接口空操作=框架
-//交付形态零观测面); LogEnable=1才初始化同步对象+创建写线程/看门狗线程
-VOID FlInit(PCUNICODE_STRING ServiceRegPath)
+//DriverEntry最先调用(v1.3c): 本函数整体位于#if DBG内——Debug构建
+//(DBG=1)才编译: 置g_flEnabled+创建T1/T2/双看门狗线程; Release构建
+//(DBG=0)common.h已把FlInit定义为空宏, 调用点消失, 本定义不参与
+//编译(日志实现零代码进产物)。开关沿革见common.h"构建配置判据"注释
+VOID FlInit(VOID)
 {
-	HANDLE hThread = NULL;
-	//注册表开关——本驱动服务键(如...\Services\GeptHooks)下
-	//DWORD值LogEnable(缺省/读失败=0=保持默认关闭)
-	if (ServiceRegPath != NULL && ServiceRegPath->Buffer != NULL)
-	{
-		ULONG enable = 0;
-		RTL_QUERY_REGISTRY_TABLE q[2];
-		RtlZeroMemory(q, sizeof(q));
-		q[0].Flags = RTL_QUERY_REGISTRY_DIRECT;
-		q[0].Name = L"LogEnable";
-		q[0].EntryContext = &enable;
-		q[0].DefaultType = REG_DWORD;
-		q[0].DefaultData = &enable;
-		q[0].DefaultLength = sizeof(ULONG);
-		if (NT_SUCCESS(RtlQueryRegistryValues(RTL_REGISTRY_ABSOLUTE,
-			ServiceRegPath->Buffer, q, NULL, NULL)) && enable != 0)
-		{
-			g_flEnabled = 1;
-		}
-	}
-	if (!g_flEnabled)
-	{
-		return;    //默认路径: 什么都不创建, 零线程零文件零看门狗
-	}
+	g_flEnabled = 1;
 	//黑匣子静态字段(动态字段由看门狗在触发时快照)
 	RtlCopyMemory(g_flBlackBox.magic, "GEPTBB01", 8);
 	RtlStringCbCopyA(g_flBlackBox.build, sizeof(g_flBlackBox.build),
@@ -848,6 +837,7 @@ VOID FlInit(PCUNICODE_STRING ServiceRegPath)
 	g_flBlackBox.bbVer = 1;
 	KeInitializeEvent(&g_flKickT1, SynchronizationEvent, FALSE);
 	KeInitializeEvent(&g_flKickT2, SynchronizationEvent, FALSE);
+	HANDLE hThread = NULL;
 	NTSTATUS st = PsCreateSystemThread(&hThread, THREAD_ALL_ACCESS,
 		NULL, NULL, NULL, FlThreadProcT1, NULL);
 	if (NT_SUCCESS(st))
@@ -956,4 +946,5 @@ VOID FlShutdown(VOID)
 		}
 	}
 }
+#endif  //#if DBG——日志实现区结束(Release构建: 零日志代码进产物)
 

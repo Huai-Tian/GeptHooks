@@ -47,6 +47,10 @@
 //INVEPT指令页(SDM原文): "not in VMX operation→#UD"且non-root无条件
 //VMexit——与VMXOFF同族, 缺case=落default'U'逃生(病毒DoS面)
 #define EXIT_REASON_INVEPT              50
+//RDTSCP(SDM Table"Basic Exit Reasons"=51): "RDTSC exiting"位开且
+//ctls2 rdtscp位开的CPU布局才exit——本机must-1集不含bit12=死代码,
+//换CPU布局即触发; 无case落default'U'逃生(vmx_off)=灾难臂
+#define EXIT_REASON_RDTSCP              51
 #define EXIT_REASON_INVVPID             53
 #define EXIT_REASON_WBINVD              54
 #define EXIT_REASON_XSETBV              55

@@ -13,22 +13,25 @@ This implements the highest-stealth virtual-layer hook design: execution is redi
 ## ✨ Features
 
 - **VMFUNC dual-EPT hooks (zero VM-Exit detour) — v3.48**
-Every core runs with two EPT views: a *clean* view (identity, original bytes) and a *hooked* view (hook page remapped to a shadow copy). Hooking execution = switching translation, not trapping: **each hook hit costs zero VM-Exits**. Measured: 187k+ NtClose interceptions with the EPT-violation counter pinned at 0.
+Every core runs with two EPT views: a *clean* view (identity, original bytes) and a *hooked* view (hook page remapped to a shadow copy). Hooking execution = switching translation, not trapping: **each hook hit costs zero VM-Exits**. Measured: 1.26M+ NtClose interceptions across runs with the EPT-violation counter pinned at 0.
 
 - **Detour with full control — v3.50**
 Your callback receives the original arguments, can call the original function directly (`GeptCallOriginal`), modify arguments or return values, or swallow the call entirely. No prologue replay, no instruction-length machinery — the clean view holds the pristine original code.
 
+- **Version-independent trampolines — v3.51**
+Trampolines are generated at runtime by an LDE relocation engine — per-instruction decode, RIP-relative fixups, and a CPU-view back-scan self-check before going live. No hardcoded prologues bound to one Windows build: hooks install across Windows versions, and unrelocatable prologues are rejected at install time.
+
 - **Hypervisor concealment — v3.49**
 CPUID leaves `0x40000000-0x4000000F` are zeroed (no hypervisor signature leaks), `CPUID.1:ECX[31]` is cleared, and **TSC offsetting compensation** subtracts every VM-Exit's root-mode dwell time from the guest-visible TSC — the guest's timeline behaves as if no exit ever happened.
 
-- **Fallback path for older CPUs**
-On CPUs without VMFUNC, hooks transparently fall back to the classic EPT-violation scheme (split 2M pages, X-bit toggling) — same API, zero code changes on your side.
+- **Fallback path for older CPUs — v3.51**
+On cores without VMFUNC, hooks transparently degrade per-core to the classic EPT-violation scheme (split 2M pages, X-bit toggling) with `GeptCallOriginal` routed through the relocated trampoline — same API semantics, zero code changes on your side; mixed machines dispatch per core.
 
 - **Simple, driver-friendly API**
 Install, remove, enumerate hooks, and call originals with a few C calls from your own kernel driver — no hypervisor knowledge required.
 
-- **MSR interception (MSR bitmap) — planned**
-Infrastructure is in place (`VmxSetMsrRw`); read-forging samples (e.g. IA32_LSTAR) are on the roadmap.
+- **MSR interception (read-forging / write-monitoring) — v3.52**
+Any MSR can be hooked through the per-core MSR bitmap: read callbacks return the value the guest will see (forge it), write callbacks allow or silently drop. Unhooked MSRs stay zero-cost pass-through. Demo proof: a reserved MSR reads back `DEADBEEFCAFEBABE`; an LSTAR canary counts syscall-entry probes and alerts on any write.
 
 ## 📐 How the zero-VM-Exit hook works
 
@@ -101,6 +104,27 @@ ULONG Count = 0;
 GeptHookEnumerate(NULL, &Count);   // query live hook count
 ```
 
+MSR hooks (the data plane) are just as simple:
+
+```c
+#include "GeptMsr.h"
+
+static ULONG64 OnLstarRead(PVOID Ctx, ULONG32 Msr)
+{
+    return GeptMsrReadReal(Msr);   // pass through — or forge any value
+}
+static BOOLEAN OnLstarWrite(PVOID Ctx, ULONG32 Msr, ULONG64 Value)
+{
+    return TRUE;                    // TRUE = allow, FALSE = silently drop
+}
+
+GEPT_MSR_HOOK M = { 0 };
+M.Msr     = 0xC0000082;             // IA32_LSTAR
+M.OnRead  = OnLstarRead;            // NULL = reads pass through
+M.OnWrite = OnLstarWrite;           // NULL = writes pass through
+GeptMsrHookInstall(&M);
+```
+
 **Callback discipline** (enforced by reality, see NOTES.md for the war stories):
 
 1. Callbacks run at the original function's IRQL — only interlocked ops, lock-free logging, and `GeptCallOriginal` are safe. No blocking, no paged memory, no `DbgPrint` storms.
@@ -112,7 +136,7 @@ On unload, call `GeptApiRemoveAll()` **before** VT teardown, then `GeptApiFreeMe
 
 ## ⚙️ Requirements
 
-- **CPU**: Intel with VT-x + EPT; **VMFUNC (Haswell or later) required for the zero-VM-Exit path** — older CPUs get the violation fallback
+- **CPU**: Intel with VT-x + EPT; **VMFUNC (Haswell or later) enables the zero-VM-Exit path** — older or mixed CPUs degrade per-core to the violation fallback (same API)
 - **OS**: Windows 10 / 11 x64
 - **Hypervisor conflicts**: Hyper-V, Virtualization-Based Security (VBS), Memory Integrity (Core Isolation), and WHP must be disabled — GeptHooks needs to be the root hypervisor
 - **Test signing**: enable with `bcdedit /set testsigning on`, or sign the driver properly
@@ -124,15 +148,17 @@ On unload, call `GeptApiRemoveAll()` **before** VT teardown, then `GeptApiFreeMe
 | Phase | Milestone | Measured evidence |
 |---|---|---|
 | STAGE 1 | Self-test EPT hook (violation scheme) | hook chain live, clean unload |
-| STAGE 2 | NtClose system-wide monitoring | 780k+ interceptions total across runs, 16–90 min stability |
+| STAGE 2 | NtClose system-wide monitoring | 1.26M+ interceptions total across runs, 16–89 min stability |
 | Phase 1 | VMFUNC infrastructure, 8/8 cores | zero-VM-Exit EPTP round-trip self-test |
 | Phase 2 | Dual-EPT zero-VM-Exit hooks | marker pages read different values per view; Δr48 = 0 while interception grows |
 | Phase 3 | Concealment (CPUID + TSC) | CPUID signature fully masked; per-core TSC offset ≈ −0.6 ms of hidden exit time |
 | Phase 4 | Simple API lifecycle | install +388/2s → remove +0/2s → reinstall +14/2s, clean unload |
+| Phase 6 | Runtime relocation (version-independent) | LDE trampoline back-scan passed twice; replay self-test NtClose(-1) = 0xC0000008; three-window +209/+0/+65 |
+| Phase 5 | MSR data-plane API | reserved-MSR read forged to `DEADBEEFCAFEBABE`; LSTAR canary reads unchanged, 0 writes |
 
 ## ⚠️ Project Status
 
-Core paths (virtualization, dual-EPT VMFUNC hooks, concealment, detour API) are graduated from staged on-hardware testing on an i7-6700HQ (8 cores, Windows 10 x64). The framework is research-grade: bugs may still bugcheck the system — always test on a disposable machine.
+All core paths (virtualization, dual-EPT VMFUNC hooks, concealment, detour API, runtime relocation, MSR data plane) are graduated from staged on-hardware testing on an i7-6700HQ (8 cores, Windows 10 x64). The framework is research-grade: bugs may still bugcheck the system — always test on a disposable machine.
 
 ## 🚫 Non-Commercial Statement
 

@@ -13,10 +13,13 @@ This implements the highest-stealth virtual-layer hook design: execution is redi
 ## ✨ Features
 
 - **VMFUNC dual-EPT hooks (zero VM-Exit detour) — v3.48**
-Every core runs with two EPT views: a *clean* view (identity, original bytes) and a *hooked* view (hook page remapped to a shadow copy). Hooking execution = switching translation, not trapping: **each hook hit costs zero VM-Exits**. Measured: 1.26M+ NtClose interceptions across runs with the EPT-violation counter pinned at 0.
+Every core runs with two EPT views: a *clean* view (identity, original bytes) and a *hooked* view (hook page remapped to a shadow copy). Hooking execution = switching translation, not trapping: **each hook hit costs zero VM-Exits**. Measured: 1.44M+ NtClose interceptions across runs with the EPT-violation counter pinned at 0.
 
 - **Detour with full control — v3.50**
 Your callback receives the original arguments, can call the original function directly (`GeptCallOriginal`), modify arguments or return values, or swallow the call entirely. No prologue replay, no instruction-length machinery — the clean view holds the pristine original code.
+
+- **Stack-argument forwarding (5th argument and beyond) — v1.1**
+Declare the target's stack-argument count in `GEPT_HOOK.StackArgs` (up to 32); your callback receives a `StackArgs` pointer to the live arguments on the trigger stack — readable and **writable**, with modifications forwarded through `GeptCallOriginal`. No more argument gaps when hooking multi-parameter kernel functions. Verified on hardware: a six-argument adder target passes all four proofs (read-back, modification, forwarding, removal).
 
 - **Version-independent trampolines — v3.51**
 Trampolines are generated at runtime by an LDE relocation engine — per-instruction decode, RIP-relative fixups, and a CPU-view back-scan self-check before going live. No hardcoded prologues bound to one Windows build: hooks install across Windows versions, and unrelocatable prologues are rejected at install time.
@@ -30,8 +33,8 @@ On cores without VMFUNC, hooks transparently degrade per-core to the classic EPT
 - **Simple, driver-friendly API**
 Install, remove, enumerate hooks, and call originals with a few C calls from your own kernel driver — no hypervisor knowledge required.
 
-- **MSR interception (read-forging / write-monitoring) — v3.52**
-Any MSR can be hooked through the per-core MSR bitmap: read callbacks return the value the guest will see (forge it), write callbacks allow or silently drop. Unhooked MSRs stay zero-cost pass-through. Demo proof: a reserved MSR reads back `DEADBEEFCAFEBABE`; an LSTAR canary counts syscall-entry probes and alerts on any write.
+- **MSR interception (read-forging / write-monitoring) — v3.52, enumeration in v1.1**
+Any MSR can be hooked through the per-core MSR bitmap: read callbacks return the value the guest will see (forge it), write callbacks allow or silently drop. Unhooked MSRs stay zero-cost pass-through. Install / remove / enumerate (`GeptMsrHookEnumerate`) mirror the function-hook API exactly. Demo proof: a reserved MSR reads back `DEADBEEFCAFEBABE`; an LSTAR canary counts syscall-entry probes and alerts on any write.
 
 ## 📐 How the zero-VM-Exit hook works
 
@@ -67,7 +70,7 @@ sc create GeptHooks type= kernel start= demand binPath= "C:\path\to\GeptHooks.sy
 sc start GeptHooks
 ```
 
-Stop and uninstall (all hooks are removed cleanly, then VT is torn down):
+Stop and uninstall (all hooks are removed cleanly first, then VT is torn down atomically on all cores via an IPI broadcast):
 
 ```
 sc stop GeptHooks
@@ -79,22 +82,25 @@ sc delete GeptHooks
 ```c
 #include "GeptApi.h"
 
-// Your detour callback: runs in the original function's context
-// (arbitrary thread / IRQL). Return value becomes the hook's return value.
+// Your detour callback: runs in the original function's thread and
+// IRQL context. Return value becomes the hook's return value.
+// StackArgs (v1.1): array of the 5th+ (stack) arguments — readable
+// and writable; modifications are forwarded by GeptCallOriginal.
+// NULL when StackArgs was not declared at install time.
 static ULONG64 OnNtClose(PVOID Context,
-    ULONG64 Arg1, ULONG64 Arg2, ULONG64 Arg3, ULONG64 Arg4)
+    ULONG64 Arg1, ULONG64 Arg2, ULONG64 Arg3, ULONG64 Arg4,
+    ULONG64* StackArgs)
 {
-    // IRQL-safe work only: counters, ring events, GeptCallOriginal...
-    // NEVER block, never touch paged memory.
     ULONG64 status = GeptCallOriginal(Arg1, Arg2, Arg3, Arg4);
     return status;   // or forge it — you have full control
 }
 
 // Install / remove / enumerate
 GEPT_HOOK Hook = { 0 };
-Hook.Target   = (PVOID)NtClose;
-Hook.Callback = OnNtClose;
-Hook.Context  = NULL;
+Hook.Target    = (PVOID)NtClose;
+Hook.Callback  = OnNtClose;
+Hook.Context   = NULL;
+Hook.StackArgs = 0;   // number of the target's 5th+ stack arguments (0 = off)
 
 GeptHookInstall(&Hook);
 // ... hooks are live on all cores ...
@@ -104,7 +110,24 @@ ULONG Count = 0;
 GeptHookEnumerate(NULL, &Count);   // query live hook count
 ```
 
-MSR hooks (the data plane) are just as simple:
+Hooking functions with six or more parameters (stack arguments) — just declare the count:
+
+```c
+// Target prototype: ULONG64 F(ULONG64 A1..A4, ULONG64 A5, ULONG64 A6);
+GEPT_HOOK Hook = { 0 };
+Hook.Target    = (PVOID)F;
+Hook.Callback  = OnF;
+Hook.StackArgs = 2;               // two stack arguments (A5/A6)
+
+static ULONG64 OnF(PVOID Ctx, ULONG64 A1, ULONG64 A2,
+    ULONG64 A3, ULONG64 A4, ULONG64* StackArgs)
+{
+    StackArgs[0] ^= 1;            // modify the 5th argument — takes effect on forwarding
+    return GeptCallOriginal(A1, A2, A3, A4);  // stack arguments forwarded automatically
+}
+```
+
+MSR hooks (the data plane) are just as simple — install, remove, and enumerate:
 
 ```c
 #include "GeptMsr.h"
@@ -123,14 +146,19 @@ M.Msr     = 0xC0000082;             // IA32_LSTAR
 M.OnRead  = OnLstarRead;            // NULL = reads pass through
 M.OnWrite = OnLstarWrite;           // NULL = writes pass through
 GeptMsrHookInstall(&M);
+
+// ... monitoring period ...
+GeptMsrHookRemove(0xC0000082);      // remove: the MSR reverts to pass-through
+
+ULONG MsrCount = 0;
+GeptMsrHookEnumerate(NULL, &MsrCount);   // enumerate live MSR hooks
 ```
 
-**Callback discipline** (enforced by reality, see NOTES.md for the war stories):
+**Callback context contract**:
 
-1. Callbacks run at the original function's IRQL — only interlocked ops, lock-free logging, and `GeptCallOriginal` are safe. No blocking, no paged memory, no `DbgPrint` storms.
+1. Callbacks run in the original function's thread and IRQL context (up to DISPATCH_LEVEL) — only perform IRQL-safe work inside (interlocked operations, lock-free logging, `GeptCallOriginal`).
 2. Always call the original through `GeptCallOriginal` — it guarantees the clean view and restores the hooked view afterwards (thread-migration safe).
-3. While your callback runs, the current core is on the clean view: other hook targets invoked from within the callback are **not** intercepted (documented limitation).
-4. Stack arguments beyond the first four (rcx/rdx/r8/r9) are not forwarded in v1.
+3. Known limitation: while your callback runs, the current core is on the clean view — other hook targets invoked from within the callback are **not** intercepted.
 
 On unload, call `GeptApiRemoveAll()` **before** VT teardown, then `GeptApiFreeMemory()` after — see `main.c`'s `DriverUload` for the reference sequence.
 
@@ -155,6 +183,8 @@ On unload, call `GeptApiRemoveAll()` **before** VT teardown, then `GeptApiFreeMe
 | Phase 4 | Simple API lifecycle | install +388/2s → remove +0/2s → reinstall +14/2s, clean unload |
 | Phase 6 | Runtime relocation (version-independent) | LDE trampoline back-scan passed twice; replay self-test NtClose(-1) = 0xC0000008; three-window +209/+0/+65 |
 | Phase 5 | MSR data-plane API | reserved-MSR read forged to `DEADBEEFCAFEBABE`; LSTAR canary reads unchanged, 0 writes |
+| v1.1 | Stack-argument forwarding + MSR enumeration | six-arg self-test, four proofs (read-back flags=7 / stack-arg write / register write / adder target 25553→16665); MSR enumeration live=2 |
+| v1.1d | All-core atomic IPI unload | 3/3 clean under idle stress: per-core atomic "vmcall exit + VMXE clear + dual TLB flush", 8×'v' + 8×'r' unload traces present |
 
 ## ⚠️ Project Status
 

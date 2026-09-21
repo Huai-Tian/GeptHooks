@@ -36,6 +36,12 @@ Install, remove, enumerate hooks, and call originals with a few C calls from you
 - **MSR interception (read-forging / write-monitoring) — v3.52, enumeration in v1.1**
 Any MSR can be hooked through the per-core MSR bitmap: read callbacks return the value the guest will see (forge it), write callbacks allow or silently drop. Unhooked MSRs stay zero-cost pass-through. Install / remove / enumerate (`GeptMsrHookEnumerate`) mirror the function-hook API exactly. Demo proof: a reserved MSR reads back `DEADBEEFCAFEBABE`; an LSTAR canary counts syscall-entry probes and alerts on any write.
 
+- **Optional file logging, off by default — v1.2**
+The whole observation stack (dual writer threads, binary event ring, BSOD black-box watchdog) is preserved for debugging but ships **disabled**: zero background threads, zero file I/O, zero observable surface until you turn it on. Enable it per service before starting the driver with `reg add HKLM\SYSTEM\CurrentControlSet\Services\GeptHooks /v LogEnable /t REG_DWORD /d 1 /f` — the authoritative log lands in `C:\Windows\Temp\gept_log.txt` (best-effort mirror on the desktop). Warning: while enabled, the watchdog deliberately bugchecks (`0xDEADC0DE`) if logging stalls for 30 s to capture a memory dump — that is a debugging aid, not production behavior.
+
+- **Clean release payload — v1.2**
+The driver entry no longer runs any development self-tests or demo hooks: it allocates per-core VT resources, launches virtualization core by core, performs the VT-x native mutual-exclusion arbitration (a second instance fails `sc start` cleanly and exits), and stays resident. `GeptHooks` is consumed as source — add the framework files to your own driver project and call the API once `DriverEntry` has brought all cores in-guest (see `main.c` for the reference startup / unload sequences).
+
 ## 📐 How the zero-VM-Exit hook works
 
 ```
@@ -75,6 +81,12 @@ Stop and uninstall (all hooks are removed cleanly first, then VT is torn down at
 ```
 sc stop GeptHooks
 sc delete GeptHooks
+```
+
+Optionally enable the debug file log before starting (disabled by default; see the feature list above for what it writes and its watchdog caveat):
+
+```
+reg add HKLM\SYSTEM\CurrentControlSet\Services\GeptHooks /v LogEnable /t REG_DWORD /d 1 /f
 ```
 
 ## 🧩 Using the API
@@ -185,6 +197,7 @@ On unload, call `GeptApiRemoveAll()` **before** VT teardown, then `GeptApiFreeMe
 | Phase 5 | MSR data-plane API | reserved-MSR read forged to `DEADBEEFCAFEBABE`; LSTAR canary reads unchanged, 0 writes |
 | v1.1 | Stack-argument forwarding + MSR enumeration | six-arg self-test, four proofs (read-back flags=7 / stack-arg write / register write / adder target 25553→16665); MSR enumeration live=2 |
 | v1.1d | All-core atomic IPI unload | 3/3 clean under idle stress: per-core atomic "vmcall exit + VMXE clear + dual TLB flush", 8×'v' + 8×'r' unload traces present |
+| v1.2 | Release cleanup: dev self-tests removed, logging off by default | DriverEntry reduced to the framework lifecycle (alloc → per-core launch → arbitration → resident); no demo hooks run at load; `LogEnable` registry switch gates the whole observation stack |
 
 ## ⚠️ Project Status
 

@@ -26,8 +26,10 @@
 //  3. 已知限制(文档化): 回调执行期间本核处于clean视图——回调里调用
 //     的其他hook目标(或原函数内部调用的其他hook目标)不被拦截;
 //     回调阻塞=本核hook持续失效直到返回
-// 4. 第5+参数(stack参数)v1不转发(GeptCallOriginal只转发rcx/rdx/r8/r9
-//     四个寄存器参数)——覆盖绝大多数内核函数; 全参数转发留待增强
+// 4. v1.1起第5+参数(栈参数)可转发: 安装时GEPT_HOOK.StackArgs=目标
+//     函数栈参数个数(≤GEPT_MAX_STACK_ARGS)→回调收到StackArgs指针
+//     (指向触发帧上实参, **可读可写**——写后GeptCallOriginal按改写值
+//     转发)+GeptCallOriginal自动转发; StackArgs=0=旧语义(仅4寄存器参)
 //
 //硬件要求(v3.51 Phase6起): 至少一核VT in-guest即可安装——
 //  VMFUNC核(Haswell+): 双EPT零VM-Exit detour(隐藏性最优)
@@ -39,9 +41,15 @@
 //====================================================================
 
 //detour回调: 返回值=hook函数的返回值; Context=安装时原样传入;
-//Arg1-4=原函数的rcx/rdx/r8/r9(x64前4个寄存器参数)
+//Arg1-4=原函数的rcx/rdx/r8/r9(x64前4个寄存器参数);
+//StackArgs=第5+参数数组(指向触发帧上实参, 可读**可写**——写后
+//GeptCallOriginal按改写值转发; NULL=安装时StackArgs=0未声明)
 typedef ULONG64(*GEPT_CALLBACK)(
-	PVOID Context, ULONG64 Arg1, ULONG64 Arg2, ULONG64 Arg3, ULONG64 Arg4);
+	PVOID Context, ULONG64 Arg1, ULONG64 Arg2, ULONG64 Arg3, ULONG64 Arg4,
+	ULONG64* StackArgs);
+
+//栈参数转发上限(hook.asm GeptCallOrigAsm固定帧=32槽×8B)
+#define GEPT_MAX_STACK_ARGS 32
 
 //安装描述(值语义, 安装后内部自持)
 typedef struct _GEPT_HOOK
@@ -49,6 +57,9 @@ typedef struct _GEPT_HOOK
 	PVOID Target;             //目标函数(内核虚拟地址)
 	GEPT_CALLBACK Callback;   //detour回调
 	PVOID Context;            //用户上下文(原样传给回调)
+	ULONG StackArgs;          //v1.1: 目标函数第5+栈参数个数(0=不转发;
+	//>0时回调收StackArgs指针+CallOriginal自动
+	//转发; ≤GEPT_MAX_STACK_ARGS, 超限Install拒绝)
 } GEPT_HOOK, * PGEPT_HOOK;
 
 //安装hook(PASSIVE_LEVEL): CodePage构建+每核hooked EPT布防(PHHook复用)
@@ -65,6 +76,9 @@ NTSTATUS GeptHookEnumerate(GEPT_HOOK* Buffer, ULONG* InOutCount);
 //回调内调用原函数(仅回调上下文有效, 其他上下文返回0):
 //VMFUNC核: 切clean视图→直接call Target(原始字节)→归位hooked;
 //fallback核: 经LDE重定位跳板(版本无关, 无prologue硬编码)
+//v1.1: 安装时声明StackArgs>0的hook, 第5+参数自动从触发帧转发
+//(回调对StackArgs数组的改写一并生效; Arg1-4=本函数实参——
+//经hook.asm GeptCallOrigAsm重建完整调用帧)
 ULONG64 GeptCallOriginal(ULONG64 Arg1, ULONG64 Arg2, ULONG64 Arg3, ULONG64 Arg4);
 
 //高级: 手动切换EPT视图(0=clean原始字节/1=hooked)。

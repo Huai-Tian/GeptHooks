@@ -50,6 +50,10 @@ NTSTATUS GeptMsrHookInstall(const GEPT_MSR_HOOK* Hook);
 //无动态内存, 卸载无需释放)
 NTSTATUS GeptMsrHookRemove(ULONG32 Msr);
 
+//v1.1: 枚举live MSR hook(Buffer=NULL时*InOutCount返回数量)——
+//与GeptHookEnumerate对称的管理面API
+NTSTATUS GeptMsrHookEnumerate(GEPT_MSR_HOOK* Buffer, ULONG* InOutCount);
+
 //回调内取真实MSR值(root态__readmsr; 保留MSR勿调——会#GP蓝屏)
 ULONG64 GeptMsrReadReal(ULONG32 Msr);
 

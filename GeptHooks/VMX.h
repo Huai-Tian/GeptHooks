@@ -146,7 +146,12 @@ typedef struct _EPT_CTX
 PVCPU VmxGetCurrentVcpu(ULONG cpuNumber);
 int VMXInitCpuAlloc(ULONG cpuNumber);   //PASSIVE_LEVEL: 预分配VMXON/VMCS/VMM栈/MSR位图
 int VMXInitCpuStart();                  //串行模式(亲和性已切换到目标核, PASSIVE): vmxon+vmptrld+vmlaunch
-void VmxStopCpu();                      //串行模式(同上): 该核退出VT(vmcall/vmx_off+清VMXE)
+void VmxStopCpu();                      //串行模式(同上): 该核退出VT(vmcall/vmx_off+清VMXE); v1.1d起主卸载路径退役(仅全败路径防御性保留)
+//v1.1d: 全核IPI原子退出(KeIpiGenericCall广播处理程序, DriverUload在
+//PASSIVE调用)——每核在IPI_LEVEL上下文原子完成自己的VT退出+清VMXE+
+//双PGE冲刷, 零调度零窗口(v1.1/v1.1b两轮0x50+v1.1c一轮0x7F的根治,
+//见VMX.c实现注释); IPI内纪律=只FlRingPush('v')
+ULONG64 VmxStopAllIpi(ULONG_PTR Argument);
 int VmxSetupVmcs();
 void VmxFillSelectorData();
 //控制字段计算(v3.12经典公式, 对新旧MSR均正确): (MSR低32|期望)&高32。

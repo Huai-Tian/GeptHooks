@@ -179,6 +179,11 @@ extern "C" {
 		//       i=中断交付给guest(a=vector, rsn=1=直接注入/7=开窗
 		//       注入, b=交付后剩余队列)——冻结时最后一条'i'=
 		//       正在EPT下执行的凶手ISR身份!
+		//v1.1b: r=卸载CR3证据(a=GUEST_CR3=卸载线程DTB, b=回读,
+		//       c=HOST_CR3快照)——卸载0x50复发时与bugcheck CR3
+		//       直接比对钉死"错CR3"臂(等于c)或"指针损坏"臂(等于a)
+		//v1.1d: v=全核IPI原子退出留痕(a=本核曾in-guest, b=bVmxOn
+		//       终值应0)——每核一条, IPI返回后T1落盘
 		USHORT pad;
 	} GEPT_RING_ENTRY, * PGEPT_RING_ENTRY;
 

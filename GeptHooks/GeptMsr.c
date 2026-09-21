@@ -292,3 +292,50 @@ NTSTATUS GeptMsrHookRemove(ULONG32 Msr)
 	FlLog("[MSR] Remove OK: MSR=0x%X(位图清位, 在途回调安全完成)", Msr);
 	return STATUS_SUCCESS;
 }
+
+//v1.1: 枚举live MSR hook——与GeptApi.c GeptHookEnumerate同款语义
+//(Buffer=NULL→*InOutCount=数量; 容量不足→STATUS_BUFFER_TOO_SMALL
+//并回填所需数量)。条目字段逐个复制(不拷Removed——那是内部状态)
+NTSTATUS GeptMsrHookEnumerate(GEPT_MSR_HOOK* Buffer, ULONG* InOutCount)
+{
+	if (InOutCount == NULL)
+	{
+		return STATUS_INVALID_PARAMETER;
+	}
+	ULONG cnt = 0;
+	GeptMsrLock();
+	for (ULONG i = 0; i < GEPT_MSR_MAX; i++)
+	{
+		if (s_msr[i].Removed == 0)
+		{
+			cnt++;
+		}
+	}
+	if (Buffer == NULL)
+	{
+		*InOutCount = cnt;
+		GeptMsrUnlock();
+		return STATUS_SUCCESS;
+	}
+	if (cnt > *InOutCount)
+	{
+		*InOutCount = cnt;
+		GeptMsrUnlock();
+		return STATUS_BUFFER_TOO_SMALL;
+	}
+	ULONG i2 = 0;
+	for (ULONG i = 0; i < GEPT_MSR_MAX; i++)
+	{
+		if (s_msr[i].Removed == 0)
+		{
+			Buffer[i2].Msr = s_msr[i].Msr;
+			Buffer[i2].Context = s_msr[i].Context;
+			Buffer[i2].OnRead = s_msr[i].OnRead;
+			Buffer[i2].OnWrite = s_msr[i].OnWrite;
+			i2++;
+		}
+	}
+	GeptMsrUnlock();
+	*InOutCount = cnt;
+	return STATUS_SUCCESS;
+}

@@ -466,7 +466,12 @@ VOID FlLogSpin(const char* fmt, ...)
 {
 	char buf[512];
 	va_list args;
-	if (KeGetCurrentIrql() != PASSIVE_LEVEL)
+	//v1.1c: IRQL门从"仅PASSIVE"放宽到"≤DISPATCH"——自旋等待(YieldProcessor,
+	//不睡眠不阻塞)在DISPATCH级完全合法, T1在其他核PASSIVE落盘照常; v1.1c
+	//卸载路径全程DISPATCH_LEVEL(VmxStopCpu的日志全走本函数=同核无线程
+	//切换+日志仍同步落盘, 两全)。原PASSIVE门是v3.25"KEEP检查点IF=0"时代
+	//的保守限制, 并非自旋本身限制
+	if (KeGetCurrentIrql() > DISPATCH_LEVEL)
 	{
 		return;
 	}
@@ -718,7 +723,7 @@ static VOID FlThreadProcT1(PVOID Context)
 		//v3.28/v3.29: 写盘护卫——护卫期间零ZwWriteFile(HB/环事件照常入行环
 		//缓冲, 容量1024行>>护卫窗产量), 清护卫后下轮(≤1ms)一次补写。
 		//v3.29超时自解除。v3.29实测修正: 探针实际耗时~100ms(每次exit往返
-		//≈12µs×8192次, 非估算的8ms)——100ms阈值被正常运行触发(无害但留痕
+		//≈12us×8192次, 非估算的8ms)——100ms阈值被正常运行触发(无害但留痕
 		//误导判读)。v3.30阈值100ms→1000ms: 只在真挂死(probe最长~150ms+
 		//KEEP接管初期)时触发; 触发时T1强制解除+补写——guest挂死时若T1
 		//活着, 护卫期事件1秒后必然上盘(死亡现场!)

@@ -155,8 +155,57 @@
 //指令)→伪造VMfailInvalid(CF=1,ZF=0)。'D'环路检测同步豁免该族
 //(每次exit都有guest可见进展)
 //自测判据: 病毒模拟探针(hook.asm)——VMXOFF探针异常码应=0xC000001D
-//(v3.47c死法重放为毕业判据), VMXON探针CF应=1
-#define GEPT_BUILD_TAG "v3.53"
+//(v3.47c死法重放为毕业判据), VMXON探针异常码应=0xC0000005(v1.1:
+//case27改注入#GP, setc-CF判据退役)
+//v1.1: **API补全+故事闭环**(用户识别的功能缺陷清账):
+//  ①GeptCallOriginal第5+参数(栈参数)转发——GEPT_HOOK.StackArgs声明
+//    个数(≤32), 回调收StackArgs指针(触发帧上实参, 可读可写),
+//    CallOriginal经GeptCallOrigAsm(hook.asm, PROC FRAME全unwind)重建
+//    完整x64 ABI调用帧(32B影子+栈参复制+寄存器装载+16对齐)。
+//    六参自测GeptTestTarget6(hook.asm独立页): 读回/改写/转发/移除
+//    四证明(期望值=全参数加法靶0x25553/0x16665)
+//  ②MSR 0x3A读伪造+case27改#GP注入——v1.0.1残余泄漏封死: 真值5
+//    可读与vmxon失败伪造矛盾→读面伪造0x3A=1(锁+VMX禁用)+行为面
+//    vmxon→#GP(0)(=0x3A=1裸机真实行为, SDM VMXON指令页)——
+//    "BIOS锁VT"故事读写两面互相印证; junior侧__vmx_on加SEH
+//    (#GP→干净失败, 仲裁路径语义等价); 探针判据setc-CF→SEH
+//  ③GeptMsrHookEnumerate补齐(与GeptHookEnumerate对称)
+//v1.1b: **卸载0x50复发加固+取证**——v1.1实测全判据毕业(六参
+//25553/16665+flags7/0x3A→1/双探针异常码/枚举live2), 但卸载在cpu5
+//退出后微秒窗蓝屏0x50@nt+0x2044BE+p4=0xF(用户VA)=v3.43族"错CR3下
+//LPC写用户缓冲"签名逐位复发(v3.53同路径干净=概率臂)。v1.1改动
+//不在场证明: r31=4(全=自测+LSTAR读)/r32=1(LSTAR写)/r27=1(自测)——
+//0x3A伪造运行期零触发, NtClose hook已Remove, stub休眠。加固:
+//  ①exit handler CR3回读校验+'r'取证环事件(a=GUEST_CR3 b=回读
+//    c=HOST_CR3快照)——复发时DMP里bugcheck CR3(本轮=0x25F5B9000)
+//    与各核'r'三元组直接比对: 等于c=宿主DTB残留臂实锤; 等于a且
+//    仍崩=指针损坏臂(第三方——本轮实锤火绒系AV在池内存执行代码
+//    读+写LSTAR, [E]rsn31/32@FFFFD88A0D05E791/84E)
+//  ②主动全量TLB冲刷(CR4.PGE翻转)——invept+CR3重载+本冲刷=三重防线
+//  ③已知限制文档化: 回调内线程迁移→CallOriginal误判'w'→跳过原函数
+//    (本轮1次/约万次, 返回0=句柄泄漏级, 64s前于蓝屏=非同因)
+//v1.1c: **卸载暴露窗构造性消灭**——v1.1/v1.1b两轮0x50同构复发
+//(都精确落在"已退出guest"落盘后~"VMXE已清"落盘前的FlLog睡眠窗,
+//崩溃线程=同核被调度的其他进程线程读/写用户VA, 非卸载线程;
+//v1.1b冲刷无效证明: 冲刷管不到之后卸载线程自旋/睡眠期间自己
+//积累的翻译条目)。修复三件套:
+//  ①退出循环全程DISPATCH_LEVEL(FlLog睡眠=窗口成因, 直接消灭
+//    窗口内一切线程切换; 时钟DPC排队不执行直到LowerIrql)
+//  ②VmxStopCpu日志FlLog→FlLogSpin(IRQL门放宽到≤DISPATCH, 自旋
+//    等T1落盘合法且保观测; T1在其他核PASSIVE照常跑)
+//  ③VmxStopCpu末尾+循环末尾各一次PGE翻转终结冲刷——清掉卸载
+//    线程自旋期间积累的本核翻译条目, 归位迁移切换与后续NOFLUSH
+//    进程切换均基于空TLB重建=跨进程PCID污染臂封死
+//v1.1d: **全核IPI原子退出**——v1.1c实测0x7F(8=double fault):
+//DISPATCH_LEVEL下KeSetSystemAffinityThread不迁移运行中的线程
+//(迁移本靠FlLog睡眠让出=0x50窗口同源), 串行循环全在发起核执行
+//→只退1核→释放其余7核正在使用的VMCS/EPT=双重故障(本轮日志
+//"Unload: 完成"后崩+只有cpu7一条[r]环事件=铁证)。v1.1d=
+//KeIpiGenericCall(VmxStopAllIpi)一次广播全部核进IPI_LEVEL处理
+//程序, 每核原子完成"vmcall(1)退出+清VMXE+双PGE冲刷"——IPI内
+//零调度零线程=暴露窗构造性为0(不依赖冲刷时机运气, 不依赖线程
+//迁移); 观测性走环'v'事件(IPI内禁等待, T1也被IPI打断)
+#define GEPT_BUILD_TAG "v1.1d"
 
 //v3.33: 构建标签全局副本——黑匣子(common.h GEPT_BLACKBOX)在FlInit时
 //拷入, 蓝屏DMP解析时自证二进制版本
@@ -164,11 +213,14 @@ CHAR g_geptBuildTag[24] = GEPT_BUILD_TAG;
 
 ULONG64 g_jmp_testtarget = 0;
 //v3.53: VMXON探针哑操作数(hook.asm GeptVirusVmxOn引用)——PA=0:
-//宿主伪造VMfail不读操作数(SDM: non-root下VMexit替代指令执行);
-//裸机上PA=0非4KB对齐同样VMfailInvalid, 探针在两种环境都无副作用
+//宿主#GP注入不读操作数(SDM: non-root下VMexit替代指令执行);
+//裸机上PA=0非4KB对齐→VMfailInvalid, 探针在两种环境都无副作用
 ULONG64 g_geptDummyVmxonPa = 0;
 VOID GeptTestTarget();
 VOID AsmHookTestTarget();
+//v1.1: 六参自测目标(hook.asm GEPTTGT6独立页, 2栈参加法靶)
+ULONG64 GeptTestTarget6(ULONG64 A1, ULONG64 A2, ULONG64 A3, ULONG64 A4,
+	ULONG64 A5, ULONG64 A6);
 //v3.53: 病毒模拟探针(hook.asm, 仅DriverEntry自测调用)
 VOID GeptVirusVmxDetectOff();
 ULONG64 GeptVirusVmxOn();
@@ -191,9 +243,10 @@ LONG g_geptNtCloseCount = 0;
 //T1异步格式化成"[N] s=.. cpu=.. a=计数"行落盘temp日志)
 //+GeptCallOriginal(vmfunc与普通call在任意IRQL安全)
 static ULONG64 DemoNtCloseCallback(PVOID Context, ULONG64 Arg1, ULONG64 Arg2,
-	ULONG64 Arg3, ULONG64 Arg4)
+	ULONG64 Arg3, ULONG64 Arg4, ULONG64* StackArgs)
 {
 	UNREFERENCED_PARAMETER(Context);
+	UNREFERENCED_PARAMETER(StackArgs);   //NtClose单参数, 安装时StackArgs=0→恒NULL
 	LONG n = InterlockedIncrement(&g_geptNtCloseCount);
 	if (n == 1 || (n & 0xFFFF) == 0)
 	{
@@ -205,6 +258,48 @@ static ULONG64 DemoNtCloseCallback(PVOID Context, ULONG64 Arg1, ULONG64 Arg2,
 	//按**当前核**能力分派(VMFUNC核直call原入口/fallback核重定位跳板),
 	//线程迁移到异类核亦正确
 	return GeptCallOriginal(Arg1, Arg2, Arg3, Arg4);
+}
+
+//v1.1: 六参自测读回证明位(bit0=StackArgs非空 bit1=a5读回原样
+//bit2=a6读回原样; 全对=7)——回调内只Interlocked(纪律同上)
+static volatile LONG g_geptStackArgsFlags = 0;
+
+//v1.1: 六参自测回调(hook GeptTestTarget6, StackArgs=2)——
+//①读回证明: StackArgs[0]/[1]应=原样a5/a6 ②写证明: 改写
+//StackArgs[1]=0xBBBB(栈参数可写, GeptCallOriginal按改写值转发)
+//③寄存器参数改写证明: Arg1→0xAAAA后经CallOriginal转发
+//三证明+加法靶=第5+参数转发全链路判据
+static ULONG64 DemoStackArgsCallback(PVOID Context, ULONG64 Arg1, ULONG64 Arg2,
+	ULONG64 Arg3, ULONG64 Arg4, ULONG64* StackArgs)
+{
+	UNREFERENCED_PARAMETER(Context);
+	UNREFERENCED_PARAMETER(Arg1);    //被改写为0xAAAA, 原值不用
+	LONG flags = 0;
+	if (StackArgs != NULL)
+	{
+		flags |= 1;
+		if (StackArgs[0] == 0x5555)
+		{
+			flags |= 2;
+		}
+		if (StackArgs[1] == 0x6666)
+		{
+			flags |= 4;
+		}
+		StackArgs[1] = 0xBBBB;       //写证明: 栈参数就地改写
+	}
+	InterlockedExchange(&g_geptStackArgsFlags, flags);
+	return GeptCallOriginal(0xAAAAull, Arg2, Arg3, Arg4);
+}
+
+//v1.1: FEATURE_CONTROL(0x3A)读伪造——恒返回1(锁+VMX全禁用=
+//"BIOS锁VT"标准形态)。纪律: 绝不GeptMsrReadReal(要的就是假值);
+//VM-exit上下文零副作用
+static ULONG64 DemoMsrFeaCtlRead(PVOID Context, ULONG32 Msr)
+{
+	UNREFERENCED_PARAMETER(Context);
+	UNREFERENCED_PARAMETER(Msr);
+	return 1;
 }
 
 //v3.52 Phase5: MSR canary计数器(卸载时落盘总结)
@@ -277,7 +372,7 @@ void DriverUload(PDRIVER_OBJECT pDriverObjct)
 		Log("unload refused: parked mask=%X, reboot to clean", g_geptParkedMask);
 		return;
 	}
-	FlLog("Unload: 开始关闭VT(串行逐核)");
+	FlLog("Unload: 开始关闭VT(全核IPI原子退出)");
 	//v3.50 Phase4: 先移除全部API hook(CodePage字节还原+全核invept)——
 	//必须在vmx_off**之前**: ①移除后新触发停止 ②在途回调(stub的
 	//vmfunc(0,1)/GeptCallOriginal)此刻VT仍开=安全执行完毕。
@@ -291,19 +386,21 @@ void DriverUload(PDRIVER_OBJECT pDriverObjct)
 		KeDelayExecutionThread(KernelMode, FALSE, &tick);
 	}
 	ULONG cpuCount = KeQueryActiveProcessorCount(NULL);
-	KAFFINITY allCpus = KeQueryActiveProcessors();
-	//串行逐核退出VT(取代DPC): 成功进入guest的核vmcall退出, 仅vmxon的核直接vmx_off
-	//每步落盘: 卸载卡死时Temp最后一行=卡在哪一核哪一步
-	for (ULONG i = 0; i < cpuCount; i++)
-	{
-		if (!(g_vcpu[i].bInGuest || g_vcpu[i].bVmxOn))
-		{
-			continue;
-		}
-		KeSetSystemAffinityThread((KAFFINITY)1 << i);
-		VmxStopCpu();
-		KeSetSystemAffinityThread(allCpus);
-	}
+	//v1.1d: **全核IPI原子退出**——v1.1c实测0x7F(8=double fault)裁决:
+	//DISPATCH_LEVEL下KeSetSystemAffinityThread不迁移运行中的线程
+	//(迁移靠FlLog睡眠让出=0x50窗口的同一机制), 串行循环8次全在发起核
+	//执行→只退1核→释放其余7核正在使用的VMCS/EPT=双重故障(日志
+	//"Unload: 完成"后崩=释放后残余核翻译已损坏; 本轮只有cpu7一条
+	//[r]环事件=铁证)。v1.1d=KeIpiGenericCall一次广播全部核(含发起核)
+	//进IPI_LEVEL处理程序: 每核**原子**完成vmcall(1)退出+清VMXE+双PGE
+	//冲刷——IPI内零调度零线程, IPI返回后各核VT已关死+TLB已冲空,
+	//被打断线程与后续一切切换基于空TLB从零重建=v1.1/v1.1b两轮0x50
+	//的暴露窗(vmx_off后~调度切入其他进程线程)构造性为0。观测性:
+	//IPI内禁等待(T1也被IPI打断), 每核FlRingPush('v')留痕(T1稍后落盘),
+	//IPI返回后PASSIVE补日志
+	KeIpiGenericCall(VmxStopAllIpi, 0);
+	FlLog("Unload: 全核IPI退出完成(每核原子vmcall(1)+清VMXE+双PGE冲刷, "
+		"环'v'×%u核留痕, 零调度零窗口)", cpuCount);
 	FlLog("Unload: VT已关闭, 释放资源");
 	//PASSIVE_LEVEL释放全部资源(含EPT_DATA与动态页表)
 	for (ULONG i = 0; i < cpuCount; i++)
@@ -678,11 +775,27 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObjct, PUNICODE_STRING pRegPath)
 			hideOk);
 	}
 
-	//==== v3.53 v1.0.1: 病毒模拟自测(VMX指令族exit处置的终审) ====
-	//在当前核的guest内真实执行VMXOFF/VMXON——模拟内核态病毒的反虚拟化
-	//探针(安全软件用本框架调试病毒的场景里, 病毒真会做的事)。仅依赖
-	//VT不依赖hook, 任何stage都跑; VT已确认≥1核in-guest(否则上方已退出)
+	//==== v1.1: 病毒模拟自测(VMX指令族exit处置的终审+故事闭环) ====
+	//在guest内真实执行VMXOFF/VMXON——模拟内核态病毒的反虚拟化探针
+	//(安全软件用本框架调试病毒的场景里, 病毒真会做的事)。仅依赖VT
+	//不依赖hook, 任何stage都跑; VT已确认≥1核in-guest(否则上方已退出)。
+	//v1.1: 探针**钉在首个in-guest核**执行——VMXON探针判据改SEH后,
+	//裸机核上vmxon(哑操作数)=VMfailInvalid无异常=假FAIL; 钉核=判据
+	//确定性(全核in-guest的正常机器上钉核与否无差别)
 	{
+		ULONG probeCpu = cpuCount;
+		for (ULONG i = 0; i < cpuCount; i++)
+		{
+			if (g_vcpu[i].bInGuest)
+			{
+				probeCpu = i;
+				break;
+			}
+		}
+		if (probeCpu < cpuCount)
+		{
+			KeSetSystemAffinityThread((KAFFINITY)1 << probeCpu);
+		}
 		//①VMXOFF探针: 期望宿主case26注入#UD→内核SEH捕获→异常码
 		//=0xC000001D(STATUS_ILLEGAL_INSTRUCTION)=裸机行为逐位一致
 		//(裸机上该指令同样#UD——病毒探针零泄漏)。这是**v3.47c确切
@@ -697,14 +810,29 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObjct, PUNICODE_STRING pRegPath)
 		__except (udCode = GetExceptionCode(), EXCEPTION_EXECUTE_HANDLER)
 		{
 		}
-		//②VMXON探针: 期望宿主case27伪造VMfailInvalid(CF=1)→探针
-		//setc返回1=VT-x原生互斥仲裁在场的活体证据(同框架junior实例
-		//的__vmx_on走的就是这条路)
-		ULONG64 vmonCf = GeptVirusVmxOn();
-		FlLog("[v1.0.1] 病毒模拟自测: VMXOFF探针异常码=0x%X(应C000001D="
-			"#UD注入=裸机一致) VMXON探针CF=%llu(应1=伪造VMfailInvalid=互斥"
-			"仲裁在场)——两项全对=VMX指令族处置毕业(v3.47c死法已封死)",
-			udCode, (unsigned long long)vmonCf);
+		//②VMXON探针(v1.1判据更新: setc-CF→SEH): 期望宿主case27注入
+		//#GP(0)→内核SEH捕获→异常码=0xC0000005(#GP的内核异常码——
+		//内核把内核态#GP构造成AV记录, v3.43 movaps#GP案同款转换)
+		//——"BIOS锁VT"故事的行为面: 0x3A=1(锁+VMX禁用)的裸机上vmxon
+		//=#GP(0), 与读面伪造(0x3A读回1)互相印证=裸机逐位一致。
+		//无异常(异常码0)=宿主未注入(判FAIL——旧VMfail逻辑残留?)
+		NTSTATUS gpCode = STATUS_SUCCESS;
+		__try
+		{
+			GeptVirusVmxOn();
+			//到达=无异常=宿主未注入#GP(判FAIL, gpCode仍=0)
+		}
+		__except (gpCode = GetExceptionCode(), EXCEPTION_EXECUTE_HANDLER)
+		{
+		}
+		FlLog("[v1.1] 病毒模拟自测(cpu%u): VMXOFF探针异常码=0x%X(应C000001D="
+			"#UD注入=裸机一致) VMXON探针异常码=0x%X(应C0000005=#GP注入="
+			"BIOS锁VT故事行为面)——两项全对=VMX指令族处置+故事闭环毕业"
+			"(v3.47c死法已封死)", probeCpu, udCode, gpCode);
+		if (probeCpu < cpuCount)
+		{
+			KeSetSystemAffinityThread(allCpus);
+		}
 	}
 
 #if GEPT_HOOK_STAGE == 0
@@ -778,6 +906,49 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObjct, PUNICODE_STRING pRegPath)
 		(long long)(r48After - r48Before));
 	FlLog("[STAGE1] 自测调用返回(未死机未蓝屏), EPT hook全链路打通");
 	Log("stage1: self-test hook done");
+
+	//==== v1.1: 六参栈参数转发自测(GeptTestTarget6=hook.asm独立页) ====
+	//判据设计(四证明): ①读回证明——回调StackArgs[0]/[1]应=原样a5/a6
+	//(flags=7) ②栈参数写证明——回调改StackArgs[1]=0xBBBB ③寄存器参数
+	//写证明——Arg1改0xAAAA ④转发证明——hook中返回应=0xAAAA+0x2222
+	//+0x3333+0x4444+0x5555+0xBBBB=**0x25553**(六参全参加法靶: 任何
+	//一参的转发/改写错都改变结果); Remove后直调应=0x16665(六原始参
+	//之和=hook死透)。目标指令全为寄存器/rsp相对寻址→重定位跳板严格
+	//配套; 独立页=与STAGE1仍常驻的violation hook零干扰
+	{
+		GEPT_HOOK gept6 = { 0 };
+		gept6.Target = (PVOID)GeptTestTarget6;
+		gept6.Callback = DemoStackArgsCallback;
+		gept6.Context = NULL;
+		gept6.StackArgs = 2;    //a5/a6两个栈参数
+		NTSTATUS st6 = GeptHookInstall(&gept6);
+		if (NT_SUCCESS(st6))
+		{
+			g_geptStackArgsFlags = 0;
+			//六参直调: 编译器按x64 ABI放a5/a6到栈(影子空间之上)→
+			//hooked视图跳转→StubEntry(RSP0入帧)→回调(读回/改写)→
+			//GeptCallOrigAsm重建调用帧转发→加法靶返回
+			ULONG64 r6 = GeptTestTarget6(0x1111, 0x2222, 0x3333, 0x4444,
+				0x5555, 0x6666);
+			FlLog("[v1.1] 六参自测(hook中): 返回=%llX(应25553) 读回标志=%X"
+				"(应7: bit0=StackArgs非空 bit1=a5原样 bit2=a6原样)——"
+				"全对=第5+参数转发+可写+寄存器改写全链路闭环",
+				(unsigned long long)r6, g_geptStackArgsFlags);
+			//Remove后直调: CodePage字节还原+invept=hook死透, 原函数
+			//六参直算(原始和0x16665)
+			GeptHookRemove((PVOID)GeptTestTarget6);
+			ULONG64 r6b = GeptTestTarget6(0x1111, 0x2222, 0x3333, 0x4444,
+				0x5555, 0x6666);
+			FlLog("[v1.1] 六参自测(已移除): 返回=%llX(应16665=六原始参之和"
+				"=Remove生效, 栈参路径无残留)",
+				(unsigned long long)r6b);
+		}
+		else
+		{
+			FlLog("[v1.1] 六参自测Install失败(0x%X)——重定位拒绝或资源不足"
+				"(系统不受影响)", st6);
+		}
+	}
 #if GEPT_HOOK_STAGE >= 2
 	//v3.51 Phase6: STAGE 2——hook ntoskrnl!NtClose经简易API(detour式)。
 	//v3.45硬编码prologue校验/v3.46 hookLen==22强校验/AsmHookNtClose重放
@@ -925,6 +1096,46 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObjct, PUNICODE_STRING pRegPath)
 		{
 			FlLog("[STAGE2-MSR] LSTAR canary安装失败(0x%X)——MSR监控未生效(系统不受影响)",
 				lstarSt);
+		}
+		//--- 3) v1.1: MSR 0x3A(FEATURE_CONTROL)读伪造——"BIOS锁VT"故事闭环 ---
+		//v1.0.1残余泄漏: 本机真值=5(锁+VMX启用)对guest可读, 与宿主对
+		//guest vmxon的失败处置矛盾(0x3A=5的裸机vmxon应成功)→病毒
+		//"读0x3A+试vmxon"双探针可判hypervisor在场。v1.1两针合壁:
+		//①读面=伪造0x3A读返回**1**(锁+VMX全禁用=BIOS锁VT标准形态)
+		//②行为面=case27注入#GP(0)(0x3A=1裸机vmxon的真实行为, SDM
+		//VMXON指令页)——读/行为互相印证=裸机逐位一致。写面无需hook:
+		//真MSR已锁(bit0=1), 裸机写0x3A本就#GP(guest内自然#GP=裸机
+		//一致)。读伪造持续到卸载(与LSTAR canary同策略; 安装后系统内
+		//任何0x3A读都看到1——这正是隐蔽故事的语义: 运行期读它的只有
+		//探测者, CommCheckBios只在启动早期读真值不受影响)
+		{
+			ULONG64 fea0 = __readmsr(0x3A);    //安装前真值(本机应=5)
+			GEPT_MSR_HOOK msrFea = { 0 };
+			msrFea.Msr = 0x3A;
+			msrFea.OnRead = DemoMsrFeaCtlRead;
+			NTSTATUS feaSt = GeptMsrHookInstall(&msrFea);
+			if (NT_SUCCESS(feaSt))
+			{
+				ULONG64 fea1 = __readmsr(0x3A);    //经回调=伪造值
+				FlLog("[v1.1] 0x3A读伪造: 真值=%llX→读回=%llX(应1=锁+VMX禁用)"
+					"——与VMXON探针#GP互相印证=BIOS锁VT故事闭环"
+					"(双探针病毒零泄漏)",
+					(unsigned long long)fea0, (unsigned long long)fea1);
+			}
+			else
+			{
+				FlLog("[v1.1] 0x3A读伪造安装失败(0x%X)——读面泄漏未闭环"
+					"(系统不受影响)", feaSt);
+			}
+		}
+		//--- 4) v1.1: GeptMsrHookEnumerate补齐验证 ---
+		//(live应为2: LSTAR canary+0x3A读伪造; 保留MSR已移除——
+		//上方安装失败则相应少)
+		{
+			ULONG msrLive = 0;
+			GeptMsrHookEnumerate(NULL, &msrLive);
+			FlLog("[v1.1] MSR枚举: live=%u(应2=LSTAR canary+0x3A读伪造; "
+				"上方有安装失败则相应少)", msrLive);
 		}
 	}
 #endif

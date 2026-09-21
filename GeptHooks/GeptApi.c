@@ -51,9 +51,28 @@ static KIRQL s_apiOldIrql = 0;
 
 //每核当前hook(GeptCallbackDispatch设置/嵌套save-restore, GeptCallOriginal读)
 static PGEPT_API_ENTRY volatile s_currentHook[128] = { 0 };
+//v1.1: 每核当前触发帧(与s_currentHook同点位设置/嵌套save-restore——
+//GeptCallOriginal据此取第5+栈参数源; 回调内嵌套触发另一hook时正确分层)
+static PGUEST_REGS volatile s_currentRegs[128] = { 0 };
 
 //hook.asm的detour stub入口(填进每个trampoline槽)
 extern VOID GeptStubEntry(VOID);
+
+//v1.1: hook.asm的栈参数转发桩(GeptCallOrigAsm的参数块——偏移与
+//hook.asm桩注释硬契约, 改一处必须同步另一处):
+//  +00h Target(VMFUNC核=原入口/fallback核=重定位跳板)
+//  +08h StackArgs源  +10h Count  +18h..30h Arg1-4
+typedef struct _GEPT_ORIG_CALL
+{
+	ULONG64 Target;
+	ULONG64 StackArgs;
+	ULONG64 Count;
+	ULONG64 Arg1;
+	ULONG64 Arg2;
+	ULONG64 Arg3;
+	ULONG64 Arg4;
+} GEPT_ORIG_CALL;
+extern ULONG64 GeptCallOrigAsm(GEPT_ORIG_CALL* Call);
 
 static VOID GeptApiLock(VOID)
 {
@@ -86,17 +105,26 @@ VOID GeptViewSwitch(ULONG eptpIndex)
 	CmVmfuncSwitch(eptpIndex);
 }
 
-//asm stub调用(rcx=API条目, rdx=GUEST_REGS帧): 设置每核当前hook(嵌套
-//save/restore——回调内经线程迁移再触发另一hook时正确嵌套)后进用户回调
+//asm stub调用(rcx=API条目, rdx=GUEST_REGS帧): 设置每核当前hook+触发帧
+//(嵌套save-restore——回调内经线程迁移再触发另一hook时正确嵌套)后进
+//用户回调。v1.1: 声明了StackArgs>0的hook, 回调收第5+参数数组指针
+//(=触发帧上实参, regs->rsp+28h——RSP0=guest入口rsp, 栈参在影子空间
+//之上, 见hook.asm GeptStubEntry帧布局注释; 可读可写, 写后
+//GeptCallOriginal按改写值转发)
 ULONG64 GeptCallbackDispatch(PVOID entryPtr, PGUEST_REGS regs)
 {
 	PGEPT_API_ENTRY e = (PGEPT_API_ENTRY)entryPtr;
 	ULONG cpu = KeGetCurrentProcessorNumber();
-	PGEPT_API_ENTRY prev = s_currentHook[cpu];
+	PGEPT_API_ENTRY prevHook = s_currentHook[cpu];
+	PGUEST_REGS prevRegs = s_currentRegs[cpu];
 	s_currentHook[cpu] = e;
+	s_currentRegs[cpu] = regs;
+	ULONG64* stackArgs = (e->pub.StackArgs != 0)
+		? (ULONG64*)(regs->rsp + 0x28) : NULL;
 	ULONG64 ret = e->pub.Callback(e->pub.Context,
-		regs->rcx, regs->rdx, regs->r8, regs->r9);
-	s_currentHook[cpu] = prev;
+		regs->rcx, regs->rdx, regs->r8, regs->r9, stackArgs);
+	s_currentHook[cpu] = prevHook;
+	s_currentRegs[cpu] = prevRegs;
 	return ret;
 }
 
@@ -121,6 +149,30 @@ ULONG64 GeptCallOriginal(ULONG64 Arg1, ULONG64 Arg2, ULONG64 Arg3, ULONG64 Arg4)
 	//  fallback核: 原函数首字节在CodePage(执行视图)里=14B跳转,
 	//    直接call Target=撞跳转无限递归!→经**重定位跳板**(prologue
 	//    副本+尾jmp+N进入函数体, 跳板页未被hook)——经典Detours语义
+	//v1.1: 声明了StackArgs>0的hook走GeptCallOrigAsm桩——按x64 ABI重建
+	//完整调用帧(32B影子+N栈参复制+寄存器装载), 栈参源=触发帧上实参
+	//(回调可能已改写)。两条路径(原入口/重定位跳板)对栈参转发语义等价:
+	//跳板重放的rsp相对指令读**跳板自身等价调用帧**的同偏移
+	if (e->pub.StackArgs != 0 && s_currentRegs[cpu] != NULL)
+	{
+		GEPT_ORIG_CALL oc;
+		oc.Target = g_vcpu[cpu].bVmfuncOn
+			? (ULONG64)e->pub.Target : (ULONG64)e->ReplayVA;
+		oc.StackArgs = s_currentRegs[cpu]->rsp + 0x28;   //栈参源(影子之上)
+		oc.Count = e->pub.StackArgs;
+		oc.Arg1 = Arg1;
+		oc.Arg2 = Arg2;
+		oc.Arg3 = Arg3;
+		oc.Arg4 = Arg4;
+		if (g_vcpu[cpu].bVmfuncOn)
+		{
+			GeptViewSwitch(0);
+			ULONG64 ret = GeptCallOrigAsm(&oc);
+			GeptViewSwitch(1);
+			return ret;
+		}
+		return GeptCallOrigAsm(&oc);   //fallback核: 跳板未被hook, 无需切视图
+	}
 	if (g_vcpu[cpu].bVmfuncOn)
 	{
 		GeptViewSwitch(0);
@@ -181,6 +233,14 @@ NTSTATUS GeptHookInstall(const GEPT_HOOK* Hook)
 {
 	if (Hook == NULL || Hook->Target == NULL || Hook->Callback == NULL)
 	{
+		return STATUS_INVALID_PARAMETER;
+	}
+	//v1.1: 栈参数个数上限(=hook.asm GeptCallOrigAsm固定帧32槽, 超限
+	//拒绝——绝不让桩复制越界)
+	if (Hook->StackArgs > GEPT_MAX_STACK_ARGS)
+	{
+		FlLog("[API] Install拒绝: StackArgs=%u超上限%u(目标%p)",
+			Hook->StackArgs, (ULONG)GEPT_MAX_STACK_ARGS, Hook->Target);
 		return STATUS_INVALID_PARAMETER;
 	}
 	//v3.51 Phase6: gate从"全部核VMFUNC"放宽为"至少一核in-guest"——
@@ -278,9 +338,9 @@ NTSTATUS GeptHookInstall(const GEPT_HOOK* Hook)
 	GeptApiLock();
 	InsertTailList(&s_apiList, &entry->link);
 	GeptApiUnlock();
-	FlLog("[API] Install OK: 目标=%p 回调=%p 上下文=%p 跳板槽=%p replay=%p(%uB, 回扫自检过)(detour式, 零重放机器)",
+	FlLog("[API] Install OK: 目标=%p 回调=%p 上下文=%p 跳板槽=%p replay=%p(%uB, 回扫自检过) 栈参=%u(detour式, 零重放机器)",
 		Hook->Target, Hook->Callback, Hook->Context, entry->Trampoline,
-		entry->ReplayVA, entry->ReplayLen);
+		entry->ReplayVA, entry->ReplayLen, Hook->StackArgs);
 	return STATUS_SUCCESS;
 }
 

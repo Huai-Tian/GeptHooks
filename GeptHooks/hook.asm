@@ -36,103 +36,197 @@ HVM_RESTORE_ALL_NOSEGREGS MACRO
 ENDM
 EXTERN	 HookTestTarget:PROC
 EXTERN g_jmp_testtarget:DQ
-EXTERN g_geptDummyVmxonPa:DQ     ;v3.53: VMXON̽���Ʋ�����(PA=0, main.c����)
-EXTERN	 GeptCallbackDispatch:PROC   ;v3.50: API detour�ַ���(GeptApi.c)
-EXTERN	 GeptViewSwitch:PROC         ;v3.50: ��VT���ؼ�����ͼ�л�(GeptApi.c)
+EXTERN g_geptDummyVmxonPa:DQ     ;v3.53: VMXON探针哑操作数(PA=0, main.c定义)
+EXTERN	 GeptCallbackDispatch:PROC   ;v3.50: API detour分发器(GeptApi.c)
+EXTERN	 GeptViewSwitch:PROC         ;v3.50: 带VT开关检查的视图切换(GeptApi.c)
 .CODE
-;==== v3.51 Phase4/6: API detour stub(ͳһ��, VMFUNC��+fallback�˹���) ====
-;������: hooked��ͼhookҳ(=CodePage)Ŀ��ƫ�ƴ���14B������ת
-;  �� ��hook����trampoline��(GeptApi.c����: mov r10,entry; jmp GeptStubEntry)
-;  �� �˴���r10=API��Ŀ(trampolineд��); ջ��=ԭ�����߷��ص�ַ
-;  (PHInitJmpCode��push+ret��ֵ0=��jmp����); ԭ��������rcx/rdx/r8/r9ԭ��δ��
-;����: GeptViewSwitch(0)��clean(VMFUNC��; fallback���Զ�no-op)
-;  �� SAVE_ALL �� �ַ���(����ÿ�˵�ǰhook+���û��ص�, ����ֵ=�º�������ֵ)
-;  �� GeptViewSwitch(1)��λhooked �� �ص�����ֵд֡rax��
-;  �� RESTORE_ALL �� ret�ص�����(rax=�ص�����ֵ=detour��������Ȩ)
-;v3.51ͳһ��(Phase 6): ԭ����ڴ���vmfunc(��VMFUNC�˺Ϸ�, fallback��
-;=#UD����)�ĵ�GeptViewSwitch����C�ఴbVmfuncOn�����ж�, fallback��
-;�Զ�no-op=ͬһstub���������(��ϻ�����ȷ)
-;v3.51˳���޸�����latent bug(��vmfunc�濿����ͨ��v3.50bʵ��):
-;  ��retval����r10/r11��call GeptViewSwitch����volatile�Ĵ�����C����
-;    ����֤����(��ǰ������ǡ��ûռ�ô�������); �ָ�Ϊ**������֡**
-;    (mov [rsp+28h],rax���ٿ�call����)
-;  ��API��Ŀ���ٶ�r10��call����ͬ�����ɿ�; �ִ�֡��r10����ȡ
-;    ([rsp+78h]: SAVE_ALL��r10��=��д���entryֵ, ƫ��28h+50h)
-;֡����(push��=HVM_SAVE_ALL_NOSEGREGS, rax���): rax@0 rcx@8 rdx@10h
+;==== v3.51 Phase4/6: API detour stub(统一版, VMFUNC核+fallback核共用) ====
+;进入链: hooked视图hook页(=CodePage)目标偏移处的14B绝对跳转
+;  → 本hook独享trampoline槽(GeptApi.c生成: mov r10,entry; jmp GeptStubEntry)
+;  → 此处。r10=API条目(trampoline写入); 栈顶=原调用者返回地址
+;  (PHInitJmpCode的push+ret净值0=纯jmp语义); 原函数参数rcx/rdx/r8/r9原封未动
+;流程: GeptViewSwitch(0)切clean(VMFUNC核; fallback核自动no-op)
+;  → SAVE_ALL → 分发器(设置每核当前hook+调用户回调, 返回值=新函数返回值)
+;  → GeptViewSwitch(1)归位hooked → 回调返回值写帧rax槽
+;  → RESTORE_ALL → ret回调用者(rax=回调返回值=detour完整控制权)
+;v3.51统一化(Phase 6): 原版入口处裸vmfunc(仅VMFUNC核合法, fallback核
+;=#UD蓝屏)改调GeptViewSwitch——C侧按bVmfuncOn按核判定, fallback核
+;自动no-op=同一stub服务两类核(混合机器正确)
+;v3.51顺带修复两处latent bug(裸vmfunc版靠运气通过v3.50b实测):
+;  ①retval曾存r10/r11跨call GeptViewSwitch——volatile寄存器跨C调用
+;    不保证保存(当前编译器恰好没占用纯属运气); 现改为**立即落帧**
+;    (mov [rsp+28h],rax后不再跨call持有)
+;  ②API条目曾假定r10跨call存活——同理不可靠; 现从帧的r10槽重取
+;    ([rsp+78h]: SAVE_ALL后r10槽=槽写入的entry值, 偏移28h+50h)
+;帧布局(push序=HVM_SAVE_ALL_NOSEGREGS, rax最低): rax@0 rcx@8 rdx@10h
 ;rbx@18h rbp@20h rsi@30h rdi@38h r8@40h r9@48h r10@50h r11@58h...
-;sub 28h��֡��=rsp+28h, ��r10��=rsp+28h+50h=rsp+78h
+;sub 28h后帧基=rsp+28h, 故r10槽=rsp+28h+50h=rsp+78h
+;v1.1栈参数布局(触发时guest栈=帧基+80h起, x64 ABI): [+80h]=调用者
+;返回地址 [+88h..+A7h]=影子空间(调用者分配32B) [+A8h]=第5参
+;[+B0h]=第6参...——RSP0(=帧基+80h)视角: [RSP0]=返回地址,
+;[RSP0+28h]=第5参首址(影子空间之上), C侧统一用regs->rsp+28h
 GeptStubEntry PROC
-    HVM_SAVE_ALL_NOSEGREGS    ;�ȱ���ȫ��(����д���r10=API��Ŀ)
-    sub rsp, 28h              ;���RSP%16==8(jmp�������������)+16push
-                              ;(128B)������ż���˴�%16==8; sub 28h(40B)
-                              ;��call��%16==0, x64 ABI��ȷ(v3.43�þ�ͬ��)
-    xor ecx, ecx              ;arg1=0(clean��ͼ)
-    call GeptViewSwitch       ;VMFUNC��: vmfunc��clean; fallback��: no-op
-                              ;(rcx/rdx/r8-r11���ܱ�clobber�����޷�)
-    mov rcx, [rsp+78h]        ;arg1=API��Ŀ(��֡r10����ȡ, ������volatile���)
-    lea rdx, [rsp+28h]        ;arg2=GUEST_REGS֡��(�ص�ȡԭʼrcx/rdx/r8/r9)
-    call GeptCallbackDispatch ;rax=�û��ص�����ֵ=hook�������·���ֵ
-    mov [rsp+28h], rax        ;**retval������֡��rax��**(�����¸�call����
-                              ;volatile; RESTORE��pop rax=�·���ֵ)
-    mov ecx, 1                ;arg1=1(hooked��ͼ)
-    call GeptViewSwitch       ;VMFUNC��: vmfunc��λ; fallback��: no-op
+    HVM_SAVE_ALL_NOSEGREGS    ;先保存全部(含槽写入的r10=API条目)
+    lea  rax, [rsp+80h]       ;v1.1: RSP0=guest入口rsp(SAVE_ALL帧高
+                              ;0x80之上; rax此刻已保存在帧内, clobber安全)
+    mov  [rsp+20h], rax       ;帧rsp槽=GUEST_REGS.rsp=RSP0(旧值无用——
+                              ;双push rbp的假槽, RESTORE时被首个pop rbp
+                              ;读后即被真rbp覆盖; C侧栈参数=regs->rsp+28h)
+    sub rsp, 28h              ;入口RSP%16==8(jmp到函数入口语义)+16push
+                              ;(128B)不改奇偶→此处%16==8; sub 28h(40B)
+                              ;→call点%16==0, x64 ABI正确(v3.43裁决同款)
+    xor ecx, ecx              ;arg1=0(clean视图)
+    call GeptViewSwitch       ;VMFUNC核: vmfunc切clean; fallback核: no-op
+                              ;(rcx/rdx/r8-r11可能被clobber——无妨)
+    mov rcx, [rsp+78h]        ;arg1=API条目(从帧r10槽重取, 不依赖volatile存活)
+    lea rdx, [rsp+28h]        ;arg2=GUEST_REGS帧基(回调取原始rcx/rdx/r8/r9)
+    call GeptCallbackDispatch ;rax=用户回调返回值=hook函数的新返回值
+    mov [rsp+28h], rax        ;**retval立即落帧的rax槽**(不跨下个call持有
+                              ;volatile; RESTORE的pop rax=新返回值)
+    mov ecx, 1                ;arg1=1(hooked视图)
+    call GeptViewSwitch       ;VMFUNC核: vmfunc归位; fallback核: no-op
     add rsp, 28h
-    HVM_RESTORE_ALL_NOSEGREGS ;rax=�ص�����ֵ, ����ȫ��=ԭʼֵ(detour����)
-    ret                       ;��ԭ������(ջ��=�䷵�ص�ַ, jmp����δѹ��֡)
+    HVM_RESTORE_ALL_NOSEGREGS ;rax=回调返回值, 其余全部=原始值(detour语义)
+    ret                       ;回原调用者(栈顶=其返回地址, jmp进入未压新帧)
 GeptStubEntry ENDP
 
-;==== �Բ�Ŀ��: ָ�����ȫ�Կ�, �������κ�Windows�汾 ====
-;ǰ5��mov��15�ֽ�(>=14�ֽ�����), �����Ѱַָ��, �ɱ���ȫ���廯
-;v3.42: **ҳ����**����v3.41ʵ�������Ľṹ��ȱ��: Ŀ��ԭ����
-;common-asm.asm(CmGuestRsp/CmGuestProbe/**CmVmCall**/CmTripleFaultPark)��
-;AsmHookTestTargetͬҳ(hook.asm��common-asm���������ŵ�ͬһ4Kҳ, ʵ��
-;Ŀ��=...10D6/����=...10E6/̽��=...103D/CmVmCall=...1075)����EptSetHook���
-;��ҳexecute��, DPC�Լ���vmcall(2)����·��(ret)���ڱ�hookҳ��=����
-;violation, ȫ��VT���������˫��ͼ����(exec��ͼwrite=0=��������), ��
-;�Բ����ʵ����(STAGE 2 hook����ntҳ, �������ǵĴ���)�������: ��
-;hookҳֻ��16�ֽ�GeptTestTarget, ����ָ����
-;v3.42bʵ������: ����`align 1000h`��ml64�ܾ�("invalid combination with
-;segment alignment:4096"����.code��Ĭ��ALIGN(16), ����align���ó�������)��
-;����SEGMENTαָ���Զ���ALIGN(4096)��: ��������GEPTTGT����PE section,
-;�ڴ沼�ְ�SectionAlignment(0x1000)��ҳ����=Ŀ�꺯����ռһҳ, ����
-;.code(����/AsmHookNtClose)��common-asm.asm������ͬsection��Ȼ��ͬҳ
+;==== v1.1: CallOriginal第5+栈参数转发桩(GeptApi.c GeptCallOriginal调用) ====
+;rcx=GEPT_ORIG_CALL*(C侧GeptCallOriginal栈上参数块, 偏移硬契约):
+;  +00h Target(VMFUNC核=原入口/fallback核=重定位跳板)
+;  +08h StackArgs源(=触发帧上第5+实参, 回调可已改写)  +10h Count(N)
+;  +18h Arg1  +20h Arg2  +28h Arg3  +30h Arg4
+;职责: 按x64 ABI重建对Target的完整调用帧——32B影子空间+N个栈参数
+;(从源逐个复制到[rsp+20h..])+rcx/rdx/r8/r9装载+call点16对齐。
+;栈帧精算(入口rsp%16==8): push rbp→0(rbp=帧锚, rbp%16==0); push
+;rbx/rsi/rdi/rcx(4×8=20h)→rsp%16==0; sub 120h(288B, 16倍数)→call点
+;%16==0 ✓。固定布局的**本质优点**: arg5恒在[rsp+20h](影子之上),
+;与N奇偶无关——动态sub方案的N奇偶对齐补偿问题构造性不存在
+;120h=影子20h+栈参区100h(32槽×8B, N≤32只填前N槽, 余槽callee不读)
+;PROC FRAME+unwind指令(.pushreg/.allocstack/.setframe): 被调Target
+;抛#GP/#PF且上层SEH捕获时, 内核unwinder可正确穿越本帧走栈
+;(缺unwind信息=异常派发期二次崩溃; v3.53起宿主会向guest注入
+;#GP/#UD, 异常穿越本帧属真实可达路径, 纯防御纵深)
+GeptCallOrigAsm PROC FRAME
+    push rbp
+    .pushreg rbp
+    mov  rbp, rsp
+    .setframe rbp, 0
+    push rbx
+    .pushreg rbx
+    push rsi
+    .pushreg rsi
+    push rdi
+    .pushreg rdi
+    push rcx                    ;参数块指针存档@[rbp-20h](rcx=caller
+    .pushreg rcx                ;-saved无需还原, 存档只为循环后重取)
+    sub  rsp, 120h
+    .allocstack 120h
+    .endprolog
+    mov  rbx, [rcx]             ;Target
+    mov  rsi, [rcx+08h]         ;栈参源
+    mov  rdi, [rcx+10h]         ;N(0=仅寄存器参数)
+    ;正向复制N个栈参→[rsp+20h..](dst连续, 源只读; N=0跳过)
+    test rdi, rdi
+    jz   @F
+    lea  rcx, [rsp+20h]         ;dst=影子空间之上的栈参区首址
+    xor  edx, edx               ;i=0
+gco_copy:
+    mov  rax, [rsi+rdx*8]       ;rax=StackArgs[i](参数块已不再需要,
+    mov  [rcx+rdx*8], rax       ;     volatile可任意征用)
+    inc  rdx
+    cmp  rdx, rdi
+    jb   gco_copy
+@@:
+    ;装载寄存器参数(参数块指针从[rbp-20h]重取——rcx已被复制循环征用)
+    mov  rax, [rbp-20h]
+    mov  rcx, [rax+18h]         ;Arg1
+    mov  rdx, [rax+20h]         ;Arg2
+    mov  r8,  [rax+28h]         ;Arg3
+    mov  r9,  [rax+30h]         ;Arg4
+    call rbx                    ;rsp%16==0, [rsp..1Fh]=影子, [rsp+20h..]
+                                ;=arg5..(全按ABI); rax=Target返回值透传
+    lea  rsp, [rbp-18h]         ;固定帧回收(跳过rcx存档槽=volatile不还原)
+    pop  rdi
+    pop  rsi
+    pop  rbx
+    pop  rbp
+    ret
+GeptCallOrigAsm ENDP
+
+;==== 自测目标: 指令布局完全自控, 不依赖任何Windows版本 ====
+;前5条mov共15字节(>=14字节跳板), 无相对寻址指令, 可被安全跳板化
+;v3.42: **页隔离**——v3.41实测蓝屏的结构性缺陷: 目标原本与
+;common-asm.asm(CmGuestRsp/CmGuestProbe/**CmVmCall**/CmTripleFaultPark)和
+;AsmHookTestTarget同页(hook.asm与common-asm被链接器排到同一4K页, 实测
+;目标=...10D6/跳板=...10E6/探针=...103D/CmVmCall=...1075)——EptSetHook清掉
+;该页execute后, DPC自己的vmcall(2)返回路径(ret)就在被hook页上=立即
+;violation, 全部VT机器码卷入双视图互切(exec视图write=0=活锁雷区), 且
+;自测≠真实场景(STAGE 2 hook的是nt页, 不含我们的代码)。隔离后: 被
+;hook页只有16字节GeptTestTarget, 零自指干扰
+;v3.42b实现修正: 段内`align 1000h`被ml64拒绝("invalid combination with
+;segment alignment:4096"——.code段默认ALIGN(16), 段内align不得超段属性)。
+;改用SEGMENT伪指令自定义ALIGN(4096)段: 链接器给GEPTTGT独立PE section,
+;内存布局按SectionAlignment(0x1000)整页对齐=目标函数独占一页, 且与
+;.code(跳板/AsmHookNtClose)和common-asm.asm物理不同section必然不同页
 GEPTTGT SEGMENT ALIGN(4096) 'CODE'
 GeptTestTarget PROC
-    mov     r11, rcx        ;3�ֽ�
-    mov     r10, rdx        ;3�ֽ�
-    mov     r9,  r8         ;3�ֽ�
-    mov     r8,  r9         ;3�ֽ�
-    mov     r11, r10        ;3�ֽ�
+    mov     r11, rcx        ;3字节
+    mov     r10, rdx        ;3字节
+    mov     r9,  r8         ;3字节
+    mov     r8,  r9         ;3字节
+    mov     r11, r10        ;3字节
     ret
 GeptTestTarget ENDP
 GEPTTGT ENDS
 
-;����section��Ȼ�����������ͬҳ(.code), ����align(v3.42b)
-;(v3.51: GeptStubEntry�������ļ�ͷ��ͳһ��; �ɰ���vmfunc stub��
-; AsmHookNtCloseӲ�����ط���Phase 6��̬��һ������ɾ��)
+;==== v1.1: 六参自测目标(2栈参)——CallOriginal第5+参数转发上机判据 ====
+;独立GEPTTGT6段=独立页(与GeptTestTarget页物理隔离: STAGE1的violation
+;hook常驻该页, 同页装第二个hook会整页重置互相干扰——v3.50已知限制④)
+;指令全为寄存器/rsp相对寻址(无RIP-relative/无相对分支)→LDE重定位
+;跳板可安全逐条复制; 前5条=3+3+3+3+5=17B≥14B(PHHook跳转覆盖长度)
+;调用形态(x64 ABI): rcx/rdx/r8/r9=a1-a4, [rsp+28h]=a5, [rsp+30h]=a6
+;(入口[rsp]=返回地址, [rsp+8..27h]=影子空间——栈参在影子之上)
+;返回=a1+..+a6全参数加法靶: 六参中任何一个的转发/改写错都改变结果
+;重定位正确性: 第5条add rax,[rsp+28h]在跳板重放时读**跳板自身等价
+;调用帧**的同偏移(桩/跳板入口帧形态与原函数一致)=语义严格保持
+GEPTTGT6 SEGMENT ALIGN(4096) 'CODE'
+GeptTestTarget6 PROC
+    mov  rax, rcx             ;48 89 C8 (3B)  a1
+    add  rax, rdx             ;48 01 D0 (3B)  +a2
+    add  rax, r8              ;4C 01 C0 (3B)  +a3
+    add  rax, r9              ;4C 01 C8 (3B)  +a4
+    add  rax, [rsp+28h]       ;48 03 44 24 28 (5B)  +a5(第1栈参)
+    add  rax, [rsp+30h]       ;48 03 44 24 30 (5B)  +a6(第2栈参)
+    ret
+GeptTestTarget6 ENDP
+GEPTTGT6 ENDS
 
-;==== �Բ�����: �طű����帲�ǵ�5��mov, Ȼ������ ԭ����+15 ====
-;v3.43**�����޸�**: call HookTestTargetǰ��sub rsp,20h��28h��
-;v3.41/v3.42b��������0x1E@(0xC0000005, nt+0x405B4F, 0, -1)����������:
-;  �ٱ��������RSP%16==8(����push imm32+ret��ֵ0, ��Чһ������call)
-;  ��16��push(128B)+sub 20h(32B)������RSP%16��ż��callʱRSP%16==8
-;    =Υ��ABI(callǰ���0), HookTestTarget���õ�������8�ֽ�����
-;  ��HookTestTarget��FlLog�ȴ�T1���̡��߳��������������ڴ�λջ��
-;    ����nt�������л�shell(sub rsp,138h; movaps [rsp+30h],xmm6...)
-;  ��movapsҪ��16�ֽڶ���, ��8�ֽڡ�#GP(0); �ں˰�#GP�����AV��¼
-;    (info[0]=0��, info[1]=-1�ڱ�)��0x1E@(C0000005, nt+0x405B4F, 0, -1)
-;  ��֤: ntoskrnl�����RVA 0x405B4F=movaps xmm6��[rsp+30h], ��worker
-;  0x405E90��fxsave/xsave+mov [rdi+58h],rsp+mov rsp,[rsi+58h](ջ�л�)
-;  =KiSwapContext; ��������ͬRVA(ȷ���Ե���·��), ҳ����ǰ��ͬǩ��
-;  (��hookҳ�����޹�), Stage0�޴�·���Ӳ�������ȫ���Ǻ�
-;28h=32BӰ�ӿռ�(ABI)+8B���벹��(��CmGuestRsp��sub 28hͬ��)
+;独立section天然把跳板隔到不同页(.code), 无需align(v3.42b)
+;(v3.51: GeptStubEntry已移至文件头部统一版; 旧版裸vmfunc stub与
+; AsmHookNtClose硬编码重放随Phase 6动态化一并退役删除)
+
+;==== 自测跳板: 重放被跳板覆盖的5条mov, 然后跳回 原函数+15 ====
+;v3.43**根因修复**: call HookTestTarget前的sub rsp,20h→28h。
+;v3.41/v3.42b两连蓝屏0x1E@(0xC0000005, nt+0x405B4F, 0, -1)的完整机理:
+;  ①本函数入口RSP%16==8(跳板push imm32+ret净值0, 等效一次正常call)
+;  ②16个push(128B)+sub 20h(32B)都不改RSP%16奇偶→call时RSP%16==8
+;    =违反ABI(call前须≡0), HookTestTarget整棵调用树错8字节运行
+;  ③HookTestTarget→FlLog等待T1落盘→线程阻塞→调度器在错位栈上
+;    调用nt上下文切换shell(sub rsp,138h; movaps [rsp+30h],xmm6...)
+;  ④movaps要求16字节对齐, 错8字节→#GP(0); 内核把#GP构造成AV记录
+;    (info[0]=0读, info[1]=-1哨兵)→0x1E@(C0000005, nt+0x405B4F, 0, -1)
+;  铁证: ntoskrnl反汇编RVA 0x405B4F=movaps xmm6→[rsp+30h], 其worker
+;  0x405E90含fxsave/xsave+mov [rdi+58h],rsp+mov rsp,[rsi+58h](栈切换)
+;  =KiSwapContext; 两次蓝屏同RVA(确定性调度路径), 页隔离前后同签名
+;  (与hook页内容无关), Stage0无此路径从不崩——全部吻合
+;28h=32B影子空间(ABI)+8B对齐补偿(与CmGuestRsp的sub 28h同理)
 AsmHookTestTarget proc
     HVM_SAVE_ALL_NOSEGREGS
     sub rsp,28h
     call HookTestTarget
     add rsp,28h
     HVM_RESTORE_ALL_NOSEGREGS
-    ;�طű����帲�ǵ�ԭʼָ��(��GeptTestTargetǰ15�ֽ���ȫһ��)
+    ;重放被跳板覆盖的原始指令(与GeptTestTarget前15字节完全一致)
     mov     r11, rcx
     mov     r10, rdx
     mov     r9,  r8
@@ -141,34 +235,37 @@ AsmHookTestTarget proc
     jmp qword ptr[g_jmp_testtarget]
 AsmHookTestTarget endp
 
-;==== v3.53 v1.0.1: ����ģ��̽��(DriverEntry�Բ�ר��, ��hookĿ��, ====
-;==== ��AsmHookTestTargetͬҳ�޺�������ҳ������EPT hook)            ====
-;���������(v3.47c����): VMXָ��һ��SDM�����ֱ�, ��������̳/����ֵ
-;  VMXOFF = 0F 01 C4 (SDM VMXOFFҳ"0F 01 C4 VMXOFF"; v3.47cӲ��ʵ֤
-;            exit rsn26��֤˫ȷ��)
-;  VMXON  = F3 0F C7 /6 (SDM VMXONҳ"F3 0F C7 /6 VMXON m64";
-;            ModRM=30h��[rax]��, lea������disp32)
+;==== v3.53 v1.0.1: 病毒模拟探针(DriverEntry自测专用, 非hook目标, ====
+;==== 与AsmHookTestTarget同页无害——本页永不被EPT hook)            ====
+;机器码纪律(v3.47c铁律): VMX指令一律SDM出处手编, 绝不用论坛/记忆值
+;  VMXOFF = 0F 01 C4 (SDM VMXOFF页"0F 01 C4 VMXOFF"; v3.47c硬件实证
+;            exit rsn26铁证双确认)
+;  VMXON  = F3 0F C7 /6 (SDM VMXON页"F3 0F C7 /6 VMXON m64";
+;            ModRM=30h→[rax]形, lea免手算disp32)
 
-;VMXOFF̽��: guest��ִ�С�VM-exit rsn26������case26ע��#UD���ں�SEH
-;����(�쳣��Ӧ=0xC000001D STATUS_ILLEGAL_INSTRUCTION)��**v3.47cȷ��
-;�����������о��ط�**: ������������������������(��case��'U'����),
-;���������Ŵ�����case=��ȫ�޸��ı�ҵ�оݡ�������in-guest�˵���
-;(�����=��VMXOFF, �Բ����̱�֤�˿�ȫ��in-guest)
+;VMXOFF探针: guest内执行→VM-exit rsn26→宿主case26注入#UD→内核SEH
+;捕获(异常码应=0xC000001D STATUS_ILLEGAL_INSTRUCTION)。**v3.47c确切
+;死法的正规判据重放**: 当年这条机器码蓝屏过整机(无case落'U'逃生),
+;现在它活着穿过新case=安全修复的毕业判据。仅可在in-guest核调用
+;(裸机上=真VMXOFF, 自测流程保证此刻全核in-guest)
 GeptVirusVmxDetectOff PROC
     db 0Fh, 01h, 0C4h             ;vmxoff
-    ret                            ;����=����δע��#UD(�Բ���FAIL)
+    ret                            ;到达=宿主未注入#UD(自测判FAIL)
 GeptVirusVmxDetectOff ENDP
 
-;VMXON̽��: guest��ִ�С�VM-exit rsn27������case27α��VMfailInvalid
-;(CF=1)��setc����CF������1=VT-xԭ�������ٲ��ڳ��Ļ���֤��(ͬ���
-;juniorʵ����__vmx_on�ߵľ�������·��VMfail���ɾ��˳�)���Ʋ�����
-;PA=0: ����α��VMfail����������(SDM: non-root��VMexit���ָ��ִ��);
-;�����PA=0��4KB����ͬ��VMfailInvalid����̽�������ֻ������޸�����
+;VMXON探针: guest内执行→VM-exit rsn27→宿主注入#GP(0)(v1.1: case27从
+;伪造VMfailInvalid改#GP——"BIOS锁VT"故事的行为面: 0x3A=1的裸机上
+;vmxon=#GP(0), 与MSR 0x3A读伪造=1配套, 读/行为两面互相印证)→内核SEH
+;捕获, 异常码应=0xC0000005(#GP的内核异常码, v3.43 movaps#GP案同款
+;AV转换)。无异常到达xor rax,rax;ret=宿主未注入(自测判FAIL, 返回0)。
+;哑操作数PA=0: 裸机(未虚拟化核)上vmxon=VMfailInvalid(CF=1)无异常=
+;返回0——探针**必须钉在in-guest核执行**(main.c已做)。同框架junior
+;实例的__vmx_on在宿主guest内走的就是这条#GP路→junior侧SEH捕获
+;(VMX.c已__try化)→干净失败=互斥仲裁闭环
 GeptVirusVmxOn PROC
-    lea rax, [g_geptDummyVmxonPa] ;��������ַ(��QWORD)
+    lea rax, [g_geptDummyVmxonPa] ;操作数地址(哑QWORD)
     db 0F3h, 0Fh, 0C7h, 30h       ;vmxon qword ptr [rax]
-    setc al                       ;CF=1=α���VMfailInvalid
-    movzx rax, al
+    xor rax, rax                   ;到达=无异常=FAIL(返回0)
     ret
 GeptVirusVmxOn ENDP
 END

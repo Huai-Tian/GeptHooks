@@ -13,10 +13,13 @@
 ## ✨ 功能特性
 
 - **VMFUNC 双 EPT 钩子（零 VM-Exit detour）—— v3.48**
-每个核心持有两套 EPT 视图：*clean* 视图（恒等映射，原始字节）与 *hooked* 视图（钩子页改译到影子副本）。钩住执行 = 切换翻译，而不是陷入：**每次钩子命中零 VM-Exit**。实测：多轮累计 **126 万+次** NtClose 拦截期间 EPT violation 计数始终为 0。
+每个核心持有两套 EPT 视图：*clean* 视图（恒等映射，原始字节）与 *hooked* 视图（钩子页改译到影子副本）。钩住执行 = 切换翻译，而不是陷入：**每次钩子命中零 VM-Exit**。实测：多轮累计 **144 万+次** NtClose 拦截期间 EPT violation 计数始终为 0。
 
 - **detour 完整控制权 —— v3.50**
 回调收到原始参数，可以直接调用原函数（`GeptCallOriginal`）、修改参数或返回值、或整体吞掉这次调用。没有 prologue 重放，没有指令长度机器——clean 视图里就是完好如初的原始代码。
+
+- **第 5+ 栈参数转发 —— v1.1**
+安装时通过 `GEPT_HOOK.StackArgs` 声明目标函数栈参数个数（最多 32 个），回调即收到指向触发栈上实参的 `StackArgs` 指针（可读**可写**，改写后的值随 `GeptCallOriginal` 一并转发）——多参数内核函数的钩取不再有参数缺口。实测：六参加法靶自测读回 / 改写 / 转发 / 移除四证明全过。
 
 - **版本无关的运行时跳板 —— v3.51**
 跳板由 LDE 重定位引擎在运行时生成——逐指令解码、RIP-relative 重定位、生成后按 CPU 视角回扫自检。没有绑定某个 Windows 构建的硬编码 prologue：钩子可跨 Windows 版本安装；不可重定位的 prologue 在安装时即被拒绝。
@@ -30,8 +33,8 @@ CPUID 的 `0x40000000-0x4000000F` 叶子全部归零（不泄漏任何 hyperviso
 - **简洁的驱动友好 API**
 在你自己的内核驱动里用几个 C 调用即可完成钩子的安装、移除、枚举与原函数调用——无需任何 hypervisor 背景知识。
 
-- **MSR 拦截（读伪造 / 写监控）—— v3.52**
-通过每核 MSR 位图可钩取任意 MSR：读回调返回值即客户机可见值（可伪造），写回调可放行或静默丢弃。未钩取的 MSR 保持零开销直通。实测演示：保留 MSR 读回 `DEADBEEFCAFEBABE`；LSTAR canary 计数 syscall 入口探测并在写入时报警。
+- **MSR 拦截（读伪造 / 写监控）—— v3.52，v1.1 补枚举**
+通过每核 MSR 位图可钩取任意 MSR：读回调返回值即客户机可见值（可伪造），写回调可放行或静默丢弃。未钩取的 MSR 保持零开销直通。安装 / 移除 / 枚举（`GeptMsrHookEnumerate`）与函数钩子 API 完全对称。实测演示：保留 MSR 读回 `DEADBEEFCAFEBABE`；LSTAR canary 计数 syscall 入口探测并在写入时报警。
 
 ## 📐 零 VM-Exit 钩子的工作原理
 
@@ -67,7 +70,7 @@ sc create GeptHooks type= kernel start= demand binPath= "C:\path\to\GeptHooks.sy
 sc start GeptHooks
 ```
 
-停止并卸载（全部钩子先被干净移除，随后关闭 VT）：
+停止并卸载（全部钩子先被干净移除，随后通过 IPI 广播在全部核心原子关闭 VT）：
 
 ```
 sc stop GeptHooks
@@ -79,22 +82,24 @@ sc delete GeptHooks
 ```c
 #include "GeptApi.h"
 
-// 你的detour回调: 运行在原函数的上下文
-// (任意线程 / 任意IRQL)。返回值即钩子函数的返回值。
+// 你的detour回调: 运行在原函数的线程与IRQL上下文,
+// 返回值即钩子函数的返回值。
+// StackArgs(v1.1): 第5+个参数(栈参数)数组, 可读可写——
+// 改写后的值随GeptCallOriginal一并转发; 未声明StackArgs时为NULL。
 static ULONG64 OnNtClose(PVOID Context,
-    ULONG64 Arg1, ULONG64 Arg2, ULONG64 Arg3, ULONG64 Arg4)
+    ULONG64 Arg1, ULONG64 Arg2, ULONG64 Arg3, ULONG64 Arg4,
+    ULONG64* StackArgs)
 {
-    // 只做IRQL安全的操作: 原子计数/无锁日志/GeptCallOriginal...
-    // 绝不阻塞, 绝不碰分页内存。
     ULONG64 status = GeptCallOriginal(Arg1, Arg2, Arg3, Arg4);
     return status;   // 也可以伪造——你拥有完整控制权
 }
 
 // 安装 / 移除 / 枚举
 GEPT_HOOK Hook = { 0 };
-Hook.Target   = (PVOID)NtClose;
-Hook.Callback = OnNtClose;
-Hook.Context  = NULL;
+Hook.Target    = (PVOID)NtClose;
+Hook.Callback  = OnNtClose;
+Hook.Context   = NULL;
+Hook.StackArgs = 0;   // 目标函数第5+栈参数个数(0=不转发; 见下方示例)
 
 GeptHookInstall(&Hook);
 // ... 钩子已在全部核心生效 ...
@@ -104,7 +109,24 @@ ULONG Count = 0;
 GeptHookEnumerate(NULL, &Count);   // 查询live钩子数量
 ```
 
-MSR 钩子（数据面）同样简单：
+钩取 6 参数以上（含栈参数）的函数——声明个数即可：
+
+```c
+// 目标原型: ULONG64 F(ULONG64 A1..A4, ULONG64 A5, ULONG64 A6);
+GEPT_HOOK Hook = { 0 };
+Hook.Target    = (PVOID)F;
+Hook.Callback  = OnF;
+Hook.StackArgs = 2;               // A5/A6 两个栈参数
+
+static ULONG64 OnF(PVOID Ctx, ULONG64 A1, ULONG64 A2,
+    ULONG64 A3, ULONG64 A4, ULONG64* StackArgs)
+{
+    StackArgs[0] ^= 1;            // 改写第5参——转发时生效
+    return GeptCallOriginal(A1, A2, A3, A4);  // 栈参数自动转发
+}
+```
+
+MSR 钩子（数据面）同样简单——安装、移除、枚举齐全：
 
 ```c
 #include "GeptMsr.h"
@@ -123,14 +145,19 @@ M.Msr     = 0xC0000082;             // IA32_LSTAR
 M.OnRead  = OnLstarRead;            // NULL = 读直通
 M.OnWrite = OnLstarWrite;           // NULL = 写直通
 GeptMsrHookInstall(&M);
+
+// ... 监控期间 ...
+GeptMsrHookRemove(0xC0000082);      // 移除: 该MSR恢复直通
+
+ULONG MsrCount = 0;
+GeptMsrHookEnumerate(NULL, &MsrCount);   // 枚举live的MSR钩子
 ```
 
-**回调纪律**（血泪经验，完整事故记录见 NOTES.md）：
+**回调上下文约定**：
 
-1. 回调在原函数的 IRQL 下运行——只允许原子操作、无锁日志和 `GeptCallOriginal`。不阻塞、不碰分页内存、不刷 `DbgPrint`。
+1. 回调运行在原函数的线程与 IRQL 上下文（可达 DISPATCH 级）——回调内只应执行 IRQL 安全的操作（原子操作、无锁日志、`GeptCallOriginal`）。
 2. 调用原函数必须经 `GeptCallOriginal`——它保证 clean 视图并在返回后恢复 hooked 视图（线程迁移安全）。
-3. 回调执行期间本核处于 clean 视图：回调里调用的其他钩子目标**不会被拦截**（已知限制，已文档化）。
-4. 第 5 个及以后的栈参数（rcx/rdx/r8/r9 之外）v1 不转发。
+3. 已知限制：回调执行期间本核处于 clean 视图——回调里调用的其他钩子目标**不会被拦截**。
 
 卸载时须在关闭 VT **之前**调用 `GeptApiRemoveAll()`，关闭 VT **之后**调用 `GeptApiFreeMemory()`——参考 `main.c` 的 `DriverUload` 标准序列。
 
@@ -155,6 +182,8 @@ GeptMsrHookInstall(&M);
 | Phase 4 | 简易 API 生命周期 | 装 +388/2s → 卸 +0/2s → 重装 +14/2s，干净卸载 |
 | Phase 6 | 运行时重定位（版本无关） | LDE 跳板回扫自检两次通过；replay 自测 NtClose(-1) = 0xC0000008；三窗口 +209/+0/+65 |
 | Phase 5 | MSR 数据面 API | 保留 MSR 读伪造为 `DEADBEEFCAFEBABE`；LSTAR canary 两次读相等、写 0 次 |
+| v1.1 | 栈参数转发 + MSR 枚举 | 六参自测四证明（读回 flags=7 / 栈参改写 / 寄存器改写 / 加法靶 25553→16665）；MSR 枚举 live=2 |
+| v1.1d | 全核 IPI 原子卸载 | 静置压力 3/3 全绿：每核原子"vmcall 退出+清 VMXE+双 TLB 冲刷"，卸载留痕 8×'v'+8×'r' 全齐 |
 
 ## ⚠️ 项目状态
 
@@ -190,7 +219,7 @@ GeptMsrHookInstall(&M);
 使用前请自行评估风险。开发者与贡献者**对由此产生的任何账号封禁、法律责任或其他后果概不负责**。
 
 - **系统稳定性**：
-hypervisor 级驱动运行在机器的最高特权层。**一个 bug 即可导致系统蓝屏或数据损坏。**请务必在虚拟机或可弃置的机器上测试，并做好备份。
+hypervisor 级驱动运行在机器的最高特权层。 **一个 bug 即可导致系统蓝屏或数据损坏。** 请务必在虚拟机或可弃置的机器上测试，并做好备份。
 
 - **无担保**：
 本软件按其许可证条款提供，**不附带任何明示或默示的担保**，包括但不限于适销性、特定用途适用性与非侵权性。

@@ -16,16 +16,20 @@ typedef struct _GEPT_CLK
 	ULONG64 CtrMask;     //计数器模掩(32位HPET/24位PM_TMR)
 } GEPT_CLK, * PGEPT_CLK;
 
-//发现(ACPI注册表镜像)+校准+逐核布防(VmxStartAllCpus末尾, PASSIVE)
+//发现(RSDP物理扫描)+校准+逐核布防(VmxStartAllCpus末尾, PASSIVE)
 VOID ClkInitAll(VOID);
 //解除IoSpace映射(VmxShutdownAllCpus, VT已关后)
 VOID ClkShutdown(VOID);
 //vmcall(GEPT_VMCALL_CLKARM)的root侧: 当前核两套视图时钟页
-//拆2M+清RWX+invept
+//拆2M+清RWX+invept+端口时钟I/O位置位
 VOID ClkArmCpu(VOID);
 //EPT violation路径: 时钟页访存仿真。TRUE=已处置(RIP/RSP已写)
 BOOLEAN ClkTryEmulate(PGUEST_REGS GuestRegs, ULONG64 guestRip,
 	ULONG64 guestRsp, ULONG64 gpa);
+//exit(30)路径(VmxExitHandler调用): 端口时钟(PM_TMR SystemIO型)
+//仿真。TRUE=已处置(走通用RIP推进); FALSE=串指令flicker(不推进
+//RIP重执行, MTF回捕重置位)
+BOOLEAN ClkIoTryEmulate(PGUEST_REGS GuestRegs, ULONG64 exitQual);
 //MTF(37)路径: flicker回捕(重封堵)。TRUE=已处置
 BOOLEAN ClkMtfFinish(VOID);
 //demo自检: guest态读计数器(布防后=仿真路径)。FALSE=该时钟未布防

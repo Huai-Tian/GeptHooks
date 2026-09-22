@@ -97,6 +97,9 @@ typedef struct _VCPU
     //EPTP-list页(4KB对齐): [0]=clean EPTP, [1]=hooked EPTP。
     //VMFUNC(0,idx)在guest内零VM-Exit切换
     PVOID VmfuncEptpList;
+    //I/O位图(8KB连续块: A@+0端口0-0x7FFF, B@+4K端口0x8000-0xFFFF)。
+    //全零=全直通; 时钟端口置位→exit(30)补偿仿真(Clock.c)
+    PVOID IoBitmaps;
     PVOID HighPdptVa[512];      //动态建立的pml4[i>0]对应pdpt页的虚拟地址(>512GB MMIO区)
     PVOID HighPdptRawVa[512];   //上述pdpt的原始pool指针(4KB对齐后无法反推raw, 卸载时用它ExFreePool)
     volatile LONG bInGuest;     //该CPU已成功进入VMX non-root(卸载时用于判断能否vmcall)

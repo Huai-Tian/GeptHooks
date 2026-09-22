@@ -1,25 +1,204 @@
-#include"Clock.h"
+﻿#include"Clock.h"
 #include"VMX.h"
 #include"CPU.h"
 #include"ept.h"
 #include"LDasm.h"
 
-//==== MMIOʱ������(v1.8) ====
-//TSC offsetting����exitפ��, ��guest�ɶ�������ʱ�Ӽ�����(HPET��
-//������/ACPI PM��ʱ��)����ʵʱ���ƽ�������TSC����Աȼ���¶ʱ����
-//�ն�����ģ���ʱ��ҳEPT��RWX: ÿ�ηô�violation��root���桪��
-//������ֵ=��ֵ+TSC_OFFSET/Ratio(����ʱ����guest�ɼ�TSCͬ��),
-//ҳ������Ĵ���rootֱ��д(��ֵ̬, ��ʱ����); ���ɽ���ָ��flicker
-//����(���е�����MTF�ز��ط��, ֵδ����=�������İ�ȫ����)��
-//x2APIC TMCCT(0x83E): Win10��TSC-deadlineģʽ�º��0(����),
-//��ʱ����, �����; �˿���PM_TMR(legacy����)��־��������
+//==== MMIO时钟域封堵(v1.8) ====
+//TSC offsetting隐藏exit驻留, 但guest可读的其他时钟计数器(HPET主
+//计数器/ACPI PM定时器)按真实时间推进——与TSC交叉对比即暴露时间轴
+//空洞。本模块把时钟页EPT清RWX: 每次访存violation→root仿真——
+//计数器值=真值+TSC_OFFSET/Ratio(虚拟时钟与guest可见TSC同轴),
+//页内其余寄存器root直读写(静态值, 无时序面); 不可解码指令flicker
+//回退(放行单步→MTF回捕重封堵, 值未补偿=裸机语义的安全降级)。
+//MSR时钟(APeRF/MPERF/TMCCT)不封堵(v1.9b裁决): 位图拦截=热读者每读
+//一次exit, 实测GPU驱动类rdmsr自旋环被打成r31风暴→TDR黑屏(NOTES
+//v1.9b); 残余驻留已低于晶体容差地板('z'量化)无归因价值; x2APIC
+//TMCCT实为0x839(0x83E=定时器分频寄存器DCR)。端口型PM_TMR(SystemIO)
+//走I/O位图封堵(见下端口段); 虚拟计数器单调钳制(见下节)
 
 #define GEPT_CLK_MAX 2
 static GEPT_CLK s_clk[GEPT_CLK_MAX];   //[0]=HPET [1]=PM_TMR
-//flicker�ز�״̬(ÿ��һ��, 0=��pending)
+//flicker回捕状态(每核一个, 0=无pending)
 static volatile ULONG64 s_clkFlicker[128];
 
-//root�ྫȷ����MMIO��д(guest̬����ͬVA=��EPT����, �����󼴷���·��)
+//==== 虚拟计数器单调钳制(v1.9b) ====
+//补偿量=TSC_OFFSET/Ratio, 而TSC_OFFSET随本核每次exit单调变负, 读
+//时钟本身又产生exit——快速连读时虚拟值可倒退(裸机计数器永不倒退)
+//=自造检测向量+等待环永不满足(v1.9a黑屏的助推机制)。钳制: 新值
+//小于上次且差<半量程→钳到上次值(等值合法, 真硬件快读同值常见);
+//≥半量程=自然回绕放行。全局共享+CAS有界重试, 无锁, exit安全
+static volatile LONG64 s_clkLastVirt[GEPT_CLK_MAX];   //MMIO时钟上次虚拟值
+static volatile LONG64 s_clkIoLastVirt;               //端口时钟上次虚拟值
+
+static ULONG64 ClkClampMonotonic(volatile LONG64* last, ULONG64 v, ULONG64 mask)
+{
+	for (ULONG k = 0; k < 4; k++)
+	{
+		LONG64 cur = *last;
+		LONG64 d = (LONG64)v - cur;
+		if (d < 0 && (ULONG64)(-d) < (mask >> 1))
+		{
+			return (ULONG64)cur;    //小幅倒退→钳到上次值(不推进)
+		}
+		if (d == 0)
+		{
+			return v;
+		}
+		if (InterlockedCompareExchange64(last, (LONG64)v, cur) == cur)
+		{
+			return v;    //前进/大步回绕(≥半量程=wrap)已落账
+		}
+		//CAS失败=他核并发推进: 重读重试
+	}
+	return v;    //重试耗尽(病态并发): 放行原值
+}
+
+//==== 端口时钟(PM_TMR SystemIO型)====
+//I/O位图置位→exit(30)→root仿真: IN=真值+TSC_OFFSET/Ratio(与TSC
+//同轴), OUT直写(计数器RO, 写被硬件忽略); 串INS/OUTS=清位放行单
+//迭代+MTF回捕重置位(逐迭代2 exit, 同MMIO flicker语义, 值未补偿
+//的病态场景安全降级)
+static USHORT s_clkIoPort = 0;              //0=无端口时钟
+static ULONG64 s_clkIoMask = 0xFFFFFFFFULL; //计数器位宽掩码
+static LONG64 s_clkIoRatio = 0;             //ΔTSC/Δport
+static volatile USHORT s_clkIoFlicker[128]; //MTF回捕pending(端口号, 0=无)
+
+//端口时钟校准(ClkInitAll内, 布防前——此时位图全零端口直通)
+static BOOLEAN ClkIoCalibrate(USHORT port)
+{
+	ULONG64 best = 0;
+	for (ULONG round = 0; round < 2; round++)
+	{
+		ULONG64 t0 = __rdtsc();
+		ULONG64 c0 = __indword(port);
+		LARGE_INTEGER d;
+		d.QuadPart = -20000;    //2ms
+		KeDelayExecutionThread(KernelMode, FALSE, &d);
+		ULONG64 c1 = __indword(port);
+		ULONG64 t1 = __rdtsc();
+		if (c1 == c0 || t1 <= t0 || (c1 - c0) > (t1 - t0))
+		{
+			return FALSE;
+		}
+		ULONG64 r = (t1 - t0) / (c1 - c0);
+		if (best == 0 || r < best)
+		{
+			best = r;
+		}
+	}
+	if (best < 8 || best > 0x40000)
+	{
+		return FALSE;    //1kHz..1GHz之外=防呆
+	}
+	s_clkIoRatio = (LONG64)best;
+	return TRUE;
+}
+
+//root侧(ClkArmCpu布防/flicker回捕调用): 当前核I/O位图置/清端口位
+//(位图页自我隐蔽, guest态直写=落零页; root直写真页)。I/O位图无
+//缓存, 即时生效
+static VOID ClkIoArmCpu(USHORT port, BOOLEAN set)
+{
+	ULONG cpu = KeGetCurrentProcessorNumber();
+	PUCHAR bm = (PUCHAR)g_vcpu[cpu].IoBitmaps;
+	if (bm == NULL || port == 0)
+	{
+		return;
+	}
+	PUCHAR byte = (port < 0x8000) ? &bm[port / 8] : &bm[PAGE_SIZE + (port - 0x8000) / 8];
+	UCHAR bit = (UCHAR)(1 << (port % 8));
+	if (set)
+	{
+		*byte |= bit;
+	}
+	else
+	{
+		*byte &= (UCHAR)~bit;
+	}
+	FlRingPush('a', cpu, 13, port, set ? 1 : 0, 0);
+}
+
+//exit(30)路径(VmxExitHandler调用): TRUE=已处置(走通用RIP推进);
+//FALSE=串指令flicker(调用方不推进RIP重执行)
+BOOLEAN ClkIoTryEmulate(PGUEST_REGS GuestRegs, ULONG64 exitQual)
+{
+	//qualification: bits2:0=宽度-1, bit3=方向(0=OUT 1=IN),
+	//bit4=串指令, bits31:16=端口号(SDM 24.6.4)
+	USHORT port = (USHORT)(exitQual >> 16);
+	//串指令(INS/OUTS): 清位放行单迭代+MTF回捕。时钟端口回捕后重
+	//置位(逐迭代2 exit, 同MMIO flicker); 非时钟端口(理论不到达——
+	//位图仅时钟位置位)回捕后保持清位=永久直通
+	if ((exitQual >> 4) & 1)
+	{
+		ULONG cpu = KeGetCurrentProcessorNumber();
+		ClkIoArmCpu(port, FALSE);
+		if (port == s_clkIoPort && s_clkIoPort != 0)
+		{
+			s_clkIoFlicker[cpu & 127] = port;
+		}
+		ULONG64 ctl = 0;
+		__vmx_vmread(CPU_BASED_VM_EXEC_CONTROL, &ctl);
+		__vmx_vmwrite(CPU_BASED_VM_EXEC_CONTROL, ctl | 0x08000000ULL);
+		FlRingPush('g', cpu, 30, port, exitQual, 0);
+		return FALSE;
+	}
+	if (port != s_clkIoPort || s_clkIoPort == 0)
+	{
+		//非时钟端口(理论不到达——位图仅时钟位置位): 标量直通兜底
+		ULONG size = (ULONG)(exitQual & 7) + 1;
+		if ((exitQual >> 3) & 1)
+		{
+			GuestRegs->rax = (size == 1) ? __inbyte(port) :
+				(size == 2) ? __inword(port) : __indword(port);
+		}
+		else
+		{
+			ULONG64 v = GuestRegs->rax;
+			if (size == 1) { __outbyte(port, (UCHAR)v); }
+			else if (size == 2) { __outword(port, (USHORT)v); }
+			else { __outdword(port, (ULONG)v); }
+		}
+		return TRUE;    //走通用RIP推进
+	}
+	ULONG size = (ULONG)(exitQual & 7) + 1;
+	if ((exitQual >> 3) & 1)
+	{
+		//IN: 真值+TSC_OFFSET/Ratio(有符号补偿, 与guest可见TSC同轴)
+		//+单调钳制(见ClkClampMonotonic)
+		ULONG64 val = __indword(port);
+		if (size == 4 && s_clkIoRatio != 0)
+		{
+			ULONG64 tscOff = 0;
+			__vmx_vmread(TSC_OFFSET, &tscOff);
+			LONG64 comp = (LONG64)tscOff / s_clkIoRatio;
+			val = (ULONG64)(((LONG64)(val & s_clkIoMask) + comp)
+				& (LONG64)s_clkIoMask);
+			val = ClkClampMonotonic(&s_clkIoLastVirt, val, s_clkIoMask);
+		}
+		if (size == 1) { GuestRegs->rax = val & 0xFF; }
+		else if (size == 2) { GuestRegs->rax = val & 0xFFFF; }
+		else { GuestRegs->rax = val; }
+		static volatile LONG s_ioCnt[128] = { 0 };
+		ULONG cpu = KeGetCurrentProcessorNumber();
+		LONG n = InterlockedIncrement(&s_ioCnt[cpu & 127]);
+		if (n == 1 || (n & 0xFFF) == 0)
+		{
+			FlRingPush('y', cpu, 30, port, val, 0);
+		}
+	}
+	else
+	{
+		//OUT: 直写(计数器RO硬件忽略; 其他寄存器本端口无)
+		ULONG64 v = GuestRegs->rax;
+		if (size == 1) { __outbyte(port, (UCHAR)v); }
+		else if (size == 2) { __outword(port, (USHORT)v); }
+		else { __outdword(port, (ULONG)v); }
+	}
+	return TRUE;    //走通用RIP推进
+}
+
+//root侧精确宽度MMIO读写(guest态调用同VA=走EPT陷阱, 布防后即仿真路径)
 static ULONG64 ClkRead(PGEPT_CLK c, USHORT off, ULONG size)
 {
 	switch (size)
@@ -42,10 +221,10 @@ static VOID ClkWrite(PGEPT_CLK c, USHORT off, ULONG size, ULONG64 v)
 	}
 }
 
-//==== ACPI������(RSDP����ɨ�衪���̼�Ȩ��Դ) ====
-//������Windowsע�������(������汾�仯���ɿ�): ֱ��ɨRSDP����
-//EBDA(BDA 0x40E��)+0xE0000-0xFFFFF, 16�ֽڶ���+����У��;
-//RSDP(rev2+)��XSDT(8B��)/rev1��RSDT(4B��)����ǩ��ȡ����
+//==== ACPI表发现(RSDP物理扫描——固件权威源) ====
+//不依赖Windows注册表镜像(布局随版本变化不可靠): 直接扫RSDP——
+//EBDA(BDA 0x40E字)+0xE0000-0xFFFFF, 16字节对齐+区和校验;
+//RSDP(rev2+)→XSDT(8B项)/rev1→RSDT(4B项)→按签名取整表
 static BOOLEAN ClkChksum(const UCHAR* p, ULONG len)
 {
 	UCHAR s = 0;
@@ -56,7 +235,7 @@ static BOOLEAN ClkChksum(const UCHAR* p, ULONG len)
 	return s == 0;
 }
 
-//����ֱ��(��ҳӳ�俽��, ��PASSIVEһ���Է�����)
+//物理直读(按页映射拷贝, 仅PASSIVE一次性发现用)
 static BOOLEAN ClkReadPhys(ULONG64 gpa, PVOID buf, ULONG len)
 {
 	PUCHAR dst = (PUCHAR)buf;
@@ -84,7 +263,7 @@ static BOOLEAN ClkReadPhys(ULONG64 gpa, PVOID buf, ULONG len)
 	return TRUE;
 }
 
-//��Χ����RSDP��*xsdtOut: 1=XSDT(rev2+) 0=RSDT(rev1)
+//范围内找RSDP。*xsdtOut: 1=XSDT(rev2+) 0=RSDT(rev1)
 static BOOLEAN ClkScanRsdp(ULONG64 start, ULONG64 len, ULONG64* sdtOut,
 	UCHAR* xsdtOut)
 {
@@ -130,7 +309,7 @@ static BOOLEAN ClkScanRsdp(ULONG64 start, ULONG64 len, ULONG64* sdtOut,
 	return ok;
 }
 
-//XSDT/RSDT�ڰ�ǩ��ȡ��: ����ExAllocatePool��������(���÷�ExFreePool)
+//XSDT/RSDT内按签名取表: 返回ExAllocatePool整表缓冲(调用方ExFreePool)
 static PVOID ClkTableBySig(ULONG64 sdt, BOOLEAN isXsdt, const char* sig)
 {
 	UCHAR hdr[36];
@@ -179,7 +358,7 @@ static PVOID ClkTableBySig(ULONG64 sdt, BOOLEAN isXsdt, const char* sig)
 		RtlCopyMemory(&tLen, th + 4, 4);
 		if (tLen < 36 || tLen > 0x1000)
 		{
-			continue;    //ǩ�����е������쳣
+			continue;    //签名命中但长度异常
 		}
 		UCHAR* tb = (UCHAR*)ExAllocatePoolWithTag(NonPagedPool, tLen, 'Pool');
 		if (tb == NULL)
@@ -197,13 +376,13 @@ static PVOID ClkTableBySig(ULONG64 sdt, BOOLEAN isXsdt, const char* sig)
 	return r;
 }
 
-//HPET��: +0x28 GAS space, +0x2C u64��ַ(�Ƕ����)
+//HPET表: +0x28 GAS space, +0x2C u64基址(非对齐读)
 static BOOLEAN ClkFindHpet(PGEPT_CLK c, ULONG64 sdt, BOOLEAN isXsdt)
 {
 	PVOID tbl = ClkTableBySig(sdt, isXsdt, "HPET");
 	if (tbl == NULL)
 	{
-		FlLog("Clock: ϵͳ����������HPET��");
+		FlLog("Clock: 系统描述表内无HPET表");
 		return FALSE;
 	}
 	ULONG64 base = 0;
@@ -212,7 +391,7 @@ static BOOLEAN ClkFindHpet(PGEPT_CLK c, ULONG64 sdt, BOOLEAN isXsdt)
 	ExFreePool(tbl);
 	if (space != 0 || (base & 0xFFF) != 0 || base >= 0x8000000000ULL)
 	{
-		FlLog("Clock: HPET����ַ�Ƿ�(space=%u base=%llX), ����",
+		FlLog("Clock: HPET表地址非法(space=%u base=%llX), 跳过",
 			(ULONG)space, base);
 		return FALSE;
 	}
@@ -223,13 +402,13 @@ static BOOLEAN ClkFindHpet(PGEPT_CLK c, ULONG64 sdt, BOOLEAN isXsdt)
 	return TRUE;
 }
 
-//FADT: X_PM_TMR_BLK GAS@0xD0(space@+0 ��@+1 ��ַ@+4), �������0xDC
+//FADT: X_PM_TMR_BLK GAS@0xD0(space@+0 宽@+1 地址@+4), 表长须≥0xDC
 static BOOLEAN ClkFindPmtmr(PGEPT_CLK c, ULONG64 sdt, BOOLEAN isXsdt)
 {
 	PVOID tbl = ClkTableBySig(sdt, isXsdt, "FACP");
 	if (tbl == NULL)
 	{
-		FlLog("Clock: ϵͳ����������FADT��");
+		FlLog("Clock: 系统描述表内无FADT表");
 		return FALSE;
 	}
 	ULONG tblLen = 0;
@@ -245,17 +424,32 @@ static BOOLEAN ClkFindPmtmr(PGEPT_CLK c, ULONG64 sdt, BOOLEAN isXsdt)
 	ExFreePool(tbl);
 	if (addr == 0 || width == 0)
 	{
-		FlLog("Clock: FADT��X_PM_TMR��(����%u)��������", tblLen);
+		FlLog("Clock: FADT无X_PM_TMR块(表长%u)——跳过", tblLen);
 		return FALSE;
 	}
 	if (space != 0)
 	{
-		FlLog("Clock: PM_TMRΪ�˿���(IO%llX)����δ���, ���۹۲�", addr);
-		return FALSE;
+		//端口型(SystemIO): I/O位图封堵路径(见上"端口时钟"段),
+		//返回TRUE走端口校准+布防, 不占MMIO槽位
+		if (addr > 0xFFFF)
+		{
+			FlLog("Clock: PM_TMR端口越界(%llX), 跳过", addr);
+			return FALSE;
+		}
+		s_clkIoPort = (USHORT)addr;
+		ULONG bits = width;
+		if (bits < 1 || bits > 32)
+		{
+			bits = 32;
+		}
+		s_clkIoMask = (bits >= 32) ? 0xFFFFFFFFULL : ((1ULL << bits) - 1);
+		FlLog("Clock: PM_TMR为端口型(端口%llX宽%u)——走I/O位图封堵",
+			addr, bits);
+		return TRUE;
 	}
 	if ((addr & 0xFFF) > 0xFFC || addr >= 0x8000000000ULL)
 	{
-		FlLog("Clock: PM_TMR��ַ�Ƿ�(%llX), ����", addr);
+		FlLog("Clock: PM_TMR地址非法(%llX), 跳过", addr);
 		return FALSE;
 	}
 	c->Gpa = addr & ~0xFFFULL;
@@ -270,18 +464,18 @@ static BOOLEAN ClkFindPmtmr(PGEPT_CLK c, ULONG64 sdt, BOOLEAN isXsdt)
 	return TRUE;
 }
 
-//HPETӲ����֤: caps��Ч+���ں���+����������; COUNT_SIZE_CAP=0��32λ
+//HPET硬件验证: caps有效+周期合理+计数器活着; COUNT_SIZE_CAP=0按32位
 static BOOLEAN ClkVerifyHpet(PGEPT_CLK c)
 {
 	ULONG64 caps = ClkRead(c, 0x00, 8);
 	if ((ULONG32)caps == 0xFFFFFFFFULL || (caps & 0xFF) == 0)
 	{
-		return FALSE;    //MMIO��(ȫ1)��rev0=��HPET
+		return FALSE;    //MMIO洞(全1)或rev0=无HPET
 	}
 	ULONG64 period = ClkRead(c, 0x04, 8);   //fs/clk
 	if (period < 10000 || period > 1000000000ULL)
 	{
-		return FALSE;    //10ns..1ms֮��=������
+		return FALSE;    //10ns..1ms之外=不合理
 	}
 	if (((caps >> 13) & 1) == 0)
 	{
@@ -293,12 +487,12 @@ static BOOLEAN ClkVerifyHpet(PGEPT_CLK c)
 	d.QuadPart = -10000;    //1ms
 	KeDelayExecutionThread(KernelMode, FALSE, &d);
 	ULONG64 b = ClkRead(c, c->CtrOff, c->CtrSize);
-	return b != a;    //�������ƽ�=����
+	return b != a;    //计数器推进=活着
 }
 
-//Ratio=��TSC/��clk: guest��rdtsc(�Ѻ�TSC_OFFSET)���������(δ����
-//ֱ��)ͬ����������guest�ɼ�ʱ����궨=����߶��յ�ͬһ����; ����
-//exit�ܶ�ƫ��<0.01%(����MMIO������), ������
+//Ratio=ΔTSC/Δclk: guest侧rdtsc(已含TSC_OFFSET)与真计数器(未布防
+//直读)同窗采样。按guest可见时间轴标定=检测者对照的同一条轴; 残余
+//exit密度偏置<0.01%(低于MMIO读抖动), 不修正
 static BOOLEAN ClkCalibrate(PGEPT_CLK c)
 {
 	ULONG64 best = 0;
@@ -323,7 +517,7 @@ static BOOLEAN ClkCalibrate(PGEPT_CLK c)
 	}
 	if (best < 8 || best > 0x40000)
 	{
-		return FALSE;    //1kHz..1GHz֮��=����
+		return FALSE;    //1kHz..1GHz之外=防呆
 	}
 	c->Ratio = (LONG64)best;
 	return TRUE;
@@ -331,7 +525,7 @@ static BOOLEAN ClkCalibrate(PGEPT_CLK c)
 
 VOID ClkInitAll(VOID)
 {
-	//RSDP����: ��EBDA(BDA 0x40E�֡�16), ��0xE0000-0xFFFFFȫ��
+	//RSDP发现: 先EBDA(BDA 0x40E字×16), 后0xE0000-0xFFFFF全区
 	ULONG64 sdt = 0;
 	UCHAR xsdt = 0;
 	{
@@ -351,10 +545,10 @@ VOID ClkInitAll(VOID)
 	}
 	if (sdt == 0)
 	{
-		FlLog("Clock: RSDPδ����(EBDA+0xE0000-0xFFFFF)��������ʱ�ӷ��");
+		FlLog("Clock: RSDP未发现(EBDA+0xE0000-0xFFFFF)——跳过时钟封堵");
 		return;
 	}
-	FlLog("Clock: RSDP��%s@%llX", xsdt ? "XSDT" : "RSDT", sdt);
+	FlLog("Clock: RSDP→%s@%llX", xsdt ? "XSDT" : "RSDT", sdt);
 	static const char* names[GEPT_CLK_MAX] = { "HPET", "PM_TMR" };
 	ULONG armed = 0;
 	for (ULONG i = 0; i < GEPT_CLK_MAX; i++)
@@ -365,17 +559,27 @@ VOID ClkInitAll(VOID)
 		{
 			continue;
 		}
+		//端口型PM_TMR: 走I/O位图路径(校准+逐核布防), 不占MMIO槽
+		if (s_clkIoPort != 0)
+		{
+			if (!ClkIoCalibrate(s_clkIoPort))
+			{
+				FlLog("Clock: 端口PM_TMR校准失败(计数器不动), 跳过");
+				s_clkIoPort = 0;
+			}
+			continue;
+		}
 		PHYSICAL_ADDRESS pa;
 		pa.QuadPart = (LONGLONG)c->Gpa;
 		c->RootVA = (PUCHAR)MmMapIoSpace(pa, PAGE_SIZE, MmNonCached);
 		if (c->RootVA == NULL)
 		{
-			FlLog("Clock: %s IoSpaceӳ��ʧ��(%llX)", names[i], c->Gpa);
+			FlLog("Clock: %s IoSpace映射失败(%llX)", names[i], c->Gpa);
 			continue;
 		}
 		if ((i == 0 && !ClkVerifyHpet(c)) || !ClkCalibrate(c))
 		{
-			FlLog("Clock: %s У��/У׼ʧ��(�������������ֵ�쳣), ����",
+			FlLog("Clock: %s 校验/校准失败(计数器不动或比值异常), 跳过",
 				names[i]);
 			MmUnmapIoSpace(c->RootVA, PAGE_SIZE);
 			c->RootVA = NULL;
@@ -383,17 +587,16 @@ VOID ClkInitAll(VOID)
 		}
 		c->Armed = TRUE;
 		armed++;
-		FlLog("Clock: %s���� ҳ=%llX ������@+%03X��%u Ratio=%lld(��TSC/��clk)",
+		FlLog("Clock: %s就绪 页=%llX 计数器@+%03X宽%u Ratio=%lld(ΔTSC/Δclk)",
 			names[i], c->Gpa, (ULONG)c->CtrOff, (ULONG)c->CtrSize, c->Ratio);
 		FlRingPush('l', KeGetCurrentProcessorNumber(), 0,
 			(ULONG64)c->Ratio, c->Gpa + c->CtrOff, 0);
 	}
 	if (armed == 0)
 	{
-		FlLog("Clock: �޿ɷ��MMIOʱ��(HPET/PM_TMRȱʧ��У��ʧ��)");
-		return;
+		FlLog("Clock: 无可封堵MMIO时钟(HPET/PM_TMR缺失或校验失败)");
 	}
-	//��˲���: vmcall(11)��root�ڵ�ǰ��������ͼ��ҳ+��RWX+invept
+	//逐核布防: vmcall(11)→root在当前核两套视图拆页+清RWX+invept
 	ULONG cpuCount = KeQueryActiveProcessorCount(NULL);
 	KAFFINITY allCpus = KeQueryActiveProcessors();
 	for (ULONG i = 0; i < cpuCount; i++)
@@ -405,8 +608,17 @@ VOID ClkInitAll(VOID)
 		}
 	}
 	KeSetSystemAffinityThread(allCpus);
-	FlLog("Clock: �������(%u��ʱ��, %u�ˡ�����ͼ��RWX, ��'a'����)",
-		armed, cpuCount);
+	if (armed > 0)
+	{
+		FlLog("Clock: MMIO布防完成(%u个时钟, %u核×两视图清RWX, 环'a'留痕)",
+			armed, cpuCount);
+	}
+	if (s_clkIoPort != 0)
+	{
+		FlLog("Clock: 端口PM_TMR布防完成(端口%X, %u核I/O位图置位→exit(30)补偿仿真)",
+			(ULONG)s_clkIoPort, cpuCount);
+	}
+	FlLog("Clock: MSR时钟(APeRF/MPERF/TMCCT)不封堵——v1.9b裁决(热读者exit风暴, 见NOTES)");
 }
 
 VOID ClkShutdown(VOID)
@@ -422,8 +634,9 @@ VOID ClkShutdown(VOID)
 	}
 }
 
-//vmcall(11)root��: ʱ��ҳ��������ͼ(cleanup������hook��ͼ����,
-//��һ��ͼ�·ô涼Ҫexit)��2M+PTE��RWX��exit������arena�в۰�ȫ
+//vmcall(11)root侧: 时钟页在两套视图(cleanup陷阱与hook视图正交,
+//任一视图下访存都要exit)拆2M+PTE清RWX+端口时钟I/O位置位。exit
+//上下文arena切槽安全
 VOID ClkArmCpu(VOID)
 {
 	ULONG cpu = KeGetCurrentProcessorNumber();
@@ -465,24 +678,30 @@ VOID ClkArmCpu(VOID)
 			pte->fileds.execute = 0;
 		}
 	}
+	//端口时钟(PM_TMR SystemIO型): 本核I/O位图置位(procCtl bit25已
+	//开, 位图全零=直通; 置位后该端口IN/OUT→exit(30)→ClkIoTryEmulate)
+	if (s_clkIoPort != 0)
+	{
+		ClkIoArmCpu(s_clkIoPort, TRUE);
+	}
 	EptInveptCurrent();
 	FlRingPush('a', cpu, GEPT_VMCALL_CLKARM,
 		s_clk[0].Gpa, s_clk[1].Gpa, 0);
 }
 
-//==== �ô�ָ�����+���� ====
+//==== 访存指令解码+仿真 ====
 typedef struct _CLK_ACC
 {
-	ULONG len;         //ָ���
-	ULONG size;        //�ô�����ֽ�
-	BOOLEAN isRead;    //TRUE=load��GPR
-	BOOLEAN zx;        //MOVZX(����д��)
-	UCHAR reg;         //��=Ŀ��/д=Դ�Ĵ�����(0-15, REX.R��չ)
-	BOOLEAN isImm;     //дԴ=������(C6/C7)
-	ULONG64 imm;       //д������
+	ULONG len;         //指令长度
+	ULONG size;        //访存宽度字节
+	BOOLEAN isRead;    //TRUE=load→GPR
+	BOOLEAN zx;        //MOVZX(零扩写回)
+	UCHAR reg;         //读=目的/写=源寄存器号(0-15, REX.R扩展)
+	BOOLEAN isImm;     //写源=立即数(C6/C7)
+	ULONG64 imm;       //写立即数
 } CLK_ACC;
 
-//GPR�š�GUEST_REGS�ֶ�: �ֶ���=Ӳ��������(rax..rdi=0-7, r8-r15)
+//GPR号→GUEST_REGS字段: 字段序=硬件编码序(rax..rdi=0-7, r8-r15)
 static VOID ClkSetGpr(PGUEST_REGS regs, UCHAR reg, ULONG64 v, ULONG size)
 {
 	PULONG64 gp = (PULONG64)regs;
@@ -492,7 +711,7 @@ static VOID ClkSetGpr(PGUEST_REGS regs, UCHAR reg, ULONG64 v, ULONG size)
 	}
 	else if (size == 4)
 	{
-		gp[reg] = (ULONG)v;    //32λд����
+		gp[reg] = (ULONG)v;    //32位写零扩
 	}
 	else if (size == 1)
 	{
@@ -504,15 +723,15 @@ static VOID ClkSetGpr(PGUEST_REGS regs, UCHAR reg, ULONG64 v, ULONG size)
 	}
 }
 
-//���뵥���ô�ָ��: MOV��(88/89/8A/8B/C6/C7)+MOVZX(0F B6/B7)��
-//violation�Ѹ���GPA, ���������Ч��ַ; SSE/��/66/67/LOCKǰ׺��
-//��֧�֡�FALSE(flicker����)��ȡָrootֱ���ں�VA(ȡָҳ����ִ��
-//=��present)
+//解码单条访存指令: MOV族(88/89/8A/8B/C6/C7)+MOVZX(0F B6/B7)。
+//violation已给出GPA, 无需计算有效地址; SSE/串/66/67/LOCK前缀等
+//不支持→FALSE(flicker回退)。取指root直读内核VA(取指页正在执行
+//=恒present)
 static BOOLEAN ClkDecode(ULONG64 rip, CLK_ACC* acc)
 {
 	if ((rip >> 48) != 0xFFFF)
 	{
-		return FALSE;    //��canonical�ں�VA(����)
+		return FALSE;    //非canonical内核VA(防御)
 	}
 	ULONG64 rest = (rip | 0xFFFULL) + 1 - rip;
 	if (rest < 2)
@@ -528,7 +747,7 @@ static BOOLEAN ClkDecode(ULONG64 rip, CLK_ACC* acc)
 	{
 		return FALSE;
 	}
-	//ǰ׺���������θ�����REX; 66/67/F0/F2/F3=��֧��
+	//前缀区仅允许段覆盖与REX; 66/67/F0/F2/F3=不支持
 	for (ULONG i = 0; i < ld.opcd_offset; i++)
 	{
 		UCHAR p = code[i];
@@ -546,7 +765,7 @@ static BOOLEAN ClkDecode(ULONG64 rip, CLK_ACC* acc)
 	UCHAR op = code[ld.opcd_offset];
 	if (((ld.modrm >> 6) & 3) == 3)
 	{
-		return FALSE;    //�Ĵ���������(��Ӧ����violation)
+		return FALSE;    //寄存器操作数(不应触发violation)
 	}
 	UCHAR reg = (UCHAR)(((ld.modrm >> 3) & 7) | ((ld.rex & 4) ? 8 : 0));
 	BOOLEAN w = (ld.rex & 8) != 0;
@@ -557,7 +776,7 @@ static BOOLEAN ClkDecode(ULONG64 rip, CLK_ACC* acc)
 		UCHAR op2 = code[ld.opcd_offset + 1];
 		if (op2 != 0xB6 && op2 != 0xB7)
 		{
-			return FALSE;    //��MOVZX
+			return FALSE;    //仅MOVZX
 		}
 		acc->isRead = TRUE;
 		acc->zx = TRUE;
@@ -579,7 +798,7 @@ static BOOLEAN ClkDecode(ULONG64 rip, CLK_ACC* acc)
 		{
 			if (ld.imm_size != acc->size)
 			{
-				return FALSE;    //66ǰ׺(2�ֽ�imm)����ǰ׺���ų�
+				return FALSE;    //66前缀(2字节imm)已在前缀区排除
 			}
 			RtlCopyMemory(&acc->imm, code + ld.imm_offset, acc->size);
 		}
@@ -588,10 +807,10 @@ static BOOLEAN ClkDecode(ULONG64 rip, CLK_ACC* acc)
 	return TRUE;
 }
 
-//���ɽ���ô�: ���е�ǰָ��(�ָ�ҳȨ��)+MTF������MTF exit�ز�
-//�ط�¡�ֵδ����=��ȫ����(�������һ��); REP��=�����2 exit
-//(MMIO������̬����, ��ȷ������)��FALSE=PTE���ɵ�(���۲�����,
-//���÷����䳣��·��)
+//不可解码访存: 放行当前指令(恢复页权限)+MTF单步→MTF exit回捕
+//重封堵。值未补偿=安全降级(裸机语义一致); REP串=逐迭代2 exit
+//(MMIO串读病态场景, 正确性优先)。FALSE=PTE不可得(理论不可能,
+//调用方回落常规路径)
 static BOOLEAN ClkFlicker(ULONG64 gpa)
 {
 	ULONG cpu = KeGetCurrentProcessorNumber();
@@ -615,11 +834,13 @@ BOOLEAN ClkTryEmulate(PGUEST_REGS GuestRegs, ULONG64 guestRip,
 	ULONG64 guestRsp, ULONG64 gpa)
 {
 	PGEPT_CLK c = NULL;
+	ULONG clkIdx = 0;
 	for (ULONG i = 0; i < GEPT_CLK_MAX; i++)
 	{
 		if (s_clk[i].Armed && (gpa & ~0xFFFULL) == s_clk[i].Gpa)
 		{
 			c = &s_clk[i];
+			clkIdx = i;
 			break;
 		}
 	}
@@ -632,7 +853,7 @@ BOOLEAN ClkTryEmulate(PGUEST_REGS GuestRegs, ULONG64 guestRip,
 	if (!ClkDecode(guestRip, &acc) ||
 		(gpa & 0xFFF) + acc.size > 0x1000)
 	{
-		//���ɽ���/��ҳ��λ: flicker����
+		//不可解码/跨页错位: flicker放行
 		if (ClkFlicker(gpa))
 		{
 			static volatile LONG s_gCnt[128] = { 0 };
@@ -648,7 +869,7 @@ BOOLEAN ClkTryEmulate(PGUEST_REGS GuestRegs, ULONG64 guestRip,
 		return FALSE;
 	}
 	USHORT off = (USHORT)(gpa & 0xFFF);
-	ULONG ctrLo = c->CtrOff;    //ULONGͳһ�Ƚ�����(USHORT+UCHAR����Ϊint=���ž���)
+	ULONG ctrLo = c->CtrOff;    //ULONG统一比较类型(USHORT+UCHAR提升为int=符号警告)
 	ULONG ctrHi = (ULONG)c->CtrOff + c->CtrSize;
 	if (acc.isRead)
 	{
@@ -656,22 +877,24 @@ BOOLEAN ClkTryEmulate(PGUEST_REGS GuestRegs, ULONG64 guestRip,
 		BOOLEAN virt = FALSE;
 		if (off >= ctrLo && off + acc.size <= ctrHi)
 		{
-			//��������: ��ֵ+TSC_OFFSET/Ratio(��guest�ɼ�TSCͬ��)
+			//计数器窗: 真值+TSC_OFFSET/Ratio(与guest可见TSC同轴)
+			//+单调钳制(倒退向量封堵, 见ClkClampMonotonic)
 			ULONG64 real = ClkRead(c, c->CtrOff, c->CtrSize);
 			ULONG64 tscOff = 0;
 			__vmx_vmread(TSC_OFFSET, &tscOff);
 			LONG64 comp = (LONG64)tscOff / c->Ratio;
-			val = ((real + (ULONG64)comp) & c->CtrMask)
-				>> (8 * (off - c->CtrOff));
+			ULONG64 ctr = ClkClampMonotonic(&s_clkLastVirt[clkIdx],
+				(real + (ULONG64)comp) & c->CtrMask, c->CtrMask);
+			val = ctr >> (8 * (off - c->CtrOff));
 			virt = TRUE;
 		}
 		else if (off + acc.size <= ctrLo || off >= ctrHi)
 		{
-			val = ClkRead(c, off, acc.size);    //����Ĵ���ֱ����ֵ
+			val = ClkRead(c, off, acc.size);    //其余寄存器直读真值
 		}
 		else
 		{
-			//��������߽��λ����: flicker����
+			//跨计数器边界错位访问: flicker放行
 			if (ClkFlicker(gpa))
 			{
 				__vmx_vmwrite(GUEST_RIP, guestRip);
@@ -682,7 +905,7 @@ BOOLEAN ClkTryEmulate(PGUEST_REGS GuestRegs, ULONG64 guestRip,
 		}
 		if (acc.zx)
 		{
-			ClkSetGpr(GuestRegs, acc.reg, val, 8);    //MOVZX: ����ȫ��д
+			ClkSetGpr(GuestRegs, acc.reg, val, 8);    //MOVZX: 零扩全宽写
 		}
 		else
 		{
@@ -690,7 +913,7 @@ BOOLEAN ClkTryEmulate(PGUEST_REGS GuestRegs, ULONG64 guestRip,
 		}
 		if (virt)
 		{
-			//'y'����(����: �״�+ÿ4096��)
+			//'y'留痕(采样: 首次+每4096次)
 			static volatile LONG s_yCnt[128] = { 0 };
 			LONG yn = InterlockedIncrement(&s_yCnt[cpu & 127]);
 			if (yn == 1 || (yn & 0xFFF) == 0)
@@ -703,7 +926,7 @@ BOOLEAN ClkTryEmulate(PGUEST_REGS GuestRegs, ULONG64 guestRip,
 	{
 		if (off < ctrHi && off + acc.size > ctrLo)
 		{
-			;    //������ֻ��: д����(����Ӳ��һ��)
+			;    //计数器只读: 写丢弃(与真硬件一致)
 		}
 		else
 		{
@@ -736,6 +959,18 @@ BOOLEAN ClkTryEmulate(PGUEST_REGS GuestRegs, ULONG64 guestRip,
 BOOLEAN ClkMtfFinish(VOID)
 {
 	ULONG cpu = KeGetCurrentProcessorNumber();
+	//端口flicker回捕: 重置位(串指令下一迭代exit(30)→再flicker,
+	//2 exit/迭代); 无视图切换(I/O位图与EPT视图正交)
+	USHORT ioPort = s_clkIoFlicker[cpu & 127];
+	if (ioPort != 0)
+	{
+		s_clkIoFlicker[cpu & 127] = 0;
+		ClkIoArmCpu(ioPort, TRUE);
+		ULONG64 ctl = 0;
+		__vmx_vmread(CPU_BASED_VM_EXEC_CONTROL, &ctl);
+		__vmx_vmwrite(CPU_BASED_VM_EXEC_CONTROL, ctl & ~0x08000000ULL);
+		return TRUE;
+	}
 	ULONG64 gpa = s_clkFlicker[cpu & 127];
 	if (gpa == 0)
 	{
@@ -758,12 +993,22 @@ BOOLEAN ClkMtfFinish(VOID)
 
 BOOLEAN ClkDemoRead(ULONG idx, ULONG64* Val)
 {
-	if (idx >= GEPT_CLK_MAX || !s_clk[idx].Armed || Val == NULL)
+	if (idx >= GEPT_CLK_MAX || Val == NULL)
+	{
+		return FALSE;
+	}
+	//端口型PM_TMR(idx=1): guest态IN→exit(30)→补偿仿真, 'y'留痕
+	if (idx == 1 && s_clkIoPort != 0)
+	{
+		*Val = __indword(s_clkIoPort) & s_clkIoMask;
+		return TRUE;
+	}
+	if (!s_clk[idx].Armed)
 	{
 		return FALSE;
 	}
 	PGEPT_CLK c = &s_clk[idx];
-	//�����󱾶����߷���·��(virtualֵ), 'y'����
+	//布防后本读即走仿真路径(virtual值), 'y'留痕
 	*Val = ClkRead(c, c->CtrOff, c->CtrSize) & c->CtrMask;
 	return TRUE;
 }

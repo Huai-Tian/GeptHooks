@@ -93,22 +93,25 @@ static VOID DemoHookInstall(VOID)
 				g_demoLstarFired > 0 ? "OK:拦截生效" : "FAIL:位图未拦截");
 		}
 	}
-	//时钟封堵自检: guest读HPET/PM_TMR计数器(布防页→violation→root
-	//仿真补偿)。两次读值推进+'y'事件=补偿仿真生效(值与guest可见
-	//TSC同轴, 交叉对比无时间轴空洞)
+	//时钟封堵自检: guest读HPET/PM_TMR计数器(MMIO布防页→violation/
+	//端口型→exit(30)→root仿真补偿)。两次读值推进+'y'事件=补偿仿真
+	//生效(值与guest可见TSC同轴); 快读=单调钳制验证(连读不倒退)
 	for (ULONG ci = 0; ci < 2; ci++)
 	{
-		ULONG64 v0 = 0, v1 = 0;
+		ULONG64 v0 = 0, v1 = 0, vq = 0;
 		if (ClkDemoRead(ci, &v0))
 		{
+			ClkDemoRead(ci, &vq);    //紧邻快读: 间隔仅自身exit
 			LARGE_INTEGER d;
 			d.QuadPart = -10000;    //1ms
 			KeDelayExecutionThread(KernelMode, FALSE, &d);
 			ClkDemoRead(ci, &v1);
-			FlLog("[Demo] %s自检: %llX → %llX(%s)",
+			FlLog("[Demo] %s自检: %llX → %llX(%s); 快读=%llX(%s)",
 				ci == 0 ? "HPET" : "PM_TMR",
 				(unsigned long long)v0, (unsigned long long)v1,
-				v1 != v0 ? "OK:推进+补偿仿真命中('y'事件)" : "FAIL:计数器未推进");
+				v1 != v0 ? "OK:推进+补偿仿真命中" : "FAIL:计数器未推进",
+				(unsigned long long)vq,
+				vq >= v0 ? "OK:非倒退(单调钳制)" : "FAIL:时间倒退");
 		}
 	}
 }

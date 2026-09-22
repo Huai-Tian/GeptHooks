@@ -26,7 +26,7 @@ typedef struct _GEPT_API_ENTRY
 	PVOID ReplayVA;       //LDE重定位跳板(副本prologue+尾jmp回; fallback的GeptCallOriginal+replay自测共用)
 	ULONG ReplayLen;      //重定位覆盖的字节数(=PHHook跳转覆盖长度, 两者同源同长)
 	volatile LONG Removed;//1=已移除(Enumerate跳过; 内存延迟到卸载)
-} GEPT_API_ENTRY, *PGEPT_API_ENTRY;
+} GEPT_API_ENTRY, * PGEPT_API_ENTRY;
 
 static LIST_ENTRY s_apiList = { 0 };       //live+removed条目(卸载统一释放)
 static KSPIN_LOCK s_apiLock = { 0 };       //Install/Remove/Enumerate互斥(均PASSIVE)
@@ -311,12 +311,14 @@ NTSTATUS GeptHookInstall(const GEPT_HOOK* Hook)
 	return STATUS_SUCCESS;
 }
 
-//Remove的DPC上下文(全核广播: 每核vmcall(7)还原字节+invept自身TLB)
+//Remove的DPC上下文(全核广播: 每核vmcall(7)还原字节+vmcall(12)恢复
+//CodePage恒等+invept自身TLB)
 typedef struct _GEPT_REMOVE_CTX
 {
 	ULONG64 DstVA;    //CodePage+页内偏移(还原目标)
 	ULONG64 SrcVA;    //原页+页内偏移(权威副本, 原页从未被改)
 	ULONG64 Len;      //HookLen
+	ULONG64 CpGpa;    //CodePage GPA(vmcall(12)恢复恒等)
 } GEPT_REMOVE_CTX;
 
 static VOID GeptRemoveDpc(_In_ struct _KDPC* Dpc, _In_opt_ PVOID DeferredContext,
@@ -331,6 +333,12 @@ static VOID GeptRemoveDpc(_In_ struct _KDPC* Dpc, _In_opt_ PVOID DeferredContext
 			//vmcall(7): exit handler里memcpy+双视图invept(每核各一次:
 			//memcpy幂等无害, invept按核生效故每核必做)
 			CmVmCall(7, ctx->DstVA, ctx->SrcVA, ctx->Len);
+			//vmcall(12): CodePage恒等恢复(释放前必做——PFN复用后
+			//残留隐蔽=新拥有者读零损坏)
+			if (ctx->CpGpa != 0)
+			{
+				CmVmCall(GEPT_VMCALL_CPHIDE, ctx->CpGpa, 0, 0);
+			}
 		}
 		else
 		{
@@ -380,6 +388,7 @@ NTSTATUS GeptHookRemove(PVOID Target)
 	ctx.DstVA = (ULONG64)pe->CodePageVA + off;
 	ctx.SrcVA = (ULONG64)pe->OriginalPageVA + off;
 	ctx.Len = found->ReplayLen;
+	ctx.CpGpa = (ULONG64)pe->CodePagePFN << 12;
 	KeGenericCallDpc(GeptRemoveDpc, &ctx);
 	FlLog("[API] Remove OK: 目标=%p 还原%uB@CodePage+%03Xh+全核invept(hook失效; 在途回调安全完成)",
 		Target, found->ReplayLen, off);

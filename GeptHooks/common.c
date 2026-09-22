@@ -289,9 +289,11 @@ VOID FlRingExit(ULONG cpu, ULONG reason, ULONG64 rip, ULONG64 qual)
 	{
 		return;
 	}
-	//高频指令exit(16/14/12/36/28/51)各限采样32条防刷爆; 计数仍精确
+	//高频指令exit(16/14/12/36/28/51/30)各限采样32条防刷爆; 计数仍精确
+	//r31/r32(MSR读写, v1.9b判例: MSR hook热读者刷穿行环)同限
 	if ((reason == 16 || reason == 14 || reason == 12 || reason == 36 ||
-		reason == 28 || reason == 51) &&
+		reason == 28 || reason == 51 || reason == 30 ||
+		reason == 31 || reason == 32) &&
 		g_flExitCounts[reason] > 32)
 	{
 		return;

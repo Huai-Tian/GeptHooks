@@ -1396,6 +1396,18 @@ void EptSetHook(ULONG64 orginalPagePFN, ULONG64 codePagePFN, ULONG64 hideRead)
 		pte->fileds.write = 0;
 		//切入hooked视图(先vmwrite再invept)
 		__vmx_vmwrite(EPT_POINTER, g_vcpu[cpuHook].EptpHooked.ALL);
+		//CodePage物理隐蔽(本核两套视图): 隐蔽其自身GPA的恒等PTE
+		//——物理diff扫描只见零; hook执行走原页GPA的remap PTE不受
+		//影响。同广播同root上下文, 无需额外DPC
+		{
+			ULONG64 cpGpa = codePagePFN << 12;
+			ULONG64 backEptp = 0;
+			__vmx_vmread(EPT_POINTER, &backEptp);
+			__vmx_vmwrite(EPT_POINTER, g_vcpu[cpuHook].Eptp.ALL);
+			EptHideCodePageGpa(cpGpa, TRUE);
+			__vmx_vmwrite(EPT_POINTER, backEptp);
+			EptHideCodePageGpa(cpGpa, TRUE);
+		}
 		//刷新TLB(all-context覆盖两套EPT; VMFUNC自带的失效不覆盖root侧)
 		EptInveptCurrent();
 		//布防标记: rsn=24=R=1形态 / rsn=25=读透明形态(R=0+MTF)
@@ -1581,6 +1593,48 @@ PEPT_PTE EptGetPte(PEPT_DATA ept, ULONG64 PFN)
 //guest视野不需要; 两套视图统一改译共享零页=MmMapIoSpace类物理
 //签名扫描只见零。DMA绕过EPT=残留
 
+//CodePage物理隐蔽(物理diff扫描消迹): 隐蔽CodePage自身GPA的恒等
+//PTE(扫描路径), hook执行走目标页GPA的remap PTE不受影响。仅VMFUNC
+//核(fallback核取指走clean表恒等PTE, 隐蔽即崩)。恢复=Remove释放
+//前调用(PFN复用后残留隐蔽=新拥有者读零损坏)。所在2M页未拆分时
+//先拆(exit上下文arena切槽安全)
+BOOLEAN EptHideCodePageGpa(ULONG64 gpa, BOOLEAN hide)
+{
+	PEPT_PDE_2M pde = EptGetPde2B(EptGetActiveData(), gpa);
+	if (pde != NULL && pde->fileds.ps && !EptPdeToPte(pde))
+	{
+		return FALSE;    //拆分失败: 保持可见(尽力而为)
+	}
+	PEPT_PTE pte = EptGetPte(EptGetActiveData(), gpa);
+	if (pte == NULL)
+	{
+		return FALSE;
+	}
+	if (hide)
+	{
+		if (pte->fileds.physicalAddr != (gpa >> 12))
+		{
+			return FALSE;    //非恒等=已隐蔽/异常, 幂等
+		}
+		pte->fileds.physicalAddr = s_hideZeroPFN;
+		pte->fileds.present = 1;
+		pte->fileds.write = 0;
+		pte->fileds.execute = 0;
+	}
+	else
+	{
+		if (pte->fileds.physicalAddr == (gpa >> 12))
+		{
+			return TRUE;    //已恒等(未隐蔽), 幂等
+		}
+		pte->fileds.physicalAddr = gpa >> 12;
+		pte->fileds.present = 1;
+		pte->fileds.write = 1;
+		pte->fileds.execute = 1;
+	}
+	return TRUE;
+}
+
 //单GPA在指定视图改译零页(P=1 W=0 X=0; 内存类型继承所在2M块)
 static VOID EptHideOneGpa(PEPT_DATA ept, ULONG64 gpa)
 {
@@ -1651,6 +1705,7 @@ VOID EptHideFrameworkPages(ULONG cpuNumber)
 		EptHideVaRange(clean, hooked, g_vcpu[c].VMMStack, PAGE_SIZE * 6);
 		EptHideVaRange(clean, hooked, g_vcpu[c].MsrBitMap, PAGE_SIZE);
 		EptHideVaRange(clean, hooked, g_vcpu[c].VmfuncEptpList, PAGE_SIZE);
+		EptHideVaRange(clean, hooked, g_vcpu[c].IoBitmaps, PAGE_SIZE * 2);
 		EptHideVaRange(clean, hooked, g_vcpu[c].PeptData, sizeof(EPT_DATA));
 		EptHideVaRange(clean, hooked, g_vcpu[c].PeptDataHooked, sizeof(EPT_DATA));
 	}

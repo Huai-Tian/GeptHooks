@@ -4,6 +4,7 @@
 #include"CPU.h"
 #include"VMX.h"
 #include"reg.h"
+#include"Clock.h"
 
 BOOLEAN EptIsSupportEpt()
 {
@@ -1193,6 +1194,12 @@ void EptExitHandler(PGUEST_REGS GuestRegs)
 	__vmx_vmread(GUEST_PHYSICAL_ADDRESS, &gpa);
 	//violation四元组入环
 	FlRingPush('V', KeGetCurrentProcessorNumber(), 48, gpa, guestRip, eptExit.ALL);
+	//MMIO时钟页访存(HPET/PM_TMR): 计数器补偿仿真——优先于hook路径,
+	//漏检会落入下方兜底分支被静默放开=封堵失效(时钟页恒非hook页)
+	if (ClkTryEmulate(GuestRegs, guestRip, guestRsp, gpa))
+	{
+		return;
+	}
 	//violation发生在当前视图的表上(vmread EPT_POINTER裁决act指向哪套)
 	PEPT_DATA act = EptGetActiveData();
 	//判断这个地址所在页是否被我们hook过

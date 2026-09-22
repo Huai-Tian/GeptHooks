@@ -4,6 +4,7 @@
 #include"GeptApi.h"
 #include"GeptMsr.h"
 #include"CPU.h"
+#include"Clock.h"
 
 //本文件=框架使用示例(面向二次开发者):
 //  DriverEntry  → VmxStartAllCpus接管全核 → 安装自己的hook
@@ -90,6 +91,24 @@ static VOID DemoHookInstall(VOID)
 			FlLog("[Demo] MSR自检: guest态rdmsr LSTAR=%llX 回调触发=%u(%s)",
 				(unsigned long long)v, (ULONG)g_demoLstarFired,
 				g_demoLstarFired > 0 ? "OK:拦截生效" : "FAIL:位图未拦截");
+		}
+	}
+	//时钟封堵自检: guest读HPET/PM_TMR计数器(布防页→violation→root
+	//仿真补偿)。两次读值推进+'y'事件=补偿仿真生效(值与guest可见
+	//TSC同轴, 交叉对比无时间轴空洞)
+	for (ULONG ci = 0; ci < 2; ci++)
+	{
+		ULONG64 v0 = 0, v1 = 0;
+		if (ClkDemoRead(ci, &v0))
+		{
+			LARGE_INTEGER d;
+			d.QuadPart = -10000;    //1ms
+			KeDelayExecutionThread(KernelMode, FALSE, &d);
+			ClkDemoRead(ci, &v1);
+			FlLog("[Demo] %s自检: %llX → %llX(%s)",
+				ci == 0 ? "HPET" : "PM_TMR",
+				(unsigned long long)v0, (unsigned long long)v1,
+				v1 != v0 ? "OK:推进+补偿仿真命中('y'事件)" : "FAIL:计数器未推进");
 		}
 	}
 }

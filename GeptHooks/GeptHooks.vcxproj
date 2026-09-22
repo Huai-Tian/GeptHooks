@@ -82,6 +82,7 @@
     <FilesToPackage Include="$(TargetPath)" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="Clock.c" />
     <ClCompile Include="common.c" />
     <ClCompile Include="ept.c" />
     <ClCompile Include="GeptApi.c" />
@@ -92,6 +93,7 @@
     <ClCompile Include="VMX.c" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="Clock.h" />
     <ClInclude Include="common.h" />
     <ClInclude Include="CPU.h" />
     <ClInclude Include="ept.h" />

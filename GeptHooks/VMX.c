@@ -4,6 +4,7 @@
 #include"common.h"
 #include"GeptMsr.h"
 #include"GeptApi.h"
+#include"Clock.h"
 #include<intrin.h>
 
 //关键设计:
@@ -505,6 +506,9 @@ NTSTATUS VmxStartAllCpus(PDRIVER_OBJECT DriverObject)
 	//TSC校准(全核in-guest确认后, 0x6E0 hook安装前——校准vmcall是
 	//空exit, 定时器流量不干扰)
 	VmxTscCalibrateAll();
+	//MMIO时钟封堵(v1.8): ACPI发现→校准→逐核布防。TSC轴封堵的伴生
+	//自洽——交叉时钟(HPET/PM_TMR)不再泄漏时间轴空洞
+	ClkInitAll();
 	//放行Desktop镜像(加载窗口期结束)
 	FlMarkEntryDone();
 	return STATUS_SUCCESS;
@@ -591,6 +595,8 @@ VOID VmxShutdownAllCpus(VOID)
 	}
 	//释放共享高区页表(全部核EPT共用的pdpt, 幂等)
 	EptShutdownHighMappings();
+	//时钟页IoSpace映射解除(VT已关, 无访存)
+	ClkShutdown();
 	//API内存(纯pool释放; 此刻hook已移除+VT已关, 无在途引用)
 	GeptApiFreeMemory();
 	FlLog("Unload: 完成, 关闭文件日志");
@@ -919,6 +925,12 @@ void VmxExitHandler(PGUEST_REGS GuestRegs)
 		else if (GuestRegs->rcx == GEPT_VMCALL_TSCCAL)
 		{
 		}
+		//MMIO时钟页布防(ClkInitAll逐核调用): root在当前核两套视图
+		//拆页+清RWX+invept(exit上下文arena切槽安全)
+		else if (GuestRegs->rcx == GEPT_VMCALL_CLKARM)
+		{
+			ClkArmCpu();
+		}
 		//探针末段: KEEP(接管)放行, 通用RIP推进, 探针恢复栈回non-root
 		else if (GuestRegs->rcx == 3)
 		{
@@ -1223,6 +1235,13 @@ void VmxExitHandler(PGUEST_REGS GuestRegs)
 	return;
 	case EXIT_REASON_MTF:
 	{
+		//时钟flicker回捕(优先): 指令已执行完, 重封堵+关MTF——
+		//无视图切换(时钟陷阱与hook视图正交, 两套视图都已布防)
+		if (ClkMtfFinish())
+		{
+			__vmx_vmwrite(GUEST_RIP, guestRip);
+			return;
+		}
 		//MTF单步完成(读/写指令已在clean视图执行): 关MTF+切回hooked。
 		//RIP已是下一条指令; MTF exit的指令长字段无效, 显式重写绕过
 		//尾部通用推进(exitCodeLen残留值=执行流错位)

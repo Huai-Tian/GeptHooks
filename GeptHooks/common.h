@@ -84,9 +84,11 @@ extern "C" {
 
 //内部vmcall功能码: 8=MSR位图原语(GeptMsr安装/移除, root直写真位图
 //——自我隐蔽配套, 详见GeptMsr.c); 10=TSC校准探针(空handler, guest
-//侧rdtsc夹逼测泄漏, 见VmxTscCalibrateAll)
+//侧rdtsc夹逼测泄漏, 见VmxTscCalibrateAll); 11=MMIO时钟页布防
+//(ClkInitAll逐核调用, 见Clock.c)
 #define GEPT_VMCALL_MSRBIT 8
 #define GEPT_VMCALL_TSCCAL 10
+#define GEPT_VMCALL_CLKARM 11
 
 //当前虚拟化目标核(-1=未启动), 启动循环置位, 日志心跳读它
 	extern volatile LONG g_geptVcpuCpu;
@@ -134,6 +136,10 @@ extern "C" {
 	//    guest访问权限兜底放开, a=gpa b=PTE帧——框架路径误写隐蔽页暴露口)
 	//  q=REP串root仿真命中(rsn=48, a=rip b=剩余元素数, 采样)
 	//  j=TSC校准完成(a=K b=rdtsc对开销 c=vmcall往返均值)
+	//  y=MMIO时钟仿真命中(rsn=48, a=gpa b=rip c=虚拟值, 采样)
+	//  a=时钟布防(rsn=11, a=HPET页 b=PM_TMR页, 0=未布防)
+	//  g=时钟flicker回退(rsn=48, a=gpa b=rip, 采样; rsn=37=MTF回捕)
+	//  l=时钟校准完成(a=Ratio b=计数器GPA)
 	typedef struct _GEPT_LINE_ENTRY
 	{
 		ULONG  seq;       //提交标记(=入环序号, 即最终行号-1)
@@ -220,7 +226,7 @@ extern "C" {
 	extern volatile LONG64 g_flExitCounts[GEPT_EXIT_REASON_MAX];
 
 	//构建标签: 打进日志第一行核对二进制版本。代码改动必须同步修改
-#define GEPT_BUILD_TAG "v1.7b"
+#define GEPT_BUILD_TAG "v1.8d"
 	extern CHAR g_geptBuildTag[24];      //common.c定义(=GEPT_BUILD_TAG)
 
 #ifdef __cplusplus

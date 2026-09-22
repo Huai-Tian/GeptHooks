@@ -4,7 +4,7 @@
 #include"common.h"
 #include"VMX.h"
 LIST_ENTRY g_PageList = {0};
-NTSTATUS PHHook(PVOID pFun, PVOID pHook)
+NTSTATUS PHHook(PVOID pFun, PVOID pHook, ULONG hideRead)
 {
 	NTSTATUS status = STATUS_SUCCESS;
 	PHYSICAL_ADDRESS phys = {0};
@@ -59,6 +59,7 @@ NTSTATUS PHHook(PVOID pFun, PVOID pHook)
 	pHookListEntry->OriginalPagePFN = (MmGetPhysicalAddress(pFun).QuadPart)>>12;
 	pHookListEntry->CodePageVA = CodePage;
 	pHookListEntry->CodePagePFN= (MmGetPhysicalAddress(CodePage).QuadPart) >>12;
+	pHookListEntry->HideRead = hideRead;
 	//讲结构体添加到全局链表中
 	if (g_PageList.Flink==NULL)
 	{
@@ -71,6 +72,7 @@ NTSTATUS PHHook(PVOID pFun, PVOID pHook)
 		HOOK_CONTEXT hookContext = {0};
 		hookContext.CodePagePFN = pHookListEntry->CodePagePFN;
 		hookContext.OriginalPagePFN = pHookListEntry->OriginalPagePFN;
+		hookContext.HideRead = hideRead;
 		//广播前后双锚点——广播内=全核并行vmcall(2)→EptSetHook
 		//(VM-exit上下文: 拆2M页×2+分配pte页+清execute+invept)。
 		//蓝屏/冻结发生在两锚点之间=exit上下文的EptSetHook路径
@@ -150,8 +152,9 @@ VOID PHHookCallBackDpc(_In_ struct _KDPC* Dpc, _In_opt_ PVOID DeferredContext, _
 		ULONG hc = KeGetCurrentProcessorNumber();
 		if (g_vcpu[hc].bInGuest)
 		{
-			//参数1:exitCode;参数2:传原函数的物理地址;参数3:CodePage物理地址
-			CmVmCall(2, hookContext->OriginalPagePFN, hookContext->CodePagePFN,0);
+			//参数1:exitCode;参数2:原页PFN;参数3:CodePagePFN;参数4:HideRead
+			CmVmCall(2, hookContext->OriginalPagePFN, hookContext->CodePagePFN,
+				hookContext->HideRead);
 		}
 		else
 		{

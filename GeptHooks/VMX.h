@@ -45,6 +45,8 @@
 #define EXIT_REASON_EPT_CONFIG          49
 //INVEPT: non-root无条件exit(与VMXOFF同族, 需case处置)
 #define EXIT_REASON_INVEPT              50
+//MTF单步exit(EPT hook读透明配套, 见ept.c EptExitHandler)
+#define EXIT_REASON_MTF                 37
 //RDTSCP: 仅特定控制位布局下exit(保留case防御)
 #define EXIT_REASON_RDTSCP              51
 #define EXIT_REASON_INVVPID             53

@@ -29,9 +29,9 @@
 //====================================================================
 
 //读回调: 返回值=rdmsr可见值(伪造)。需要真值→GeptMsrReadReal
-typedef ULONG64 (*GEPT_MSR_READ_CB)(PVOID Context, ULONG32 Msr);
+typedef ULONG64(*GEPT_MSR_READ_CB)(PVOID Context, ULONG32 Msr);
 //写回调: 返回TRUE=放行代写(监控语义), FALSE=静默丢弃(拦截语义)
-typedef BOOLEAN (*GEPT_MSR_WRITE_CB)(PVOID Context, ULONG32 Msr, ULONG64 Value);
+typedef BOOLEAN(*GEPT_MSR_WRITE_CB)(PVOID Context, ULONG32 Msr, ULONG64 Value);
 
 typedef struct _GEPT_MSR_HOOK
 {
@@ -39,11 +39,11 @@ typedef struct _GEPT_MSR_HOOK
 	PVOID Context;             //用户上下文(原样传给回调)
 	GEPT_MSR_READ_CB OnRead;   //NULL=读不拦截(位图读位不置)
 	GEPT_MSR_WRITE_CB OnWrite; //NULL=写不拦截(位图写位不置)
-} GEPT_MSR_HOOK, *PGEPT_MSR_HOOK;
+} GEPT_MSR_HOOK, * PGEPT_MSR_HOOK;
 
-//安装(PASSIVE_LEVEL): 全核位图置位+**回读自检**(任一in-guest核位图
-//读回不符=拒绝, 绝不带病上机——伪造场景在guest内真执行rdmsr,
-//位图失效=未拦截=#GP蓝屏)。同MSR重复安装=拒绝
+//安装(PASSIVE_LEVEL): 全核位图root直写(vmcall)+核掩码自检(任一
+//in-guest核未置位=当场撤销——位图失效=guest内rdmsr直接#GP蓝屏)。
+//同MSR重复安装=拒绝
 NTSTATUS GeptMsrHookInstall(const GEPT_MSR_HOOK* Hook);
 
 //移除(PASSIVE_LEVEL): 全核位图清位, 条目标记Removed(静态数组
@@ -62,5 +62,11 @@ ULONG64 GeptMsrReadReal(ULONG32 Msr);
 BOOLEAN GeptMsrDispatchRead(ULONG32 Msr, ULONG64* OutValue);
 //TRUE=允许代写(未hook/回调放行); FALSE=回调拒绝(静默丢弃)
 BOOLEAN GeptMsrDispatchWrite(ULONG32 Msr, ULONG64 Value);
+
+//==== root侧原语(VMX.c的vmcall(GEPT_VMCALL_MSRBIT) case调用, 勿直接调) ====
+//自我隐蔽把位图页改译零页→guest态直写=静默失效; root模式访问不走
+//EPT, 直写真位图。act: 0=仅读/1=置位/2=清位; rw: 0=读位图/1=写位图。
+//返回核位掩码(bit i=cpu i该位操作后现值)
+ULONG64 GeptMsrBitmapOpRoot(ULONG32 Msr, UCHAR rw, UCHAR act);
 
 #endif // GEPTMSR_H

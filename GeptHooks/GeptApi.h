@@ -60,6 +60,10 @@ typedef struct _GEPT_HOOK
 	ULONG StackArgs;          //目标函数第5+栈参数个数(0=不转发;
 	                          //>0时回调收StackArgs指针+CallOriginal自动
 	                          //转发; ≤GEPT_MAX_STACK_ARGS, 超限Install拒绝)
+	ULONG HideRead;           //hook页读透明(VMFUNC核生效): 1=读/写violation
+	                          //→MTF单步透出原页字节(PG/扫描器兼容); 代价=
+	                          //该页每次数据访问+2 exit; CPU不支持exec-only
+	                          //时自动回退。0=执行零exit, 读可见跳转字节
 } GEPT_HOOK, *PGEPT_HOOK;
 
 //安装hook(PASSIVE_LEVEL): CodePage构建+每核hooked EPT布防(PHHook复用)

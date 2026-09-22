@@ -19,7 +19,9 @@
 //位图布局(SDM Vol3 25.6.9, 4KB): [读低1024][读高1024][写低1024]
 //[写高1024]; 低区=MSR 0x0-0x1FFF, 高区=0xC0000000-0xC0001FFF。
 //位图改动即时生效(硬件每次RDMSR/WRMSR现查内存, 无TLB类缓存,
-//KVM同款运行期改位实践)——无需invept/DPC广播
+//KVM同款运行期改位实践)——无需invept/DPC广播。
+//位图读写一律走root直写vmcall: EPT自我隐蔽把位图页改译零页,
+//guest态直写=静默失效(v1.5c实测P0)
 //====================================================================
 
 #define GEPT_MSR_MAX 16
@@ -31,7 +33,7 @@ typedef struct _GEPT_MSR_ENTRY
 	PVOID Context;
 	GEPT_MSR_READ_CB OnRead;    //NULL=读位不置(直通)
 	GEPT_MSR_WRITE_CB OnWrite;  //NULL=写位不置(直通)
-} GEPT_MSR_ENTRY, *PGEPT_MSR_ENTRY;
+} GEPT_MSR_ENTRY, * PGEPT_MSR_ENTRY;
 
 static GEPT_MSR_ENTRY s_msr[GEPT_MSR_MAX];
 static KSPIN_LOCK s_msrLock = { 0 };
@@ -59,55 +61,66 @@ static VOID GeptMsrUnlock(VOID)
 	KeReleaseSpinLock(&s_msrLock, s_msrOldIrql);
 }
 
-//位图寻址: 返回目标字节地址(该核位图内), *BitOut=位号; rw: 0=读/1=写
-static PUCHAR GeptMsrBitAddr(ULONG cpu, ULONG32 msr, UCHAR rw, PULONG BitOut)
+//root侧位图原语(VMX.c的vmcall(GEPT_VMCALL_MSRBIT) case调用): 直接
+//VA位运算——root模式访问不走EPT, 位图页自我隐蔽(改译零页)不影响;
+//guest态直写=写进零页=静默失效+自检假阳性(v1.5c实测P0)。act:
+//0=仅读/1=置位/2=清位; rw: 0=读位图/1=写位图。返回核位掩码(bit i=
+//cpu i该位操作后现值, i≥64不计)。无锁无日志(VM-exit上下文安全)
+ULONG64 GeptMsrBitmapOpRoot(ULONG32 Msr, UCHAR rw, UCHAR act)
 {
-	PUCHAR base = (PUCHAR)g_vcpu[cpu].MsrBitMap;
-	if (base == NULL)
+	ULONG64 mask = 0;
+	for (ULONG i = 0; i < 128; i++)
 	{
-		return NULL;
+		PUCHAR base = (PUCHAR)g_vcpu[i].MsrBitMap;
+		if (base == NULL)
+		{
+			continue;
+		}
+		if (rw != 0)
+		{
+			base += 1024 * 2;                 //写位图区(SDM 25.6.9)
+		}
+		ULONG64 m = Msr;
+		if (m >= 0xC0000000)
+		{
+			base += 1024;                     //高区(0xC0000000+)
+			m -= 0xC0000000;
+		}
+		PUCHAR p = base + (m / 8);
+		UCHAR bit = (UCHAR)(m % 8);
+		if (act == 1)
+		{
+			*p |= (UCHAR)(1 << bit);
+		}
+		else if (act == 2)
+		{
+			*p &= (UCHAR)~(1 << bit);
+		}
+		if (i < 64 && ((*p >> bit) & 1))
+		{
+			mask |= 1ULL << i;
+		}
 	}
-	if (rw != 0)
-	{
-		base += 1024 * 2;                     //写位图区(SDM 25.6.9)
-	}
-	ULONG64 m = msr;
-	if (m >= 0xC0000000)
-	{
-		base += 1024;                         //高区(0xC0000000+)
-		m -= 0xC0000000;
-	}
-	*BitOut = (ULONG)(m % 8);
-	return base + (m / 8);
+	return mask;
 }
 
-static VOID GeptMsrBitSet(ULONG cpu, ULONG32 msr, UCHAR rw, BOOLEAN set)
+//guest侧包装: vmcall进root直写真位图。PASSIVE/DISPATCH(持锁)均可
+//——exit handler无调度无锁。本核必须in-guest(真机vmcall=#UD蓝屏;
+//不在=部分启动诊断态, 由调用方决策)。失败时位图未变更
+static NTSTATUS GeptMsrBitmapVmcall(ULONG32 Msr, UCHAR rw, UCHAR act, ULONG64* maskOut)
 {
-	ULONG bit = 0;
-	PUCHAR p = GeptMsrBitAddr(cpu, msr, rw, &bit);
-	if (p == NULL)
+	ULONG cur = KeGetCurrentProcessorNumber();
+	if (cur >= 128 || !g_vcpu[cur].bInGuest)
 	{
-		return;
+		return STATUS_DEVICE_NOT_READY;
 	}
-	if (set)
+	ULONG64 mask = CmVmCall(GEPT_VMCALL_MSRBIT, Msr,
+		((ULONG64)rw << 8) | act, 0);
+	if (maskOut != NULL)
 	{
-		*p |= (UCHAR)(1 << bit);
+		*maskOut = mask;
 	}
-	else
-	{
-		*p &= (UCHAR)~(1 << bit);
-	}
-}
-
-static BOOLEAN GeptMsrBitGet(ULONG cpu, ULONG32 msr, UCHAR rw)
-{
-	ULONG bit = 0;
-	PUCHAR p = GeptMsrBitAddr(cpu, msr, rw, &bit);
-	if (p == NULL)
-	{
-		return FALSE;
-	}
-	return ((*p >> bit) & 1) ? TRUE : FALSE;
+	return STATUS_SUCCESS;
 }
 
 //回调内取真实值(保留MSR勿调——root态真读=#GP蓝屏)
@@ -210,54 +223,55 @@ NTSTATUS GeptMsrHookInstall(const GEPT_MSR_HOOK* Hook)
 	e->Context = Hook->Context;
 	e->OnRead = Hook->OnRead;
 	e->OnWrite = Hook->OnWrite;
-	//全核位图置位(在锁内: 与并发的Remove/Install串行; 位图写入即时生效)
-	for (ULONG i = 0; i < cpuCount; i++)
+	//位图root直写+核掩码自检(在锁内: 与并发的Remove/Install串行)。
+	//vmcall须本核in-guest(真机vmcall=#UD蓝屏; 不在=部分启动诊断态)
+	ULONG64 maskR = 0, maskW = 0;
+	NTSTATUS bmSt = STATUS_SUCCESS;
+	if (Hook->OnRead != NULL)
 	{
-		if (Hook->OnRead != NULL)
+		bmSt = GeptMsrBitmapVmcall(Hook->Msr, 0, 1, &maskR);
+	}
+	if (NT_SUCCESS(bmSt) && Hook->OnWrite != NULL)
+	{
+		bmSt = GeptMsrBitmapVmcall(Hook->Msr, 1, 1, &maskW);
+	}
+	if (!NT_SUCCESS(bmSt))
+	{
+		//回收可能已置的读位(幂等, 失败亦无碍——分发器无live条目=直通)
+		GeptMsrBitmapVmcall(Hook->Msr, 0, 2, NULL);
+		GeptMsrBitmapVmcall(Hook->Msr, 1, 2, NULL);
+		GeptMsrUnlock();
+		FlLog("[MSR] Install拒绝: 位图原语不可达(本核未in-guest, MSR=0x%X)",
+			Hook->Msr);
+		return bmSt;
+	}
+	//自检: 全部in-guest核的位图位须已置(缺位=硬件不拦截=guest内
+	//rdmsr直接#GP), 当场撤销
+	{
+		ULONG64 need = 0;
+		for (ULONG i = 0; i < cpuCount && i < 64; i++)
 		{
-			GeptMsrBitSet(i, Hook->Msr, 0, TRUE);
+			if (g_vcpu[i].bInGuest)
+			{
+				need |= 1ULL << i;
+			}
 		}
-		if (Hook->OnWrite != NULL)
+		if ((Hook->OnRead != NULL && (maskR & need) != need) ||
+			(Hook->OnWrite != NULL && (maskW & need) != need))
 		{
-			GeptMsrBitSet(i, Hook->Msr, 1, TRUE);
+			e->Removed = 1;
+			GeptMsrBitmapVmcall(Hook->Msr, 0, 2, NULL);
+			GeptMsrBitmapVmcall(Hook->Msr, 1, 2, NULL);
+			GeptMsrUnlock();
+			FlLog("[MSR] Install自检FAIL: 位图核掩码R=%llX W=%llX未覆盖in-guest=%llX(MSR=0x%X)——撤销安装防#GP",
+				(unsigned long long)maskR, (unsigned long long)maskW,
+				(unsigned long long)need, Hook->Msr);
+			return STATUS_UNSUCCESSFUL;
 		}
 	}
 	InterlockedExchange(&e->Removed, 0);    //发布(字段+位图已就绪)
 	GeptMsrUnlock();
-	//回读自检: 位图任一核读回=0即未拦截(guest内rdmsr会直接#GP),
-	//当场撤销安装
-	for (ULONG i = 0; i < cpuCount; i++)
-	{
-		if (!g_vcpu[i].bInGuest)
-		{
-			continue;
-		}
-		if (Hook->OnRead != NULL && !GeptMsrBitGet(i, Hook->Msr, 0))
-		{
-			e->Removed = 1;
-			for (ULONG k = 0; k < cpuCount; k++)
-			{
-				GeptMsrBitSet(k, Hook->Msr, 0, FALSE);
-				GeptMsrBitSet(k, Hook->Msr, 1, FALSE);
-			}
-			FlLog("[MSR] Install自检FAIL: cpu%u读位图读回=0(MSR=0x%X)——撤销安装防#GP",
-				i, Hook->Msr);
-			return STATUS_UNSUCCESSFUL;
-		}
-		if (Hook->OnWrite != NULL && !GeptMsrBitGet(i, Hook->Msr, 1))
-		{
-			e->Removed = 1;
-			for (ULONG k = 0; k < cpuCount; k++)
-			{
-				GeptMsrBitSet(k, Hook->Msr, 0, FALSE);
-				GeptMsrBitSet(k, Hook->Msr, 1, FALSE);
-			}
-			FlLog("[MSR] Install自检FAIL: cpu%u写位图读回=0(MSR=0x%X)——撤销安装",
-				i, Hook->Msr);
-			return STATUS_UNSUCCESSFUL;
-		}
-	}
-	FlLog("[MSR] Install OK: MSR=0x%X 读=%s 写=%s 上下文=%p(全核位图置位+回读自检过)",
+	FlLog("[MSR] Install OK: MSR=0x%X 读=%s 写=%s 上下文=%p(root直写位图+核掩码自检过)",
 		Hook->Msr, Hook->OnRead != NULL ? "拦截" : "直通",
 		Hook->OnWrite != NULL ? "拦截" : "直通", Hook->Context);
 	return STATUS_SUCCESS;
@@ -280,16 +294,23 @@ NTSTATUS GeptMsrHookRemove(ULONG32 Msr)
 		GeptMsrUnlock();
 		return STATUS_NOT_FOUND;
 	}
-	//先标Removed(分发立即停止命中)再清位图; 在途回调安全完成
+	//先标Removed(分发立即停止命中)再清位图; 在途回调安全完成。
+	//root直写清位; 原语不可达(本核未in-guest)时位图残留——VMCS随
+	//卸载销毁, 残留无害
 	found->Removed = 1;
-	ULONG cpuCount = KeQueryActiveProcessorCount(NULL);
-	for (ULONG i = 0; i < cpuCount; i++)
+	NTSTATUS rmSt = GeptMsrBitmapVmcall(Msr, 0, 2, NULL);
+	if (NT_SUCCESS(rmSt))
 	{
-		GeptMsrBitSet(i, Msr, 0, FALSE);
-		GeptMsrBitSet(i, Msr, 1, FALSE);
+		rmSt = GeptMsrBitmapVmcall(Msr, 1, 2, NULL);
 	}
 	GeptMsrUnlock();
-	FlLog("[MSR] Remove OK: MSR=0x%X(位图清位, 在途回调安全完成)", Msr);
+	if (!NT_SUCCESS(rmSt))
+	{
+		FlLog("[MSR] Remove: 位图原语不可达(本核未in-guest), 位图残留至VMCS销毁: MSR=0x%X",
+			Msr);
+		return STATUS_SUCCESS;
+	}
+	FlLog("[MSR] Remove OK: MSR=0x%X(root直写清位, 在途回调安全完成)", Msr);
 	return STATUS_SUCCESS;
 }
 

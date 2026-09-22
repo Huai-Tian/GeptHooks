@@ -160,7 +160,9 @@ VOID EptShutdownHighMappings(VOID);
 //[7][8][9]项; VmxSetupVmcs据此决定是否放弃vmlaunch
 ULONG EptVerifyTables(ULONG cpuNumber, ULONG64 guestRspVa);
 void EptExitHandler(PGUEST_REGS GuestRegs);
-void EptSetHook(ULONG64 orginalPagePFN,ULONG64 codePagePFN);
+//hideRead: 1=hooked视图hook页R=0(exec-only)——读/写violation→切clean+MTF
+//单步透出原始字节(读透明)。需CPU exec-only支持(g_bEptExecOnly), 否则回退R=1
+void EptSetHook(ULONG64 orginalPagePFN,ULONG64 codePagePFN,ULONG64 hideRead);
 //walker带显式PEPT_DATA参数(须明确目标视图): clean=g_vcpu[n].PeptData,
 //hooked=g_vcpu[n].PeptDataHooked, 当前视图=EptGetActiveData()
 PEPT_PDE_2M EptGetPde2B(PEPT_DATA ept, ULONG64 PFN);
@@ -172,7 +174,16 @@ PEPT_DATA EptGetActiveData(VOID);
 VOID EptInveptCurrent(VOID);   //统一invept入口(能力探测+EPTP填充+VMfail留痕)
 VOID EptInveptBothViews(VOID); //vmx_off前双视图invept(all-context短路; single-context型CPU逐视图失效)
 BOOLEAN EptBuildHighMapping(ULONG64 gpa);
+//EPT自我隐蔽: 每核vmlaunch前(须在EptVerifyTables后)把全部框架私有
+//物理页(VMXON/VMCS/VMM栈/MSR位图/EPT表/EPTP-list/高区pdpt/标记页/
+//拆分pte页)在两套视图统一改译零页——root与硬件walker按HPA直访
+//不受影响, guest物理扫描只见零
+VOID EptHideFrameworkPages(ULONG cpuNumber);
+//释放全部拆分pte页(vmx_off后/回滚, EptShutdownHighMappings内调用)
+VOID EptFreeSplitPtes(VOID);
 extern BOOLEAN g_bEpt1GbPage;
+//EPT_VPID_CAP(0x48C) bit0: exec-only页(X=1,R=0)支持——HideRead的前提
+extern BOOLEAN g_bEptExecOnly;
 
 //==== 双EPT标记页 ====
 //hooked EPT把pageA改译到pageB: guest读同一VA, clean=GEPT_MARK_A /

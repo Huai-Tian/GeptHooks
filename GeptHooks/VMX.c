@@ -6,9 +6,6 @@
 #include"GeptApi.h"
 #include<intrin.h>
 
-//运行模式开关GEPT_PROBE_EXIT/GEPT_LAUNCH_CPU_LIMIT/BASE在common.h,
-//勿在此重复#define。
-//
 //关键设计:
 //  - 中断直投: pin期望=0+无ack-on-exit——中断在non-root直接经guest
 //    IDT交付, EOI直写真LAPIC, VMM零参与(开ack-on-exit+注入状态机
@@ -302,6 +299,35 @@ static ULONG64 VmxFeatCtlOnRead(PVOID Context, ULONG32 Msr)
 	return 1;
 }
 
+//0x6E0(TSC_DEADLINE)时间轴换算回调: guest的RDTSC=裸TSC+TSC_OFFSET,
+//硬件按裸TSC比较——不换算则定时时刻漂移|offset|且读回值泄漏累计
+//驻留时长。读+offset(回读=OS写入值)/写-offset(0=取消, 直通)
+static ULONG64 VmxDeadlineOnRead(PVOID Context, ULONG32 Msr)
+{
+	UNREFERENCED_PARAMETER(Context);
+	ULONG64 real = GeptMsrReadReal(Msr);
+	if (real == 0)
+	{
+		return 0;
+	}
+	ULONG64 off = 0;
+	__vmx_vmread(TSC_OFFSET, &off);
+	return real + off;
+}
+
+static BOOLEAN VmxDeadlineOnWrite(PVOID Context, ULONG32 Msr, ULONG64 Value)
+{
+	UNREFERENCED_PARAMETER(Context);
+	if (Value != 0)
+	{
+		ULONG64 off = 0;
+		__vmx_vmread(TSC_OFFSET, &off);
+		Value -= off;    //guest时间轴→裸TSC轴
+	}
+	__writemsr(Msr, Value);
+	return FALSE;   //已代写, 静默(勿再写原值)
+}
+
 //全核接管入口(PASSIVE_LEVEL): 资源分配→串行逐核启动VT→互斥仲裁→常驻。
 //失败路径已自清理资源, 调用方直接返回即可
 NTSTATUS VmxStartAllCpus(PDRIVER_OBJECT DriverObject)
@@ -390,23 +416,10 @@ NTSTATUS VmxStartAllCpus(PDRIVER_OBJECT DriverObject)
 
 	//串行逐核启动(PASSIVE级+亲和性切换), 不用KeGenericCallDpc
 	//(DPC全核进DISPATCH级, 线程不可调度)
-#if GEPT_LAUNCH_CPU_BASE >= 0
-	ULONG launchBase = GEPT_LAUNCH_CPU_BASE;
-#else
-	ULONG launchBase = cpuCount - 1;    //-1=最后一核(安静核)
-#endif
-	FlLog("启动模式: launchBase=cpu%u LIMIT=%d(0=不限制), 目标=全部%u核接管",
-		launchBase, GEPT_LAUNCH_CPU_LIMIT, cpuCount);
+	FlLog("启动模式: 目标=全部%u核接管", cpuCount);
 	KAFFINITY allCpus = KeQueryActiveProcessors();
 	for (ULONG i = 0; i < cpuCount; i++)
 	{
-		//只虚拟化[launchBase, launchBase+LIMIT)区间的核, 其余真机
-		if (GEPT_LAUNCH_CPU_LIMIT != 0 &&
-			(i < launchBase || i >= launchBase + GEPT_LAUNCH_CPU_LIMIT))
-		{
-			FlLog("cpu%u 跳过启动(目标区间外的核保持真机)", i);
-			continue;
-		}
 		if (g_vcpu[i].VMXON == NULL || g_vcpu[i].VMCS == NULL)
 		{
 			FlLog("cpu%u 无资源, 跳过", i);
@@ -477,6 +490,17 @@ NTSTATUS VmxStartAllCpus(PDRIVER_OBJECT DriverObject)
 		NTSTATUS msrSt = GeptMsrHookInstall(&featCtlHook);
 		FlLog("框架内置0x3A读伪造(恒返1): %s——互斥第一层+vmxon #GP(0)读/行为互证",
 			NT_SUCCESS(msrSt) ? "安装OK" : "安装失败(不影响VT运行, 详见[MSR]行)");
+	}
+	//框架内置0x6E0时间轴换算: TSC offsetting的伴生自洽(定时时刻不漂移
+	//+读回值不泄漏累计驻留)。代价=每核每次定时器编程1次MSR exit
+	{
+		GEPT_MSR_HOOK dlHook = { 0 };
+		dlHook.Msr = MSR_IA32_TSC_DEADLINE;
+		dlHook.OnRead = VmxDeadlineOnRead;
+		dlHook.OnWrite = VmxDeadlineOnWrite;
+		NTSTATUS dlSt = GeptMsrHookInstall(&dlHook);
+		FlLog("框架内置0x6E0时间轴换算: %s(读+TSC_OFFSET/写-TSC_OFFSET, 0直通)",
+			NT_SUCCESS(dlSt) ? "安装OK" : "安装失败(不影响VT运行, 详见[MSR]行)");
 	}
 	//放行Desktop镜像(加载窗口期结束)
 	FlMarkEntryDone();
@@ -549,7 +573,7 @@ static void VmxRestoreDtrLimits(void)
 void VmxCpuidHandler(PGUEST_REGS GuestRegs)
 {
 	//所有leaf先透传真实硬件结果
-	int cpuinfo[4] = {0};
+	int cpuinfo[4] = { 0 };
 	__cpuidex(cpuinfo, (int)GuestRegs->rax, (int)GuestRegs->rcx);
 	//CPUID输入leaf取低32位(EAX语义; 高位垃圾不参与匹配)
 	ULONG leaf = (ULONG)GuestRegs->rax;
@@ -607,8 +631,8 @@ void VmxMsrReadHandler(PGUEST_REGS GuestRegs)
 		return;
 	}
 	ULONG64 msrValue = __readmsr(GuestRegs->rcx);
-	GuestRegs->rax = msrValue&0xFFFFFFFF;
-	GuestRegs->rdx= (msrValue>>32) & 0xFFFFFFFF;
+	GuestRegs->rax = msrValue & 0xFFFFFFFF;
+	GuestRegs->rdx = (msrValue >> 32) & 0xFFFFFFFF;
 }
 
 //向guest注入#UD——VMX指令族exit的裸机语义("not in VMX operation→#UD")。
@@ -644,14 +668,14 @@ static VOID VmxInjectGp(ULONG cpu, ULONG reason, ULONG64 rip)
 
 void VmxExitHandler(PGUEST_REGS GuestRegs)
 {
-	
+
 	ULONG vmexitReason = 0;
 	ULONG64 exitCodeLen = 0;
 	ULONG64 guestRip = 0;
 	ULONG64 guestRsp = 0;
 	ULONG64 exitQual = 0;
-	__vmx_vmread(VM_EXIT_REASON,&vmexitReason);
-	__vmx_vmread(VM_EXIT_INSTRUCTION_LEN,&exitCodeLen);
+	__vmx_vmread(VM_EXIT_REASON, &vmexitReason);
+	__vmx_vmread(VM_EXIT_INSTRUCTION_LEN, &exitCodeLen);
 	__vmx_vmread(GUEST_RIP, &guestRip);
 	__vmx_vmread(GUEST_RSP, &guestRsp);
 	__vmx_vmread(EXIT_QUALIFICATION, &exitQual);
@@ -684,19 +708,21 @@ void VmxExitHandler(PGUEST_REGS GuestRegs)
 					vmexitReason != EXIT_REASON_EXTERNAL_INTERRUPT &&
 					vmexitReason != EXIT_REASON_PENDING_INTERRUPT &&
 					//已模拟指令exit豁免(计时自旋/同调用点INVLPG/HLT空闲)
-				vmexitReason != EXIT_REASON_RDTSC &&
-				vmexitReason != EXIT_REASON_RDTSCP &&
-				vmexitReason != EXIT_REASON_INVLPG &&
-				vmexitReason != EXIT_REASON_HLT &&
-				vmexitReason != EXIT_REASON_MWAIT_INSTRUCTION &&
-				//VMX指令族(18-27+INVEPT/INVVPID)整体豁免(确定性处置, 见上)
-				!(vmexitReason >= EXIT_REASON_VMCALL &&
-					vmexitReason <= EXIT_REASON_VMXON) &&
-				vmexitReason != EXIT_REASON_INVEPT &&
-				vmexitReason != EXIT_REASON_INVVPID &&
-				//CR访问(28)豁免: 写落地+RIP推进=有guest可见进展
-				vmexitReason != EXIT_REASON_CR_ACCESS &&
-				InterlockedIncrement(&s_sameCnt[cpuD]) > 500)
+					vmexitReason != EXIT_REASON_RDTSC &&
+					vmexitReason != EXIT_REASON_RDTSCP &&
+					vmexitReason != EXIT_REASON_INVLPG &&
+					vmexitReason != EXIT_REASON_HLT &&
+					vmexitReason != EXIT_REASON_MWAIT_INSTRUCTION &&
+					//VMX指令族(18-27+INVEPT/INVVPID)整体豁免(确定性处置, 见上)
+					!(vmexitReason >= EXIT_REASON_VMCALL &&
+						vmexitReason <= EXIT_REASON_VMXON) &&
+					vmexitReason != EXIT_REASON_INVEPT &&
+					vmexitReason != EXIT_REASON_INVVPID &&
+					//CR访问(28)豁免: 写落地+RIP推进=有guest可见进展
+					vmexitReason != EXIT_REASON_CR_ACCESS &&
+					//MTF(37)豁免: 读透明单步边界事件(HideRead页访问风暴)
+					vmexitReason != EXIT_REASON_MTF &&
+					InterlockedIncrement(&s_sameCnt[cpuD]) > 500)
 				{
 					VmxExitStormEscape('D', vmexitReason, guestRip, exitQual,
 						GuestRegs);
@@ -721,12 +747,12 @@ void VmxExitHandler(PGUEST_REGS GuestRegs)
 	}
 	switch (vmexitReason)
 	{
-		case EXIT_REASON_CPUID:
-		{
-			VmxCpuidHandler(GuestRegs);
-		}
-		break;
-		case EXIT_REASON_VMCALL:
+	case EXIT_REASON_CPUID:
+	{
+		VmxCpuidHandler(GuestRegs);
+	}
+	break;
+	case EXIT_REASON_VMCALL:
 	{
 		//VMCALL签名门: 内部vmcall在r10/r11携带128位签名(common.h),
 		//进case先校验(防外来vmcall穷举功能码: 退VT/可控拆页/任意写)。
@@ -753,9 +779,9 @@ void VmxExitHandler(PGUEST_REGS GuestRegs)
 				return;
 			}
 		}
-		if (GuestRegs->rcx==1)//表示要退出vt
-			{
-				//exit上下文禁止DbgPrint(同核重入死锁)——日志只FlRingPush
+		if (GuestRegs->rcx == 1)//表示要退出vt
+		{
+			//exit上下文禁止DbgPrint(同核重入死锁)——日志只FlRingPush
 			FlRingPush('V', KeGetCurrentProcessorNumber(), 18,
 				guestRip, exitCodeLen, 0);
 			//vmx_off后按guest原RFLAGS恢复IF(不恢复=睡眠永不唤醒)
@@ -798,14 +824,14 @@ void VmxExitHandler(PGUEST_REGS GuestRegs)
 			{
 				_enable();
 			}
-				//VmxJumGuestRegs恢复非易失GPR后切栈跳回(易失寄存器
-				//不恢复——vmcall=调用边界)
-				VmxJumGuestRegs(GuestRegs, guestRsp, guestRip+ exitCodeLen);
-			}
-			//EPT hook
+			//VmxJumGuestRegs恢复非易失GPR后切栈跳回(易失寄存器
+			//不恢复——vmcall=调用边界)
+			VmxJumGuestRegs(GuestRegs, guestRsp, guestRip + exitCodeLen);
+		}
+		//EPT hook布防: rdx=原页PFN, r8=CodePagePFN, r9=HideRead
 		else if (GuestRegs->rcx == 2)
 		{
-			EptSetHook(GuestRegs->rdx, GuestRegs->r8);
+			EptSetHook(GuestRegs->rdx, GuestRegs->r8, GuestRegs->r9);
 		}
 		//还原字节原语(GeptApi.c的DPC广播): rdx=还原目标, r8=源(原页),
 		//r9=长度。每核执行(memcpy幂等, invept按核生效)
@@ -821,109 +847,60 @@ void VmxExitHandler(PGUEST_REGS GuestRegs)
 			FlRingPush('m', KeGetCurrentProcessorNumber(), 7,
 				GuestRegs->rdx, GuestRegs->r8, GuestRegs->r9);
 		}
-			//落地探针首段: 'W'环留痕(VM-entry+EPT取指+exit+RIP推进+
-			//vmresume全链路自证), 走通用RIP推进
-			else if (GuestRegs->rcx == GEPT_PROBE_MAGIC)
-			{
-				FlRingPush('W', KeGetCurrentProcessorNumber(), 18,
-					guestRip, exitQual, exitCodeLen);
-			}
-			//探针第二段: GEPT_PROBE_EXIT=1时vmx_off回真机(自测模式);
-			//=0(接管)时为空, 落到通用RIP推进, 探针恢复栈回non-root继续
-			else if (GuestRegs->rcx == 3)
-			{
-#if GEPT_PROBE_EXIT
-				FlRingPush('K', KeGetCurrentProcessorNumber(), 18,
-					guestRip, exitQual, exitCodeLen);
-				ULONG64 probeFlags = 0;
-				__vmx_vmread(GUEST_RFLAGS, &probeFlags);
-				//vmx_off前invept全上下文
-				EptInveptBothViews();
-				//清in-service中断债(x2APIC用WRMSR 0x80B), 否则真机中断屏蔽
-				{
-					ULONG probeCpuX = KeGetCurrentProcessorNumber();
-					if (g_vcpu[probeCpuX].PendingIntrCount > 0)
-					{
-						ULONG64 apicBaseX = __readmsr(0x1B);
-						if ((apicBaseX & 0xC00) == 0xC00)
-						{
-							for (LONG pk = 0; pk < g_vcpu[probeCpuX].PendingIntrCount; pk++)
-							{
-								__writemsr(0x80B, 0);
-							}
-						}
-						g_vcpu[probeCpuX].PendingIntrCount = 0;
-					}
-				}
-				//vmx_off前还原GDTR/IDTR limit(同rcx==1路径)
-				VmxRestoreDtrLimits();
-				//CR3恢复(同rcx==1路径; vmread须在vmx_off前)
-				ULONG64 probeExitCr3 = 0;
-				__vmx_vmread(GUEST_CR3, &probeExitCr3);
-				__vmx_off();
-				__writecr3(probeExitCr3);
-				ULONG64 probeCr4 = __readcr4();
-				probeCr4 &= ~0x2000;              //清CR4.VMXE, 干净回真机
-				__writecr4(probeCr4);
-				ULONG probeCpu = KeGetCurrentProcessorNumber();
-				g_vcpu[probeCpu].bVmxOn = 0;
-				g_vcpu[probeCpu].bLaunchFailed = 1;
-				//IF=0时跳过sti(真机IF由VMXInitCpuStart统一恢复)
-				if (probeFlags & 0x200)
-				{
-					_enable();
-				}
-				//跳回vmcall下一条(探针jmp): ret回VMXInitCpuStart走失败分支
-				VmxJumGuestRegs(GuestRegs, guestRsp, guestRip + exitCodeLen);
-#endif
-				//GEPT_PROBE_EXIT=0: 落到通用RIP推进, guest接管OS执行
-			}
-			//压测循环进度: 每1024次采样1条'L'(a=rbx剩余值)
-			else if (GuestRegs->rcx == 4)
-			{
-				if ((GuestRegs->rbx & 0x3FF) == 0)
-				{
-					FlRingPush('L', KeGetCurrentProcessorNumber(), 18,
-						GuestRegs->rbx, 0, 0);
-				}
-			}
-			//循环完成标记'Y'
-			else if (GuestRegs->rcx == 6)
-			{
-				FlRingPush('Y', KeGetCurrentProcessorNumber(), 18,
-					GuestRegs->rbx, 0, 0);
-			}
-			//未知vmcall功能码=外来者: 注入#UD(裸机VMCALL不在VMX
-			//operation=#UD; 静默放行=hypervisor泄漏)
-			else
-			{
-				VmxInjectUd(KeGetCurrentProcessorNumber(), 18, guestRip);
-				__vmx_vmwrite(GUEST_RIP, guestRip);
-				return;
-			}
-		}
-		break;
-		//=============== VMX指令族exit ===============
-		//注入#UD(裸机"not in VMX operation"语义)。若走default逃生:
-		//真机重执行VMXOFF=#UD蓝屏, VMXON可能真成功=抢占VMX root;
-		//同框架后到实例的vmxon被注入#GP→全核失败→干净退出(互斥仲裁)
-		case EXIT_REASON_VMCLEAR:
-		case EXIT_REASON_VMLAUNCH:
-		case EXIT_REASON_VMPTRLD:
-		case EXIT_REASON_VMPTRST:
-		case EXIT_REASON_VMREAD:
-		case EXIT_REASON_VMRESUME:
-		case EXIT_REASON_VMWRITE:
-		case EXIT_REASON_VMXOFF:
-		case EXIT_REASON_INVEPT:
-		case EXIT_REASON_INVVPID:
+		//MSR位图原语(GeptMsr安装/移除): rdx=MSR号, r8=bit1:0操作
+		//(0=仅读/1=置位/2=清位)+bit8=写位图区。rax=核位掩码(bit i=
+		//cpu i该位操作后现值)。位图页已自我隐蔽(改译零页), guest态
+		//直写=静默失效; root模式不走EPT直写真页
+		else if (GuestRegs->rcx == GEPT_VMCALL_MSRBIT)
 		{
-			VmxInjectUd(KeGetCurrentProcessorNumber(), vmexitReason, guestRip);
-			//异常在本指令派发: RIP原样写回+早退
+			GuestRegs->rax = GeptMsrBitmapOpRoot((ULONG32)GuestRegs->rdx,
+				(UCHAR)((GuestRegs->r8 >> 8) & 1),
+				(UCHAR)(GuestRegs->r8 & 3));
+			FlRingPush('b', KeGetCurrentProcessorNumber(), GEPT_VMCALL_MSRBIT,
+				GuestRegs->rdx, GuestRegs->r8, GuestRegs->rax);
+		}
+		//落地探针首段: 'W'环留痕(VM-entry+EPT取指+exit+RIP推进+
+		//vmresume全链路自证), 走通用RIP推进
+		else if (GuestRegs->rcx == GEPT_PROBE_MAGIC)
+		{
+			FlRingPush('W', KeGetCurrentProcessorNumber(), 18,
+				guestRip, exitQual, exitCodeLen);
+		}
+		//探针末段: KEEP(接管)放行, 通用RIP推进, 探针恢复栈回non-root
+		else if (GuestRegs->rcx == 3)
+		{
+		}
+		//未知vmcall功能码=外来者: 注入#UD(裸机VMCALL不在VMX
+		//operation=#UD; 静默放行=hypervisor泄漏)
+		else
+		{
+			VmxInjectUd(KeGetCurrentProcessorNumber(), 18, guestRip);
 			__vmx_vmwrite(GUEST_RIP, guestRip);
 			return;
 		}
-		case EXIT_REASON_VMXON:
+	}
+	break;
+	//=============== VMX指令族exit ===============
+	//注入#UD(裸机"not in VMX operation"语义)。若走default逃生:
+	//真机重执行VMXOFF=#UD蓝屏, VMXON可能真成功=抢占VMX root;
+	//同框架后到实例的vmxon被注入#GP→全核失败→干净退出(互斥仲裁)
+	case EXIT_REASON_VMCLEAR:
+	case EXIT_REASON_VMLAUNCH:
+	case EXIT_REASON_VMPTRLD:
+	case EXIT_REASON_VMPTRST:
+	case EXIT_REASON_VMREAD:
+	case EXIT_REASON_VMRESUME:
+	case EXIT_REASON_VMWRITE:
+	case EXIT_REASON_VMXOFF:
+	case EXIT_REASON_INVEPT:
+	case EXIT_REASON_INVVPID:
+	{
+		VmxInjectUd(KeGetCurrentProcessorNumber(), vmexitReason, guestRip);
+		//异常在本指令派发: RIP原样写回+早退
+		__vmx_vmwrite(GUEST_RIP, guestRip);
+		return;
+	}
+	case EXIT_REASON_VMXON:
 	{
 		//按guest可见CR4.VMXE(=CR4_READ_SHADOW bit13)分流(裸机一致):
 		//  shadow.VMXE=1→#GP(0): 配套0x3A读伪造=1(锁+VMX禁用形态),
@@ -951,9 +928,9 @@ void VmxExitHandler(PGUEST_REGS GuestRegs)
 		//写: masked位≠shadow→exit到本case
 		//exitQualification(Table 30-3): bits3:0=CR号 bits5:4=访问类型
 		//(0=MOV to/1=from/2=CLTS/3=LMSW) bits11:8=GPR号(帧偏移=寄存器号×8)
-		ULONG crNum   = (ULONG)(exitQual & 0xF);
+		ULONG crNum = (ULONG)(exitQual & 0xF);
 		ULONG accType = (ULONG)((exitQual >> 4) & 3);
-		ULONG gprIdx  = (ULONG)((exitQual >> 8) & 0xF);
+		ULONG gprIdx = (ULONG)((exitQual >> 8) & 0xF);
 		//源操作数: MOV to CR的GPR读值; 目的GPR=RSP时帧上rsp槽是asm
 		//压栈占位值(非真RSP)——改用硬件保存的GUEST_RSP
 		ULONG64 srcVal = (gprIdx == 4)
@@ -1026,22 +1003,22 @@ void VmxExitHandler(PGUEST_REGS GuestRegs)
 		//'c'留痕已够, 只推进RIP
 	}
 	break;
-		case EXIT_REASON_INVD:
-		{
+	case EXIT_REASON_INVD:
+	{
 
-			VmxInvd();
-		}
-		break;
-		case EXIT_REASON_WBINVD:
-		{
-			//INVD/WBINVD无条件exit, 必须VMM代执行(缺case=跳过指令=数据损坏)
-			__wbinvd();
-		}
-		break;
-		//=============== 指令exit模拟 ===============
-		//本机must-1集使这些指令exiting全部关闭, 以下case大概率不触发;
-		//换CPU布局即需要(保留)
-		case EXIT_REASON_RDTSC:
+		VmxInvd();
+	}
+	break;
+	case EXIT_REASON_WBINVD:
+	{
+		//INVD/WBINVD无条件exit, 必须VMM代执行(缺case=跳过指令=数据损坏)
+		__wbinvd();
+	}
+	break;
+	//=============== 指令exit模拟 ===============
+	//本机must-1集使这些指令exiting全部关闭, 以下case大概率不触发;
+	//换CPU布局即需要(保留)
+	case EXIT_REASON_RDTSC:
 	{
 		//回填必须加TSC_OFFSET(回填裸TSC=时间线前跳)
 		ULONG64 tscOff = 0;
@@ -1062,38 +1039,38 @@ void VmxExitHandler(PGUEST_REGS GuestRegs)
 		GuestRegs->rcx = __readmsr(MSR_IA32_TSC_AUX) & 0xFFFFFFFF;
 	}
 	break;
-		case EXIT_REASON_INVLPG:
-		{
-			//INVLPG代执行: EXIT_QUALIFICATION=操作的线性地址。
-			//root与guest共用CR3(恒等虚拟化), root执行invlpg语义一致
-			__invlpg((void*)(ULONG_PTR)exitQual);
-		}
-		break;
-		case EXIT_REASON_HLT:
-		{
-			//跳过hlt(空闲线程会高频exit, 已豁免环检+限流)
-		}
-		break;
-		case EXIT_REASON_MWAIT_INSTRUCTION:
-		{
-			//MWAIT同HLT跳过; MONITOR无副作用同跳过
-		}
-		break;
-		case EXIT_REASON_MONITOR_INSTRUCTION:   //39
-		{
-			//MONITOR: 建立监控地址, 无架构可见副作用, 跳过即可
-		}
-		break;
-		case EXIT_REASON_MSR_READ:
-		{
-			VmxMsrReadHandler(GuestRegs);
-		}
-		break;
-		case EXIT_REASON_MSR_WRITE:
+	case EXIT_REASON_INVLPG:
+	{
+		//INVLPG代执行: EXIT_QUALIFICATION=操作的线性地址。
+		//root与guest共用CR3(恒等虚拟化), root执行invlpg语义一致
+		__invlpg((void*)(ULONG_PTR)exitQual);
+	}
+	break;
+	case EXIT_REASON_HLT:
+	{
+		//跳过hlt(空闲线程会高频exit, 已豁免环检+限流)
+	}
+	break;
+	case EXIT_REASON_MWAIT_INSTRUCTION:
+	{
+		//MWAIT同HLT跳过; MONITOR无副作用同跳过
+	}
+	break;
+	case EXIT_REASON_MONITOR_INSTRUCTION:   //39
+	{
+		//MONITOR: 建立监控地址, 无架构可见副作用, 跳过即可
+	}
+	break;
+	case EXIT_REASON_MSR_READ:
+	{
+		VmxMsrReadHandler(GuestRegs);
+	}
+	break;
+	case EXIT_REASON_MSR_WRITE:
 	{
 		//WRMSR代执行: rdx:rax=值, rcx=MSR号。回调TRUE=放行代写,
 	//FALSE=静默丢弃; 未hook=直通
-	ULONG64 msrVal = ((ULONG64)GuestRegs->rdx << 32)
+		ULONG64 msrVal = ((ULONG64)GuestRegs->rdx << 32)
 			| (GuestRegs->rax & 0xFFFFFFFF);
 		if (GeptMsrDispatchWrite((ULONG32)GuestRegs->rcx, msrVal))
 		{
@@ -1121,86 +1098,102 @@ void VmxExitHandler(PGUEST_REGS GuestRegs)
 			guestRip, exitQual, exitCodeLen);
 	}
 	break;
-		case EXIT_REASON_TRIPLE_FAULT:
-		{
-			//三重故障不可恢复(重执行=真机重启): park(vmx_off+sti/hlt
-			//自旋继续服务中断), 切断级联冻结, 'T'环留痕
-			VmxTripleFaultPark();    //noreturn
-		}
-		break;
-		case EXIT_REASON_INVALID_GUEST_STATE:
-		{
-			//VM-entry failure(guest状态非法)。launch期(guestRip在探针区间,
-		//GUEST_RSP=启动栈): 改写RIP到CmGeustRip纯栈恢复后逃生, 主线程
-		//从CmGuestRsp()返回走失败分支; 运行期(OS线程栈): 不改写, 直接
-		//逃回被中断上下文(在OS栈上执行栈恢复代码=栈粉碎)
-			if (guestRip >= (ULONG64)(ULONG_PTR)CmGuestProbe &&
-				guestRip < (ULONG64)(ULONG_PTR)CmVmCall)
-			{
-				__vmx_vmwrite(GUEST_RIP, CmGeustRip);
-			}
-			VmxExitStormEscape('G', 33, guestRip, exitQual, GuestRegs);    //noreturn
-		}
-		break;
-		case EXIT_REASON_EXTERNAL_INTERRUPT:
-		{
-			//pin=0直投下理论不可达; 防御: 'I'留痕, 同核>100次逃生'J'
-			ULONG64 intrInfo = 0;
-			__vmx_vmread(VM_EXIT_INTR_INFO, &intrInfo);
-			ULONG cpuX = KeGetCurrentProcessorNumber();
-			FlRingPush('I', cpuX, 1, intrInfo & 0xFF, intrInfo, 0);
-			static volatile LONG s_iCnt[64] = { 0 };
-			if (InterlockedIncrement(&s_iCnt[cpuX & 63]) > 100)
-			{
-				VmxExitStormEscape('J', 1, intrInfo, guestRip, GuestRegs);    //noreturn
-			}
-			//非指令性exit: RIP原样写回。中断仍在LAPIC IRR, resume后投递
-			__vmx_vmwrite(GUEST_RIP, guestRip);
-			return;
-		}
-		break;
-		case EXIT_REASON_PENDING_INTERRUPT:   //7: interrupt-window exiting=guest可中断了
-		{
-			//理论不可达; 防御: 'J'留痕后放行
-			FlRingPush('J', KeGetCurrentProcessorNumber(), 7, guestRip, 0, 0);
-			//非指令性exit: 原样写回RIP, 绝不能推进
-			__vmx_vmwrite(GUEST_RIP, guestRip);
-			return;
-		}
-		break;
-		case EXIT_REASON_EPT_VIOLATION:
-		{
-			EptExitHandler(GuestRegs);
-			return;
-		}
-		break;
-		case EXIT_REASON_EPT_CONFIG:
-		{
-			//EPT misconfig(PTE格式非法, 非指令性exit): 留痕, >1000次逃生
-			static volatile LONG eptCfgCount = 0;
-			ULONG64 cfgGpa = 0;
-			__vmx_vmread(GUEST_PHYSICAL_ADDRESS, &cfgGpa);
-			if (InterlockedIncrement(&eptCfgCount) == 1)
-			{
-				FlRingPush('C', KeGetCurrentProcessorNumber(), 49,
-					cfgGpa, guestRip, 0);
-			}
-			if (eptCfgCount > 1000)
-			{
-				VmxExitStormEscape('X', 49, cfgGpa, guestRip, GuestRegs);    //noreturn
-			}
-		}
-		return;
-		default:
-		{
-			//未知exit: 绝不能推进RIP(跳过指令=副作用丢失; len=0推进=
-		//无限循环), 也不能原地重试。逃生: vmx_off回真机重执行
-			VmxExitStormEscape(exitCodeLen == 0 ? 'Z' : 'U',
-				vmexitReason, guestRip, exitQual, GuestRegs);    //noreturn
-		}
-		break;
+	case EXIT_REASON_TRIPLE_FAULT:
+	{
+		//三重故障不可恢复(重执行=真机重启): park(vmx_off+sti/hlt
+		//自旋继续服务中断), 切断级联冻结, 'T'环留痕
+		VmxTripleFaultPark();    //noreturn
 	}
-	__vmx_vmwrite(GUEST_RIP, guestRip+ exitCodeLen);
+	break;
+	case EXIT_REASON_INVALID_GUEST_STATE:
+	{
+		//VM-entry failure(guest状态非法)。launch期(guestRip在探针区间,
+	//GUEST_RSP=启动栈): 改写RIP到CmGeustRip纯栈恢复后逃生, 主线程
+	//从CmGuestRsp()返回走失败分支; 运行期(OS线程栈): 不改写, 直接
+	//逃回被中断上下文(在OS栈上执行栈恢复代码=栈粉碎)
+		if (guestRip >= (ULONG64)(ULONG_PTR)CmGuestProbe &&
+			guestRip < (ULONG64)(ULONG_PTR)CmVmCall)
+		{
+			__vmx_vmwrite(GUEST_RIP, CmGeustRip);
+		}
+		VmxExitStormEscape('G', 33, guestRip, exitQual, GuestRegs);    //noreturn
+	}
+	break;
+	case EXIT_REASON_EXTERNAL_INTERRUPT:
+	{
+		//pin=0直投下理论不可达; 防御: 'I'留痕, 同核>100次逃生'J'
+		ULONG64 intrInfo = 0;
+		__vmx_vmread(VM_EXIT_INTR_INFO, &intrInfo);
+		ULONG cpuX = KeGetCurrentProcessorNumber();
+		FlRingPush('I', cpuX, 1, intrInfo & 0xFF, intrInfo, 0);
+		static volatile LONG s_iCnt[64] = { 0 };
+		if (InterlockedIncrement(&s_iCnt[cpuX & 63]) > 100)
+		{
+			VmxExitStormEscape('J', 1, intrInfo, guestRip, GuestRegs);    //noreturn
+		}
+		//非指令性exit: RIP原样写回。中断仍在LAPIC IRR, resume后投递
+		__vmx_vmwrite(GUEST_RIP, guestRip);
+		return;
+	}
+	break;
+	case EXIT_REASON_PENDING_INTERRUPT:   //7: interrupt-window exiting=guest可中断了
+	{
+		//理论不可达; 防御: 'J'留痕后放行
+		FlRingPush('J', KeGetCurrentProcessorNumber(), 7, guestRip, 0, 0);
+		//非指令性exit: 原样写回RIP, 绝不能推进
+		__vmx_vmwrite(GUEST_RIP, guestRip);
+		return;
+	}
+	break;
+	case EXIT_REASON_EPT_VIOLATION:
+	{
+		EptExitHandler(GuestRegs);
+		return;
+	}
+	break;
+	case EXIT_REASON_EPT_CONFIG:
+	{
+		//EPT misconfig(PTE格式非法, 非指令性exit): 留痕, >1000次逃生
+		static volatile LONG eptCfgCount = 0;
+		ULONG64 cfgGpa = 0;
+		__vmx_vmread(GUEST_PHYSICAL_ADDRESS, &cfgGpa);
+		if (InterlockedIncrement(&eptCfgCount) == 1)
+		{
+			FlRingPush('C', KeGetCurrentProcessorNumber(), 49,
+				cfgGpa, guestRip, 0);
+		}
+		if (eptCfgCount > 1000)
+		{
+			VmxExitStormEscape('X', 49, cfgGpa, guestRip, GuestRegs);    //noreturn
+		}
+	}
+	return;
+	case EXIT_REASON_MTF:
+	{
+		//MTF单步完成(读/写指令已在clean视图执行): 关MTF+切回hooked。
+		//RIP已是下一条指令; MTF exit的指令长字段无效, 显式重写绕过
+		//尾部通用推进(exitCodeLen残留值=执行流错位)
+		ULONG cpuM = KeGetCurrentProcessorNumber();
+		if (g_vcpu[cpuM].bVmfuncOn && g_vcpu[cpuM].PeptDataHooked != NULL)
+		{
+			__vmx_vmwrite(EPT_POINTER, g_vcpu[cpuM].EptpHooked.ALL);
+		}
+		ULONG64 mtfCtl = 0;
+		__vmx_vmread(CPU_BASED_VM_EXEC_CONTROL, &mtfCtl);
+		__vmx_vmwrite(CPU_BASED_VM_EXEC_CONTROL, mtfCtl & ~0x08000000ULL);
+		__vmx_vmwrite(GUEST_RIP, guestRip);
+		return;
+	}
+	default:
+	{
+		//未知exit: 绝不能推进RIP(跳过指令=副作用丢失; len=0推进=
+	//无限循环), 也不能原地重试。逃生: vmx_off回真机重执行
+		VmxExitStormEscape(exitCodeLen == 0 ? 'Z' : 'U',
+			vmexitReason, guestRip, exitQual, GuestRegs);    //noreturn
+	}
+	break;
+	}
+	__vmx_vmwrite(GUEST_RIP, guestRip + exitCodeLen);
 }
 
 
@@ -1326,13 +1319,13 @@ int VmxSetupVmcs(PVOID GuestRsp)
 	PVCPU currentCpu = &g_vcpu[cpuNumber];
 	//DbgBreakPoint();
 	FlLog("cpu%u VMCS[1/6]: 段寄存器...", cpuNumber);
-	VmxFillSelectorData(RegGetEs(),0);
+	VmxFillSelectorData(RegGetEs(), 0);
 	VmxFillSelectorData(RegGetCs(), 1);
 	VmxFillSelectorData(RegGetSs(), 2);
 	VmxFillSelectorData(RegGetDs(), 3);
 	VmxFillSelectorData(RegGetFs(), 4);
 	VmxFillSelectorData(RegGetGs(), 5);
-	VmxFillSelectorData(GetLdtr(),6);
+	VmxFillSelectorData(GetLdtr(), 6);
 
 	__vmx_vmwrite(HOST_ES_SELECTOR, RegGetEs() & 0XFFF8);
 	__vmx_vmwrite(HOST_CS_SELECTOR, RegGetCs() & 0XFFF8);
@@ -1342,12 +1335,12 @@ int VmxSetupVmcs(PVOID GuestRsp)
 	__vmx_vmwrite(HOST_GS_SELECTOR, RegGetGs() & 0XFFF8);
 	//填充TR寄存器
 	FlLog("cpu%u VMCS[2/6]: TR+FS/GS base...", cpuNumber);
-	USHORT trSelector=GetTrSelector();
+	USHORT trSelector = GetTrSelector();
 	trSelector = trSelector &= 0xFFF8;
 	ULONG trLimit = __segmentlimit(trSelector);
 	ULONG64 gdtBase = GetGdtBase();
 	LARGE_INTEGER trSegement = { 0 };
-	PULONG trContext=(PULONG)(gdtBase + trSelector);
+	PULONG trContext = (PULONG)(gdtBase + trSelector);
 	trSegement.LowPart = ((trContext[0] >> 16) & 0xFFFF) | ((trContext[1] & 0xFF) << 16) | ((trContext[1] & 0xFF000000));
 	trSegement.HighPart = trContext[2];
 	ULONG trAttr = (trContext[1] & 0x00F0FF00) >> 8;
@@ -1364,9 +1357,9 @@ int VmxSetupVmcs(PVOID GuestRsp)
 	__vmx_vmwrite(HOST_GS_BASE, __readmsr(MSR_GS_BASE));
 	//CR
 	FlLog("cpu%u VMCS[3/6]: CR/DR7/MSR状态...", cpuNumber);
-	__vmx_vmwrite(GUEST_CR0,__readcr0());
-	__vmx_vmwrite(GUEST_CR3,__readcr3());
-	__vmx_vmwrite(GUEST_CR4,__readcr4());
+	__vmx_vmwrite(GUEST_CR0, __readcr0());
+	__vmx_vmwrite(GUEST_CR3, __readcr3());
+	__vmx_vmwrite(GUEST_CR4, __readcr4());
 	//CR4.VMXE影子化: mask=bit13, shadow=真值清bit13(读CR4见VMXE=0,
 	//写VMXE→exit28); GUEST_CR4保持真值(VMXE=1, VMXON持续有效)
 	__vmx_vmwrite(CR4_GUEST_HOST_MASK, 0x2000);
@@ -1394,7 +1387,7 @@ int VmxSetupVmcs(PVOID GuestRsp)
 
 	//GDT
 	FlLog("cpu%u VMCS[4/6]: GDTR/IDTR/RSP/RIP...", cpuNumber);
-	__vmx_vmwrite(GUEST_GDTR_BASE,GetGdtBase());
+	__vmx_vmwrite(GUEST_GDTR_BASE, GetGdtBase());
 	__vmx_vmwrite(GUEST_GDTR_LIMIT, GetGdtLimit());
 	__vmx_vmwrite(HOST_GDTR_BASE, GetGdtBase());
 	//IDT
@@ -1407,7 +1400,7 @@ int VmxSetupVmcs(PVOID GuestRsp)
 	//全链路), 探针不触碰RSP/不依赖GPR(栈恢复见common-asm.asm)
 	__vmx_vmwrite(GUEST_RIP, CmGuestProbe);
 	__vmx_vmwrite(GUEST_RFLAGS, __readeflags());
-	__vmx_vmwrite(HOST_RSP, (ULONG64)currentCpu->VMMStack+PAGE_SIZE*5);
+	__vmx_vmwrite(HOST_RSP, (ULONG64)currentCpu->VMMStack + PAGE_SIZE * 5);
 	__vmx_vmwrite(HOST_RIP, VmxVmexitHandler);
 	ULONG64 basicMsr = __readmsr(MSR_IA32_VMX_BASIC);
 	//VMX_BASIC bit55=TRUE能力MSR存在: 存在则用TRUE MSR(0x48D-0x490),
@@ -1421,10 +1414,10 @@ int VmxSetupVmcs(PVOID GuestRsp)
 	if (useTrueCtl)
 	{
 		entryMsrNum = MSR_IA32_VMX_TRUE_ENTRY_CTLS;
-		exitMsrNum= MSR_IA32_VMX_TRUE_EXIT_CTLS;
+		exitMsrNum = MSR_IA32_VMX_TRUE_EXIT_CTLS;
 
 		pinMsr = MSR_IA32_VMX_TRUE_PINBASED_CTLS;
-		procMsr= MSR_IA32_VMX_TRUE_PROCBASED_CTLS;
+		procMsr = MSR_IA32_VMX_TRUE_PROCBASED_CTLS;
 	}
 	FlLog("cpu%u VMCS[5/6]: 控制字段+MSR位图 (bit55=%d)...", cpuNumber, (int)useTrueCtl);
 	//能力MSR原值一次性落盘(高32=允许1掩码, 低32=必须1位)
@@ -1444,13 +1437,13 @@ int VmxSetupVmcs(PVOID GuestRsp)
 		}
 	}
 	//pin期望=0(外部中断直投guest)
-	ULONG pinCtl   = VmxMsrAdjuest(pinMsr, 0);
+	ULONG pinCtl = VmxMsrAdjuest(pinMsr, 0);
 	//proc: bit3=TSC offsetting(补偿硬件基础), bit12保持0(RDTSC直通),
 	//bit28(MSR位图)/bit31(secondary)必需
-	ULONG procCtl  = VmxMsrAdjuest(procMsr, 0X8 | 0X10000000 | 0X80000000);
+	ULONG procCtl = VmxMsrAdjuest(procMsr, 0X8 | 0X10000000 | 0X80000000);
 	//exitCtl只留bit9(host address-space size); 绝不开bit15
 	//(ack-on-exit, 直投纪律)
-	ULONG exitCtl  = VmxMsrAdjuest(exitMsrNum, 0x200);
+	ULONG exitCtl = VmxMsrAdjuest(exitMsrNum, 0x200);
 	ULONG entryCtl = VmxMsrAdjuest(entryMsrNum, 0x200);
 	//控制字段留痕(proc的bit3=0=极老CPU, TSC补偿自动降级)
 	FlLog("cpu%u 控制字段(直投+TSCoff): pin=%08X proc=%08X exit=%08X entry=%08X",
@@ -1538,16 +1531,13 @@ int VmxSetupVmcs(PVOID GuestRsp)
 			return 1;
 		}
 	}
-	FlLog("cpu%u vmlaunch前自检: EPT=PASS EPTP=%llX 探针VA=%llX 模式=%s",
+	//EPT自我隐蔽(须在verify后: 拆2M破坏verify[4]全2M恒等走查;
+	//此刻全部核资源已分配, 本核两视图把框架私有页改译零页)
+	EptHideFrameworkPages(cpuNumber);
+	FlLog("cpu%u vmlaunch前自检: EPT=PASS EPTP=%llX 探针VA=%llX 模式=KEEP(接管)",
 		cpuNumber,
 		(unsigned long long)g_vcpu[cpuNumber].Eptp.ALL,
-		(unsigned long long)(ULONG_PTR)CmGuestProbe,
-#if GEPT_PROBE_EXIT
-		"EXIT(自测)"
-#else
-		"KEEP(接管)"
-#endif
-	);
+		(unsigned long long)(ULONG_PTR)CmGuestProbe);
 	FlLog("cpu%u vmlaunch...(护卫开: T1停写盘至probe返回)", cpuNumber);
 	//观测预热(见FlArmLaunchWatch)
 	FlArmLaunchWatch();
@@ -1562,7 +1552,7 @@ int VmxSetupVmcs(PVOID GuestRsp)
 	__vmx_vmwrite(GUEST_RFLAGS, __readeflags());
 	//'F'环事件=launch窗口开启标记(与'f'配对)
 	FlRingPush('F', cpuNumber, 0, 0, 0, 0);
-	result=__vmx_vmlaunch();
+	result = __vmx_vmlaunch();
 
 	if (result)
 	{
@@ -1579,7 +1569,7 @@ int VmxSetupVmcs(PVOID GuestRsp)
 	return (int)result;
 }
 
-void VmxFillSelectorData(USHORT selector,USHORT index)
+void VmxFillSelectorData(USHORT selector, USHORT index)
 {
 	SEGMENT_SELECTOR segMentSelector = { 0 };
 	segMentSelector.sel = selector;
@@ -1598,11 +1588,11 @@ void VmxFillSelectorData(USHORT selector,USHORT index)
 	//L[13] D/B[14] G[15] Unusable[16], 即 byte0 | byte1<<12
 	ULONG attr = ((PUCHAR)&segMentSelector.attributes)[0]
 		| ((PUCHAR)&segMentSelector.attributes)[1] << 12;
-	if (selector==0)
+	if (selector == 0)
 	{
 		attr |= 0x10000;   //unusable(空选择子DS/ES/LDTR)
 	}
-	__vmx_vmwrite(GUEST_ES_SELECTOR+index*2, segMentSelector.sel);
+	__vmx_vmwrite(GUEST_ES_SELECTOR + index * 2, segMentSelector.sel);
 	__vmx_vmwrite(GUEST_ES_LIMIT + index * 2, segMentSelector.limit);
 	__vmx_vmwrite(GUEST_ES_BASE + index * 2, segMentSelector.base);
 	__vmx_vmwrite(GUEST_ES_AR_BYTES + index * 2, attr);

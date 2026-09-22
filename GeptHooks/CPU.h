@@ -25,6 +25,7 @@
 #define MSR_IA32_SYSENTER_ESP               0x175
 #define MSR_IA32_SYSENTER_EIP               0x176
 #define MSR_IA32_DEBUGCTL                   0x1D9
+#define MSR_IA32_TSC_DEADLINE               0x6E0
 #define MSR_IA32_TSC_AUX                    0x840
 #define HOST_IA32_PAT						0x00002c00
 #define HOST_IA32_EFER						0x00002c02

@@ -4,9 +4,9 @@
 #include<ntstrsafe.h>
 BOOLEAN CommCheckBios()
 {
-	ULONG64 bios=__readmsr(MSR_IA32_FEATURE_CONTROL);
+	ULONG64 bios = __readmsr(MSR_IA32_FEATURE_CONTROL);
 	ULONG64 result = bios & 5;
-	if (result==5)
+	if (result == 5)
 	{
 		return TRUE;
 	}
@@ -15,8 +15,8 @@ BOOLEAN CommCheckBios()
 
 BOOLEAN CommCheckCpuid()
 {
-	int cpuinfo[4] = {0};
-	__cpuidex(cpuinfo,1,0);
+	int cpuinfo[4] = { 0 };
+	__cpuidex(cpuinfo, 1, 0);
 	return (cpuinfo[2] >> 5) & 1;
 }
 
@@ -24,7 +24,7 @@ BOOLEAN CommCheckCr4()
 {
 	ULONG64 cr4 = __readcr4();
 	cr4 = cr4 >> 13;
-	if ((cr4&1)==0)
+	if ((cr4 & 1) == 0)
 	{
 		return TRUE;
 	}
@@ -272,7 +272,7 @@ VOID FlRingExit(ULONG cpu, ULONG reason, ULONG64 rip, ULONG64 qual)
 	{
 		return;    //CPUID采样上限: 复用exit计数, 避免额外状态变量
 	}
-	//vmcall采样上限64: 防压测循环刷爆环; 计数仍精确
+	//vmcall采样上限64: 防高频调用方刷爆环; 计数仍精确
 	if (reason == EXIT_REASON_VMCALL &&
 		g_flExitCounts[EXIT_REASON_VMCALL] > 64)
 	{
@@ -612,15 +612,15 @@ static VOID FlThreadProcT1(PVOID Context)
 			{
 				if (g_vcpu[c].bInGuest)     guestMsk |= (1UL << c);
 				if (g_vcpu[c].bLaunchFailed) failMsk |= (1UL << c);
-				if (g_vcpu[c].bVmxOn)       onMsk    |= (1UL << c);
+				if (g_vcpu[c].bVmxOn)       onMsk |= (1UL << c);
 			}
 			RtlStringCbPrintfA(hbb, sizeof(hbb),
-			"[HB%llu] up=%us lag=%ld wf=%ld/%ld g:%X f:%X o:%X p:%X vcpu=%d pend=%d exits:",
-			++hb, (ULONG)(KeQueryUnbiasedInterruptTime() / 10000000ULL),
-			g_flT1Lag, g_flWriteFailsT1, g_flWriteFailsT2,
-			guestMsk, failMsk, onMsk, g_geptParkedMask,
-			(int)g_geptVcpuCpu,
-			(g_geptVcpuCpu >= 0) ? (int)g_vcpu[g_geptVcpuCpu].PendingIntrCount : 0);
+				"[HB%llu] up=%us lag=%ld wf=%ld/%ld g:%X f:%X o:%X p:%X vcpu=%d pend=%d exits:",
+				++hb, (ULONG)(KeQueryUnbiasedInterruptTime() / 10000000ULL),
+				g_flT1Lag, g_flWriteFailsT1, g_flWriteFailsT2,
+				guestMsk, failMsk, onMsk, g_geptParkedMask,
+				(int)g_geptVcpuCpu,
+				(g_geptVcpuCpu >= 0) ? (int)g_vcpu[g_geptVcpuCpu].PendingIntrCount : 0);
 			{
 				char one[40];
 				for (ULONG r = 0; r < GEPT_EXIT_REASON_MAX; r++)

@@ -175,7 +175,7 @@ static PVOID GeptAllocTrampoline(PGEPT_API_ENTRY entry)
 	if (s_trampPool[pageIdx] == NULL)
 	{
 		s_trampPool[pageIdx] = ExAllocatePoolWithTag(
-			NonPagedPool, PAGE_SIZE, 'tpeG');
+			NonPagedPool, PAGE_SIZE, 'Pool');
 		if (s_trampPool[pageIdx] == NULL)
 		{
 			return NULL;
@@ -291,7 +291,7 @@ NTSTATUS GeptHookInstall(const GEPT_HOOK* Hook)
 	//PHHook: CodePage整页复制+目标偏移14B绝对跳转→我们的trampoline槽
 	//+DPC逐核EptSetHook(VMFUNC核: hooked表PTE→CodePage+切hooked视图;
 	//fallback核: 拆页+清execute的violation布防——按核自动分派)
-	NTSTATUS st = PHHook(Hook->Target, entry->Trampoline);
+	NTSTATUS st = PHHook(Hook->Target, entry->Trampoline, Hook->HideRead);
 	if (!NT_SUCCESS(st))
 	{
 		//PHHook失败(资源/中止): 条目作废(槽浪费, 卸载统一释放)
@@ -305,9 +305,9 @@ NTSTATUS GeptHookInstall(const GEPT_HOOK* Hook)
 	GeptApiLock();
 	InsertTailList(&s_apiList, &entry->link);
 	GeptApiUnlock();
-	FlLog("[API] Install OK: 目标=%p 回调=%p 上下文=%p 跳板槽=%p replay=%p(%uB, 回扫自检过) 栈参=%u(detour式, 零重放机器)",
+	FlLog("[API] Install OK: 目标=%p 回调=%p 上下文=%p 跳板槽=%p replay=%p(%uB, 回扫自检过) 栈参=%u 读透明=%u(detour式, 零重放机器)",
 		Hook->Target, Hook->Callback, Hook->Context, entry->Trampoline,
-		entry->ReplayVA, entry->ReplayLen, Hook->StackArgs);
+		entry->ReplayVA, entry->ReplayLen, Hook->StackArgs, Hook->HideRead);
 	return STATUS_SUCCESS;
 }
 

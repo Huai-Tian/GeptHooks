@@ -3,7 +3,7 @@
 #define PAGEHOOK_H
 #include<ntifs.h>
 
-NTSTATUS PHHook(PVOID pFun,PVOID pHook);
+NTSTATUS PHHook(PVOID pFun,PVOID pHook,ULONG hideRead);
 
 #pragma pack(push,1)
 typedef struct _JMP_OPCODE64
@@ -24,12 +24,14 @@ typedef struct _PAGE_HOOK_ENTRY
 	PVOID CodePageVA;//copy函数所在页首地址
 	LIST_ENTRY link;
 	PVOID CodePagePFN;//copy函数所在页的物理地址
+	ULONG HideRead;//1=该页按读透明布防(EptExitHandler的MTF路径判据)
 }PAGE_HOOK_ENTRY,*PPAGE_HOOK_ENTRY;
 
 typedef struct _HOOK_CONTEXT
 {
 	ULONG64 OriginalPagePFN;
 	ULONG64 CodePagePFN;
+	ULONG64 HideRead;
 }HOOK_CONTEXT,*PHOOK_CONTEXT;
 
 void PHInitJmpCode(PJMP_OPCODE64 jmpCode,ULONG64 jmpTo);

@@ -36,33 +36,29 @@ HVM_RESTORE_ALL_NOSEGREGS MACRO
 ENDM
 EXTERN	 VmxExitHandler:PROC
 EXTERN	 VmxResumeFailedEntry:PROC
-EXTERN	 VmxTscCompensate:PROC    ;TSC²¹³¥(exit×¤ÁôÊ±³¤¿Û³ı)
+EXTERN	 VmxTscCompensate:PROC    ;TSCè¡¥å¿(exité©»ç•™æ—¶é•¿æ‰£é™¤)
 .CODE
 VmxVmexitHandler PROC
 	HVM_SAVE_ALL_NOSEGREGS
-	;(TSC²¹³¥): exitÈë¿Úrdtsc¡ª¡ª±ØĞëÔÚ
-	;HVM_SAVEÖ®ºó(Ò×Ê§¼Ä´æÆ÷´ËÊ±¿É×ÔÓÉÓÃ, guestÖµÒÑÔÚÕ»Ö¡ÉÏ)¡£
-	;rdtscÔÚrootÄ£Ê½¶ÁÂãTSC(ÎŞoffsetÓïÒå, offsetÖ»×÷ÓÃÓÚnon-root)
+	;TSCè¡¥å¿å…¥å£æ—¶é—´æˆ³: åœ¨SAVE_ALLå(guestå€¼å·²è½æ ˆ, æ˜“å¤±å¯„å­˜å™¨å¯è‡ªç”±
+	;ä½¿ç”¨)ã€‚rootæ¨¡å¼è¯»è£¸TSC(offsetåªä½œç”¨äºnon-root)
 	rdtsc
-	shl	rdx, 20h        ;edx:eax¡úraxÈ«64Î»(±ê×¼ĞòÁĞ: shl rdx,32; or)
+	shl	rdx, 20h        ;edx:eaxâ†’raxå…¨64ä½(æ ‡å‡†åºåˆ—: shl rdx,32; or)
 	or	rax, rdx
-	mov	r10, rax         ;r10Ôİ´æentryTsc
+	mov	r10, rax         ;r10æš‚å­˜entryTsc
 	mov 	rcx, rsp
-	sub	rsp, 0100h    ;100h(·Ç108h): VM-exitÈë¿ÚRSP=HOST_RSP(Ò³¶ÔÆë,%16==0,ÎŞ·µ»ØµØÖ·),
-	mov	[rsp+0F8h], r10 ;entryTsc²Ø½ø100h scratch¶¥²¿: calleeÖ»Åö[+0..28h](Win64
-	                 ;Ó°×Ó¿Õ¼ä/·µ»ØµØÖ·/Æä×ÔÉíÖ¡ÔÚ¸üµÍ´¦), [+28h,+100h)ÓÀ²»´¥Åö
-	call	VmxExitHandler   ;16¸öpush(128B)²»±ä, sub 100h(256B,%16==0)ºóµ÷ÓÃµãRSP%16==0ÕıÈ·
-	;Õı³£Â·¾¶=¼´½«vmresume»Øguest¡£ÌÓÉú/Ğ¶ÔØ/vmx_offÂ·¾¶ÒÑ´ÓCÄÚ²¿
-	;VmxJumGuestRegsÌø×ßÓÀ²»·µ»Ø´Ë´¦(²¹³¥´úÂë²»Ö´ĞĞ=vmx_offºóvmwrite
-	;TSC_OFFSET»á#UD, ½á¹¹ÉÏ²»¿ÉÄÜµ½´ï)
-	mov	rcx, [rsp+0F8h] ;entryTsc(rcx=µÚ1²ÎÊı)
-	rdtsc             ;exit³ö¿Úrdtsc¡ª¡ª½ôÌùvmresume, ²âÁ¿´°¿Ú×î´ó»¯
+	sub	rsp, 0100h    ;VM-exitå…¥å£RSP=HOST_RSP(é¡µå¯¹é½%16==0, æ— è¿”å›åœ°å€),
+	mov	[rsp+0F8h], r10 ;sub 100h(%16==0)åcallç‚¹å¯¹é½æ­£ç¡®; entryTscå­˜
+	                 ;[+0F8h](calleeåªç¢°[+0..28h]å½±å­ç©ºé—´, [+28h,+100h)ä¸è§¦ç¢°)
+	call	VmxExitHandler
+	;æ­£å¸¸è·¯å¾„: å³å°†vmresumeå›guest; é€ƒç”Ÿ/å¸è½½è·¯å¾„ä»Cå†…VmxJumGuestRegs
+	;è·³èµ°, ä¸è¿”å›æ­¤å¤„(è¡¥å¿åªåœ¨æœ¬è·¯å¾„æ‰§è¡Œ)
+	mov	rcx, [rsp+0F8h] ;arg1=entryTsc
+	rdtsc             ;ç´§è´´vmresume, æµ‹é‡çª—å£æœ€å¤§åŒ–
 	shl	rdx, 20h
 	or	rax, rdx
-	mov	rdx, rax         ;exitTsc(rdx=µÚ2²ÎÊı); ´ËµãRSPÓëÉÏ¸öcallÏàÍ¬
-	                 ;(%16==0), call VmxTscCompensate¶ÔÆëºÏ·¨
-	call	VmxTscCompensate ;C: TSC_OFFSET -= (exitTsc-entryTsc)¡ª¡ª±¾exitµÄ
-	                 ;root×¤ÁôÊ±¼ä´Óguest¿É¶ÁTSCÖĞÓÀ¾Ã¿Û³ı
+	mov	rdx, rax         ;arg2=exitTsc(æ­¤ç‚¹RSP%16==0, å¯¹é½åˆæ³•)
+	call	VmxTscCompensate ;C: TSC_OFFSET -= æœ¬æ¬¡exitçš„rooté©»ç•™æ—¶é•¿
 	add	rsp, 0100h
 	HVM_RESTORE_ALL_NOSEGREGS
 	vmresume ;non-root guest
@@ -70,9 +66,8 @@ VmxVmexitHandler PROC
 	jz	VmxResumeFailed   ;ZF=1: VMfailInvalid
 	ret
 VmxResumeFailed:
-	;vmresumeÊ§°Ü: ²»ÄÜÖ±½Óret(Õ»ÉÏÎŞÓĞĞ§·µ»ØµØÖ·=Î´¶¨ÒåĞĞÎª),
-	;½øÈëC²à¼ÇÂ¼'R'±ê¼ÇºóÍ£µô±¾ºË(ÆäÓàºËÓÉĞÄÌøÈÕÖ¾¼ÌĞø¹Û²â)
-	sub	rsp, 20h          ;20h: callÊ±±£³ÖRSP 16×Ö½Ú¶ÔÆë(x64 ABI)+Ó°×Ó¿Õ¼ä
+	;vmresumeå¤±è´¥: æ ˆä¸Šæ— æœ‰æ•ˆè¿”å›åœ°å€ä¸èƒ½ret, äº¤Cä¾§è®°å½•ååœæœ¬æ ¸
+	sub	rsp, 20h          ;20h: callæ—¶ä¿æŒRSP 16å­—èŠ‚å¯¹é½(x64 ABI)+å½±å­ç©ºé—´
 	call	VmxResumeFailedEntry   ;noreturn
 VmxVmexitHandler ENDP
 
@@ -83,18 +78,13 @@ VmxJumGuest PROC
     ret
 VmxJumGuest ENDP
 
-;CÉÏÏÂÎÄvmx_offÌø»ØguestµÄ×¨ÓÃ³ö¿Ú(´ø·ÇÒ×Ê§GPR»Ö¸´)¡£
-;rcx=GuestRegsÖ¡µØÖ·(VMMÕ»ÉÏ, ²¼¾Ö=HVM_SAVE_ALL_NOSEGREGSµÄpushĞò),
-;rdx=Ä¿±êRSP, r8=Ä¿±êRIP¡£
-;ÎªÊ²Ã´±ØĞë»Ö¸´: x64 ABIÏÂvmcall=µ÷ÓÃ±ß½ç, µ÷ÓÃÕß(CmVmCallµÄretÖ®ºó
-;µÄVmxStopCpuµÈ)Ö»±£Ö¤·ÇÒ×Ê§GPR(rbx/rbp/rsi/rdi/r12-r15)¿çµ÷ÓÃÓĞĞ§
-;¡ª¡ª¶øexit handlerµÄC´úÂë(±àÒëÆ÷×ÔÓÉÊ¹ÓÃËüÃÇ)ÔçÒÑ¸²¸Ç; ¾ÉVmxJumGuest
-;Ö»ÇĞRSP+JMP, Ìø»Øºóµ÷ÓÃÕßÄÃhandler²ĞÁôµÄÀ¬»ø¼Ä´æÆ÷¼ÌĞøÅÜ
-;(À¬»ø²ÎÊı´òÓ¡+À¬»øË÷Òı·ÃÎÊg_vcpu¡úÀ¶ÆÁ0x7E)¡£
-;Ö¡Æ«ÒÆ(pushĞòrax,rcx,rdx,rbx,rbp,rbp,rsi,rdi,r8..r15, ÓëC½á¹¹
-;GUEST_REGS×Ö¶ÎÆ«ÒÆÒ»ÖÂ): rbx+18h rbp+28h rsi+30h rdi+38h
-;r12+60h r13+68h r14+70h r15+78h¡£Ò×Ê§¼Ä´æÆ÷(rax/rcx/rdx/r8-r11)
-;²»»Ö¸´: µ÷ÓÃ±ß½çºó±¾¾ÍÎŞ±£³ÖÒåÎñ(ºÏ·¨)
+;Cä¸Šä¸‹æ–‡vmx_offè·³å›guestçš„ä¸“ç”¨å‡ºå£(å¸¦éæ˜“å¤±GPRæ¢å¤)ã€‚
+;rcx=GuestRegså¸§åœ°å€(VMMæ ˆä¸Š, å¸ƒå±€=HVM_SAVE_ALL_NOSEGREGSçš„pushåº),
+;rdx=ç›®æ ‡RSP, r8=ç›®æ ‡RIPã€‚
+;å¿…é¡»æ¢å¤éæ˜“å¤±GPR: vmcallæ˜¯è°ƒç”¨è¾¹ç•Œ, è°ƒç”¨è€…åªä¿è¯rbx/rbp/rsi/rdi/
+;r12-r15è·¨è°ƒç”¨æœ‰æ•ˆ, è€Œexit handlerçš„Cä»£ç å¯èƒ½å·²è¦†ç›–å®ƒä»¬ã€‚
+;å¸§åç§»(ä¸Cç»“æ„GUEST_REGSä¸€è‡´): rbx+18h rbp+28h rsi+30h rdi+38h
+;r12+60h r13+68h r14+70h r15+78hã€‚æ˜“å¤±å¯„å­˜å™¨æ— ä¿æŒä¹‰åŠ¡, ä¸æ¢å¤
 VmxJumGuestRegs PROC
     mov rbx, [rcx + 18h]
     mov rbp, [rcx + 28h]
@@ -109,9 +99,9 @@ VmxJumGuestRegs PROC
     ret
 VmxJumGuestRegs ENDP
 
-;»Ö¸´GDTR/IDTR¡ª¡ªVM-exitÎŞÌõ¼ş°ÑÁ½¸ölimitÑ¹³É0xFFFF(SDM 27.5,
-;host-stateÇøÖ»ÓĞbaseÎŞlimit×Ö¶Î), vmx_off»ØÕæ»úºó²ĞÁô¡£rcx=10×Ö½ÚÃèÊö·û
-;(WORD limit@+0, QWORD base@+2, Óëreg.asm GetGdtBaseµÄsgdt¶Á²àÍ¬²¼¾Ö)
+;æ¢å¤GDTR/IDTRâ€”â€”VM-exitæ— æ¡ä»¶æŠŠä¸¤ä¸ªlimitå‹æˆ0xFFFF(SDM 27.5,
+;host-stateåŒºåªæœ‰baseæ— limitå­—æ®µ), vmx_offå›çœŸæœºåæ®‹ç•™ã€‚rcx=10å­—èŠ‚æè¿°ç¬¦
+;(WORD limit@+0, QWORD base@+2, ä¸reg.asm GetGdtBaseçš„sgdtè¯»ä¾§åŒå¸ƒå±€)
 VmxLoadGdtr PROC
     lgdt fword ptr [rcx]
     ret
@@ -125,11 +115,10 @@ invd
 ret
 VmxInvd ENDP
 
-;·µ»ØVMfail±êÖ¾¡ª¡ªinveptÖ´ĞĞºóRFLAGS.ZF=1±íÊ¾VMfail(Ö¸ÁîÎŞĞ§,
-;Ê²Ã´¶¼Ã»Ê§Ğ§), sete al¡úTRUE=Ê§°Ü, FALSE=³É¹¦¡£´ËÇ°Âãret²»¼ì²é:
-;CPUÖ»Ö§³Ösingle-context(EPT_VPID_CAP bit26=0)Ê±type2(all-context)
-;VMfail±»¾²Ä¬ÍÌµô, EPT TLB´ÓÎ´Ê§Ğ§¡ª¡ªÒÑ²¼·Àhook¶ÔÈÈº¯Êı(NtCloseµÈ
-;TLB³£×¤)ÊıĞ¡Ê±²»´¥·¢, Ö±µ½TLB×ÔÈ»Öğ³ö²ÅÉúĞ§(ÑÓ³ÙÉúĞ§µÄÀ¶ÆÁ¸ùÔ´)
+;è¿”å›VMfailæ ‡å¿—: inveptåRFLAGS.ZF=1è¡¨ç¤ºVMfail(æœªå¤±æ•ˆä»»ä½•TLBé¡¹),
+;sete alâ†’TRUE=å¤±è´¥ã€‚CPUä»…æ”¯æŒsingle-contextå¤±æ•ˆ(EPT_VPID_CAP bit26
+;==0)æ—¶all-contextç±»å‹ä¼šVMfail, EPT TLBå®é™…æœªå¤±æ•ˆâ€”â€”è°ƒç”¨æ–¹å¿…é¡»
+;æ£€æŸ¥è¿”å›å€¼å¹¶å…œåº•, å¦åˆ™hookå»¶è¿Ÿç”Ÿæ•ˆ
 VmxInvept PROC
     invept rcx, OWORD PTR [rdx]
     sete al

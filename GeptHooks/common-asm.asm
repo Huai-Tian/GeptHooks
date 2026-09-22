@@ -15,15 +15,14 @@ push r12
 push r13
 push r14
 push r15
-sub rsp,28h        ;28h(·Ç20h): x64 ABIÒªÇócallÖ¸ÁîÖ´ĞĞÇ°RSP%16==0
-                   ;CmGuestRspÈë¿ÚRSP%16==8(callÑ¹Èë·µ»ØµØÖ·), 16¸öpush(128B)²»±ä,
-                   ;sub 28h(40B, 40%16==8)ºó RSP%16==0 -> VmxSetupVmcsÈë¿Ú%16==8 ÕıÈ·
+sub rsp,28h        ;x64 ABIå¯¹é½: å…¥å£RSP%16==8(callå‹è¿”å›åœ°å€), 16ä¸ªpush
+                   ;(128B)ä¸å˜, sub 28hå%16==0 â†’ è¢«è°ƒè€…å…¥å£%16==8æ­£ç¡®
 mov rcx,rsp
 call VmxSetupVmcs
 CmGuestRsp ENDP
 
 CmGeustRip PROC
- add rsp,28h        ;ÓëCmGuestRspµÄsub 28hÅä¶Ô(vmlaunch³É¹¦/Ê§°ÜÁ½ÌõÂ·¾¶¶¼¾­´Ë»Ö¸´)
+ add rsp,28h        ;ä¸CmGuestRspçš„sub 28hé…å¯¹
  pop r15
  pop r14
  pop r13
@@ -41,80 +40,67 @@ CmGeustRip PROC
  ret
 CmGeustRip ENDP
 
-;ÂäµØÌ½Õë: vmlaunch³É¹¦ºóguestÖ´ĞĞµÄµÚÒ»¶Î´úÂë(GUEST_RIPÖ¸Ïò´Ë´¦):
-;  ¢Ùvmcall(rcx=5ABE)'W'   : ×ÔÖ¤"Èë¿Ú×ª»»+EPTÈ¡Ö¸+exit+RIPÍÆ½ø+vmresume"
-;  ¢Ú512´Îvmcall(rcx=4)Ñ­»·(¡Ö6ms)¡ª¡ªÆÚ¼äµ½´ïµÄÖĞ¶ÏÔÚnon-rootÖ±½Ó¾­
-;    guest IDT½»¸¶ISR(Ó²¼şÔ­ÉúÂ·¾¶, VMMÁã²ÎÓë), ²»»ıÑ¹²»¶ªÊ§;
-;    ÈôÈÕÖ¾³öÏÖrsn=1ÊÂ¼ş=ÖĞ¶ÏÖ±Í¶ÅäÖÃÒì³£(Ö±Í¶ÏÂÀíÂÛ²»¿É´ï)
-;  ¢Ûvmcall(rcx=6)'Y'      : Ñ­»·Íê³É±ê¼Ç(handlerÍÆ'Y', rbx=0)
-;  ¢Üvmcall(rcx=3)         : KEEPÄ£Ê½(½Ó¹Ü)Ö±½Ó·ÅĞĞ¡újmp CmGeustRip»Ö¸´Õ»
-;                           ¡úret»ØVMXInitCpuStart(non-root)¡ú'Q'¡úFlLog;
-;                           EXITÄ£Ê½(×Ô²â)=vmx_off»ØÕæ»úÌøµ½ÏÂÒ»Ìõ(jmp)
-;È«³Ì²»´¥ÅöRSP(GUEST_RSP=CmGuestRsp±£´æÖµ, ¹©CmGeustRipµÄadd/pop/ret»Ö¸´;
-;Ö±Í¶µÄISRÖ¡ÔÚRSPÖ®ÏÂË²Ì¬Ê¹ÓÃ, ÓëÌ½ÕëÁã³åÍ»), Ò²²»ÒÀÀµGPRÓïÒå
-;(VMCS²»±£´æGPR, rbxÓÉ±¾Ì½Õë×ÔĞĞ¸³Öµ, CmGeustRipµÄpop»á´ÓÕ»»Ö¸´È«²¿¼Ä´æÆ÷)
-;È«²¿ËÄ¶ÎvmcallĞ¯´øVMCALLÇ©Ãûr10/r11(GEPT_VMCALL_SIG0/1, Óëcommon.h
-;Í¬²½¡ª¡ªexit handlerµÄVMCALL caseĞ£Ñé²»·û¡ú#UD)¡£Ã¿¶ÎvmcallÇ°ÖØĞÂ×°ÔØ:
-;Ö±Í¶ÖĞ¶ÏµÄISR»áclobberÒ×Ê§¼Ä´æÆ÷r10/r11(Ì½ÕëÑ­»·ÆÚ¼äÖĞ¶Ï³£Ì¬µ½´ï)
+;è½åœ°æ¢é’ˆ: vmlaunchæˆåŠŸåguestæ‰§è¡Œçš„ç¬¬ä¸€æ®µä»£ç (GUEST_RIPæŒ‡å‘æ­¤å¤„):
+;  â‘ vmcall(5ABE)'W': è‡ªè¯å…¥å£è½¬æ¢+EPTå–æŒ‡+RIPæ¨è¿›+vmresumeå…¨é“¾è·¯
+;  â‘¡512æ¬¡vmcall(4)å¾ªç¯(â‰ˆ6ms): è§‚æµ‹çª—å£, ä¸­æ–­åœ¨non-rootç»guest IDT
+;    ç›´æ¥äº¤ä»˜ISR(VMMé›¶å‚ä¸)
+;  â‘¢vmcall(6)'Y': å¾ªç¯å®Œæˆæ ‡è®°
+;  â‘£vmcall(3): KEEPæ¨¡å¼(æ¥ç®¡)æ”¾è¡Œâ†’jmp CmGeustRipæ¢å¤æ ˆè¿”å›;
+;    EXITæ¨¡å¼(è‡ªæµ‹)=vmx_offå›çœŸæœºç»§ç»­æ‰§è¡Œä¸‹ä¸€æ¡
+;å…¨ç¨‹ä¸è§¦ç¢°RSPä¹Ÿä¸ä¾èµ–GPRè¯­ä¹‰(GUEST_RSP=CmGuestRspä¿å­˜å€¼; VMCSä¸
+;ä¿å­˜GPR, CmGeustRipçš„popä»æ ˆæ¢å¤)ã€‚æ¯æ¬¡vmcallå‰é‡è£…r10/r11ç­¾å
+;(GEPT_VMCALL_SIG0/1ä¸common.håŒæ­¥, exit handlerçš„VMCALL caseæ ¡éªŒ
+;ä¸ç¬¦â†’#UD): ç›´æŠ•çš„ISRä¼šclobberæ˜“å¤±å¯„å­˜å™¨
 CmGuestProbe PROC
-    mov rcx, 5ABEh    ;GEPT_PROBE_MAGIC, ±ØĞëÓëcommon.h±£³ÖÒ»ÖÂ
-    mov r10, 9E3779B97F4A7C15h    ;VMCALLÇ©ÃûSIG0(Óëcommon.hÍ¬²½)
-    mov r11, 0BF58476D1CE4E5B9h   ;VMCALLÇ©ÃûSIG1(Óëcommon.hÍ¬²½)
-    vmcall            ;'W': handlerÍÆ»·±ê¼ÇºóÍ¨ÓÃRIPÍÆ½ø·ÅĞĞ
-    mov rbx, 512      ;512´Îvmcall(¡Ö6ms): ¹Û²â´°¿Ú, ¼æÈİÀúÊ·ÈÕÖ¾Êı¾İ
+    mov rcx, 5ABEh    ;GEPT_PROBE_MAGIC, å¿…é¡»ä¸common.hä¿æŒä¸€è‡´
+    mov r10, 9E3779B97F4A7C15h    ;VMCALLç­¾åSIG0(ä¸common.håŒæ­¥)
+    mov r11, 0BF58476D1CE4E5B9h   ;VMCALLç­¾åSIG1(ä¸common.håŒæ­¥)
+    vmcall            ;'W': handleræ¨ç¯æ ‡è®°åé€šç”¨RIPæ¨è¿›æ”¾è¡Œ
+    mov rbx, 512      ;512æ¬¡vmcall(â‰ˆ6ms): è§‚æµ‹çª—å£
 gept_probe_loop:
-    mov rcx, 4        ;'L': handler°´rbx²ÉÑùÍÆ»·(Ã¿1024´Î1Ìõ)
-    mov r10, 9E3779B97F4A7C15h    ;Ç©ÃûÃ¿ÂÖÖØ×°: Ö±Í¶ISR»áclobber r10/r11
+    mov rcx, 4        ;'L': handleræŒ‰rbxé‡‡æ ·æ¨ç¯(æ¯1024æ¬¡1æ¡)
+    mov r10, 9E3779B97F4A7C15h    ;ç­¾åæ¯è½®é‡è£…: ç›´æŠ•ISRä¼šclobber r10/r11
     mov r11, 0BF58476D1CE4E5B9h
     vmcall
     dec rbx
     jnz gept_probe_loop
-    mov rcx, 6        ;'Y': Ñ­»·Íê³É(handlerÍÆ'Y', Ğ¯´ørbx=0)
+    mov rcx, 6        ;'Y': å¾ªç¯å®Œæˆ(handleræ¨'Y', æºå¸¦rbx=0)
     mov r10, 9E3779B97F4A7C15h
     mov r11, 0BF58476D1CE4E5B9h
     vmcall
-    mov rcx, 3        ;°´GEPT_PROBE_EXIT(common.h¿ª¹Ø)·ÖÁ÷
+    mov rcx, 3        ;æŒ‰GEPT_PROBE_EXIT(common.hå¼€å…³)åˆ†æµ
     mov r10, 9E3779B97F4A7C15h
     mov r11, 0BF58476D1CE4E5B9h
-    vmcall            ;KEEP=·ÅĞĞ; EXIT=vmx_off»ØÕæ»úÌøµ½ÏÂÒ»Ìõ
-    jmp CmGeustRip    ;KEEP: guestĞøÅÜ»Ö¸´Õ»; EXIT: Õæ»úÖ´ĞĞ(´¿jmp°²È«)
+    vmcall            ;KEEP=æ”¾è¡Œ; EXIT=vmx_offå›çœŸæœºè·³åˆ°ä¸‹ä¸€æ¡
+    jmp CmGeustRip    ;KEEP: guestç»­è·‘æ¢å¤æ ˆ; EXIT: çœŸæœºæ‰§è¡Œ(çº¯jmpå®‰å…¨)
 CmGuestProbe ENDP
 
-;C²àÄÚ²¿vmcallÍ³Ò»Èë¿Ú(P0-2Ç©ÃûÃÅÅäÌ×):
-;rcx=¹¦ÄÜÂë(C ABIµÚ1²Î, mov rax,rcx±£ÁôÀúÊ·Ë«·İ), rdx/r8/r9=²ÎÊı¡£
-;r10/r11=VMCALLÇ©Ãû(GEPT_VMCALL_SIG0/1, Óëcommon.hÍ¬²½)¡ª¡ªÈ«²¿C²à
-;µ÷ÓÃ·½(Ğ¶ÔØvmcall(1)/²¼·Àvmcall(2)/»¹Ô­vmcall(7))¾­´Ë×°ÔØ, Ç©Ãû
-;Ğ£ÑéÔÚexit handlerµÄVMCALL case¡£r10/r11=Ò×Ê§¼Ä´æÆ÷, Cµ÷ÓÃ·½¿çµ÷ÓÃ
-;ÎŞ±£³ÖÒåÎñ, ÁãÆÆ»µ
+;Cä¾§å†…éƒ¨vmcallç»Ÿä¸€å…¥å£: rcx=åŠŸèƒ½ç (rax=åŒrcx), rdx/r8/r9=å‚æ•°ã€‚
+;r10/r11=VMCALLç­¾å(GEPT_VMCALL_SIG0/1, ä¸common.håŒæ­¥), æ ¡éªŒåœ¨
+;exit handlerçš„VMCALL case
 CmVmCall PROC
 mov rax,rcx
-mov r10, 9E3779B97F4A7C15h    ;GEPT_VMCALL_SIG0(Óëcommon.hÍ¬²½)
-mov r11, 0BF58476D1CE4E5B9h   ;GEPT_VMCALL_SIG1(Óëcommon.hÍ¬²½)
+mov r10, 9E3779B97F4A7C15h    ;GEPT_VMCALL_SIG0(ä¸common.håŒæ­¥)
+mov r11, 0BF58476D1CE4E5B9h   ;GEPT_VMCALL_SIG1(ä¸common.håŒæ­¥)
 vmcall
 ret
 CmVmCall ENDP
 
-;ÈıÖØ¹ÊÕÏpark±¾Ìå(ÓÀ²»·µ»Ø)¡ª¡ªVmxTripleFaultParkÔÚvmx_off+ÇåÕ®ºó
-;ÌøÈë´ËÑ­»·¡£sti+hlt: hltÔÚIF=1ÏÂ±»ÈÎÒâÖĞ¶Ï(IPI/Ê±ÖÓ/Éè±¸)»½ĞÑ, ISRÔÚ
-;±¾ºËVMMÕ»ÉÏÔËĞĞ²¢·µ»Ø, È»ºó¼ÌĞøhlt¡£Ğ§¹û: ±¾ºËÍË³öĞéÄâ»¯µ«³ÖĞø·şÎñ
-;ÖĞ¶Ï¡ª¡ªTLB-flushµÈIPI¹ã²¥µÄ·¢ËÍºËµÈ´ı½â³ı, ¼¶Áª¶³½á±»ÇĞ¶Ï, »úÆ÷´æ»î¡£
-;×¢Òâ: ¾ø²»ÄÜÓÃIF=0µÄÍ£ºË(_disable+__halt)=IPIÓÀ²»´¦Àí=·¢ËÍºË×ÔĞı
-;³ÖËø=È«»ú¶³½á¡£
-;Ô¼Êø: ´úÂëÒ³/VMMÕ»¾ø²»ÄÜÊÍ·Å(Çı¶¯²»µÃĞ¶ÔØ¡ª¡ªmain.cĞ¶ÔØÊØÎÀ¾Ü¾ø)¡£
-;²»´¥ÅöÈÎºÎGPR/Õ»(»½ĞÑµÄISRÖ¡ÔÚRSPÖ®ÏÂË²Ì¬Ê¹ÓÃ), ´¿3Ö¸ÁîÑ­»·
+;ä¸‰é‡æ•…éšœpark(æ°¸ä¸è¿”å›): vmx_off+æ¸…å€ºåè·³å…¥æ­¤å¾ªç¯ã€‚sti+hltä¸‹è¢«ä¸­æ–­
+;(IPI/æ—¶é’Ÿ)å”¤é†’â†’ISRåœ¨æœ¬æ ¸VMMæ ˆè¿è¡Œâ†’è¿”å›ç»§ç»­hlt: æœ¬æ ¸é€€å‡ºè™šæ‹ŸåŒ–ä½†
+;æŒç»­æœåŠ¡ä¸­æ–­, å‘é€æ ¸çš„TLB-flushç­‰IPIå¹¿æ’­å¾—ä»¥å®Œæˆ, åˆ‡æ–­çº§è”å†»ç»“ã€‚
+;å¿…é¡»IF=1(å…³ä¸­æ–­åœæ ¸=IPIæ°¸ä¸å¤„ç†=å‘é€æ ¸è‡ªæ—‹æŒé”=å…¨æœºå†»ç»“)ã€‚
+;çº¦æŸ: ä»£ç é¡µ/VMMæ ˆä¸å¾—é‡Šæ”¾(å¸è½½å®ˆå«åœ¨VmxShutdownAllCpusæ‹’ç»å¸è½½)
 CmTripleFaultPark PROC
     sti
     hlt
     jmp CmTripleFaultPark
 CmTripleFaultPark ENDP
 
-;µ¥´ÎVMFUNC EPTPÇĞ»»(guestÄÚµ÷ÓÃ, ÁãVM-Exit)¡£
-;rcx=EPTP-listË÷Òı(0=clean/1=hooked), C²àULONG²ÎÊıÁãÀ©Õ¹µ½RCXÌìÈ»ºÏ·¨¡£
-;ÓïÒå(SDM ¡ì28.5.7.3): ³É¹¦=ĞÂEPTPĞ´»ØEPT_POINTER×Ö¶Î+ºóĞø·­Òë×ßĞÂ±í
-;+VPID0×éºÏÓ³Éä×Ô¶¯Ê§Ğ§; Ê§°Ü(Ïî·Ç·¨/ECX>=512)=VM-exit reason 59
-;(handler case59ÍÆRIPÌø¹ı)¡£vmfunc²»¸ÄÈÎºÎ¼Ä´æÆ÷/±êÖ¾(SDM:
-;"does not modify the state of any registers"), ´¿ÇĞ»»ÓïÒå¡£
-;»úÆ÷Âë¼ÍÂÉ: VMFUNC=0F 01 D4(SDMÖ¸Áî±í)¡ª¡ª¾ø²»Æ¾¼ÇÒä/ÂÛÌ³Ğ´opcode
+;å•æ¬¡VMFUNC EPTPåˆ‡æ¢(guestå†…è°ƒç”¨, é›¶VM-Exit)ã€‚rcx=EPTP-listç´¢å¼•
+;(0=clean/1=hooked)ã€‚æˆåŠŸ(SDM Â§28.5.7.3)=åˆ‡æ¢EPTP+VPID0ç»„åˆæ˜ å°„
+;è‡ªåŠ¨å¤±æ•ˆ; å¤±è´¥(é¡¹éæ³•/ECX>=512)=VM-exit reason 59ã€‚ä¸æ”¹ä»»ä½•
+;å¯„å­˜å™¨/æ ‡å¿—ã€‚VMFUNCæœºå™¨ç =0F 01 D4(SDMæŒ‡ä»¤è¡¨)
 CmVmfuncSwitch PROC
     xor eax, eax        ;EAX=0: function 0 = EPTP switching
     db 0Fh, 01h, 0D4h   ;vmfunc (0F 01 D4, SDM)

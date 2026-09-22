@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright holder: Invisible Things Lab
  */
 #pragma once

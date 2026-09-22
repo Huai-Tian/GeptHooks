@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #ifndef _LDASM_
 #define _LDASM_
 

@@ -1,217 +1,199 @@
-#pragma once
+ï»¿#pragma once
 #ifndef COMMON_H
 #define COMMON_H
 #include<ntifs.h>
 #include<ntddk.h>
 #include<intrin.h>
-//DbgPrintÍ¨µÀÒÑÒÆ³ý(v1.3c): Î¨Ò»ÈÕÖ¾Í¨µÀ=ÎÄ¼þÈÕÖ¾FlLog(¹¹½¨ÅäÖÃÍ³Ï½,
-//¼ûÏÂ·½DBG½Ú)¡ª¡ªÄÚºËµ÷ÊÔÆ÷Êä³ö¶Ô½»¸¶ÐÎÌ¬ÊÇ´¿±©Â¶ÃæÇÒ²âÊÔ»úÎÞµ÷ÊÔÆ÷
+//æ—¥å¿—é€šé“=æ–‡ä»¶æ—¥å¿—FlLog(æž„å»ºé…ç½®ç»Ÿè¾–, è§ä¸‹æ–¹DBGèŠ‚)
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-	typedef struct _GUEST_REGS
-	{
-		ULONG64 rax;
-		ULONG64 rcx;
-		ULONG64 rdx;
-		ULONG64 rbx;
-		ULONG64 rsp;
-		ULONG64 rbp;
-		ULONG64 rsi;
-		ULONG64 rdi;
-		ULONG64 r8;
-		ULONG64 r9;
-		ULONG64 r10;
-		ULONG64 r11;
-		ULONG64 r12;
-		ULONG64 r13;
-		ULONG64 r14;
-		ULONG64 r15;
-	} GUEST_REGS, * PGUEST_REGS;
+typedef struct _GUEST_REGS
+{
+	ULONG64 rax;
+	ULONG64 rcx;
+	ULONG64 rdx;
+	ULONG64 rbx;
+	ULONG64 rsp;
+	ULONG64 rbp;
+	ULONG64 rsi;
+	ULONG64 rdi;
+	ULONG64 r8;
+	ULONG64 r9;
+	ULONG64 r10;
+	ULONG64 r11;
+	ULONG64 r12;
+	ULONG64 r13;
+	ULONG64 r14;
+	ULONG64 r15;
+} GUEST_REGS, *PGUEST_REGS;
 
-	typedef struct
-	{
-		USHORT sel;
-		USHORT attributes;
-		ULONG32 limit;
-		ULONG64 base;
-	} SEGMENT_SELECTOR;
+typedef struct
+{
+	USHORT sel;
+	USHORT attributes;
+	ULONG32 limit;
+	ULONG64 base;
+} SEGMENT_SELECTOR;
 
 #pragma warning(push)
 #pragma warning(disable: 4201)
-	typedef struct
+typedef struct
+{
+	USHORT LimitLow;
+	USHORT BaseLow;
+	UCHAR BaseMid;
+	UCHAR AttributesLow;
+	struct
 	{
-		USHORT LimitLow;
-		USHORT BaseLow;
-		UCHAR BaseMid;
-		UCHAR AttributesLow;
-		struct
-		{
-			UCHAR LimitHigh : 4;
-			UCHAR AttributesHigh : 4;
-		};
-		UCHAR BaseHigh;
-	} SEGMENT_DESCRIPTOR, * PSEGMENT_DESCRIPTOR;
+		UCHAR LimitHigh : 4;
+		UCHAR AttributesHigh : 4;
+	};
+	UCHAR BaseHigh;
+} SEGMENT_DESCRIPTOR, *PSEGMENT_DESCRIPTOR;
 #pragma warning(pop)
 
-	BOOLEAN CommCheckBios();
-	BOOLEAN CommCheckCpuid();
-	BOOLEAN CommCheckCr4();
+BOOLEAN CommCheckBios();
+BOOLEAN CommCheckCpuid();
+BOOLEAN CommCheckCr4();
 
-	void CmGeustRip();
-	void CmGuestRsp();
-	void CmGuestProbe();
-	void CmVmCall(ULONG opcode, ULONG64 arg2, ULONG64 arg3, ULONG64 arg4);
-	void CmTripleFaultPark();    //ÈýÖØ¹ÊÕÏpark±¾Ìå(asm, sti+hlt×ÔÐý, ÓÀ²»·µ»Ø)
-	void CmVmfuncSwitch(ULONG eptpIndex);   //guestÄÚµ¥´ÎVMFUNC(0, idx)EPTPÇÐ»»(0=clean/1=hooked, ÁãVM-Exit); ½öbVmfuncOnºË¿Éµ÷, ·ñÔò#UDÀ¶ÆÁ
+void CmGeustRip();
+void CmGuestRsp();
+void CmGuestProbe();
+void CmVmCall(ULONG opcode, ULONG64 arg2, ULONG64 arg3, ULONG64 arg4);
+void CmTripleFaultPark();    //ä¸‰é‡æ•…éšœparkæœ¬ä½“(asm, sti+hltè‡ªæ—‹, æ°¸ä¸è¿”å›ž)
+void CmVmfuncSwitch(ULONG eptpIndex);   //guestå†…å•æ¬¡VMFUNC(0, idx)EPTPåˆ‡æ¢(0=clean/1=hooked, é›¶VM-Exit); ä»…bVmfuncOnæ ¸å¯è°ƒ, å¦åˆ™#UDè“å±
 
-	//ÈýÖØ¹ÊÕÏparkºËÎ»ÑÚÂë(bit i=cpu iÒÑpark)¡£Ð¶ÔØÊØÎÀ¶ÁËü:
-	//parkºËµÄVMMÕ»/park´úÂëÒ³ÈÔ±»Õ¼ÓÃ, Çý¶¯¾ø²»ÄÜÐ¶ÔØ(¾Ü¾ø²¢ÌáÊ¾ÖØÆô)
-	extern volatile LONG g_geptParkedMask;
+//ä¸‰é‡æ•…éšœparkæ ¸ä½æŽ©ç (bit i=cpu iå·²park)ã€‚parkæ ¸çš„VMMæ ˆ/ä»£ç é¡µä»è¢«
+//å ç”¨, å¸è½½å®ˆå«æ®æ­¤æ‹’ç»å¸è½½
+extern volatile LONG g_geptParkedMask;
 
-	//ÂäµØÌ½ÕëÄ§Êý: CmGuestProbe(vm-asm)Ê×ÌõvmcallÐ¯´ø, handler¾Ý´ËÍÆ'W'»·±ê¼Ç¡£
-	//¸Ä¶¯Ê±±ØÐëÍ¬²½common-asm.asmÀïµÄ mov rcx, 5ABEh
+//è½åœ°æŽ¢é’ˆé­”æ•°: CmGuestProbeé¦–æ¡vmcallæºå¸¦ã€‚
+//æ”¹åŠ¨å¿…é¡»åŒæ­¥common-asm.asmçš„ mov rcx, 5ABEh
 #define GEPT_PROBE_MAGIC 0x5ABE
 
-//VMCALLÇ©ÃûÃÅ(°²È«): ÄÚ²¿vmcallµ÷ÓÃ·½(CmVmCall/ÂäµØÌ½ÕëËÄ¶Î)ÔÚr10/r11
-//Ð¯´øµÄ128Î»Ç©Ãû¡ª¡ªexit handlerµÄVMCALL case½øcaseÏÈÐ£Ñé, ²»·û¡ú'u'»·
-//ÁôºÛ+#UD×¢Èë(=Âã»úVMCALL"²»ÔÚVMX operation"ÓïÒå, ÁãÐÂÔö¿É¹Û²â²îÒì)¡£
-//Ñ¡Ò×Ê§¼Ä´æÆ÷=x64 ABI²»ÆÆ»µCµ÷ÓÃ·½(¿çµ÷ÓÃ±¾¾Í²»±£³Ö); Ë«¼Ä´æÆ÷=²¡¶¾
-//µ¥ÅöÇÉÃüÖÐ¸ÅÂÊÆ½·½¼¶ËõÐ¡¡£Öµ=ÎÞÓïÒåÉ¢ÁÐ; **¸Ä¶¯±ØÐëÍ¬²½common-asm.asm
-//ÀïµÄmov r10/r11Á¢¼´Êý(CmVmCallÒ»´¦+Ì½ÕëËÄ¶Î)**¡ª¡ªÂ©¸ÄÒ»´¦=¹¦ÄÜ±À
+//VMCALLç­¾åé—¨: å†…éƒ¨vmcall(CmVmCall/è½åœ°æŽ¢é’ˆ)åœ¨r10/r11æºå¸¦128ä½ç­¾å,
+//exit handlerçš„VMCALL caseå…ˆæ ¡éªŒ, ä¸ç¬¦â†’'u'çŽ¯ç•™ç—•+#UDæ³¨å…¥(=è£¸æœºVMCALL
+//"ä¸åœ¨VMX operation"è¯­ä¹‰)ã€‚æ”¹åŠ¨å¿…é¡»åŒæ­¥common-asm.asmçš„mov r10/r11
+//ç«‹å³æ•°(CmVmCallä¸€å¤„+æŽ¢é’ˆå››æ®µ)
 #define GEPT_VMCALL_SIG0 0x9E3779B97F4A7C15ULL
 #define GEPT_VMCALL_SIG1 0xBF58476D1CE4E5B9ULL
 
-//===== ÔËÐÐÄ£Ê½¿ª¹Ø =====
-//GEPT_PROBE_EXIT: 1=Ì½Õë×Ô²âÄ£Ê½(µÚ¶þ¶Îvmcall´¥·¢vmx_offÁ¢¼´»ØÕæ»ú,
-//  guestÖ»Ö´ÐÐÉÙÁ¿ÊÜ¿ØÖ¸Áî²»½Ó¹ÜOS); 0=½Ó¹ÜÄ£Ê½(Ì½Õëvmcallºóguest
-//  ¾­CmGeustRip»Ö¸´Õ»ret»ØVMXInitCpuStartÔÚnon-root¼ÌÐø, ¸ÃºË´Ó´Ë
-//  ÔËÐÐÔÚEPTÖ®ÏÂ, ¶ÔOSÍ¸Ã÷)¡£µ÷ÊÔlaunch/exit»úÆ÷²ãÊ±²ÅÓÃ1
+//===== è¿è¡Œæ¨¡å¼å¼€å…³ =====
+//GEPT_PROBE_EXIT: 1=æŽ¢é’ˆè‡ªæµ‹æ¨¡å¼(ç¬¬äºŒæ®µvmcallè§¦å‘vmx_offå›žçœŸæœº,
+//  ä¸æŽ¥ç®¡OS); 0=æŽ¥ç®¡æ¨¡å¼(guestç»CmGeustRipæ¢å¤æ ˆ, è¯¥æ ¸è¿è¡ŒäºŽEPTä¹‹ä¸‹)
 #define GEPT_PROBE_EXIT 0
-//GEPT_LAUNCH_CPU_LIMIT: ½Ó¹ÜºËÊýÉÏÏÞ(0=²»ÏÞÖÆ)¡£
-//GEPT_LAUNCH_CPU_BASE: ÐéÄâ»¯ÆðÊ¼ºË(-1=×îºóÒ»ºË)¡£Õï¶Ï¹ÊÕÏÊ±¿É
-//  ÓÃÁ½ÕßÏÞ¶¨µ¥ºË(ÆäÓàºËÕæ»ú), ±£Ö¤ÈÕÖ¾Í¨µÀ´æ»î
+//GEPT_LAUNCH_CPU_LIMIT: æŽ¥ç®¡æ ¸æ•°ä¸Šé™(0=ä¸é™åˆ¶)
+//GEPT_LAUNCH_CPU_BASE: è™šæ‹ŸåŒ–èµ·å§‹æ ¸(-1=æœ€åŽä¸€æ ¸); ä¸¤è€…å¯é™å®šå•æ ¸è¯Šæ–­
 #define GEPT_LAUNCH_CPU_LIMIT 0
 #define GEPT_LAUNCH_CPU_BASE 0
 
-//µ±Ç°ÐéÄâ»¯Ä¿±êºË(-1=Î´Æô¶¯), Æô¶¯Ñ­»·ÖÃÎ», ÈÕÖ¾ÐÄÌø¶ÁËü
-	extern volatile LONG g_geptVcpuCpu;
+//å½“å‰è™šæ‹ŸåŒ–ç›®æ ‡æ ¸(-1=æœªå¯åŠ¨), å¯åŠ¨å¾ªçŽ¯ç½®ä½, æ—¥å¿—å¿ƒè·³è¯»å®ƒ
+extern volatile LONG g_geptVcpuCpu;
 
-	//===== ¶³½á´æ»îÎÄ¼þÈÕÖ¾ =====
-	//¼Ü¹¹: DriverEntry/DriverUnloadµ÷ÓÃÂ·¾¶ÉÏÁãÎÄ¼þI/O(Çý¶¯¼ÓÔØ´°¿ÚÆÚ
-	//É±Èí/¹ýÂËÇý¶¯¿ÉÄÜËÀËøÎÄ¼þÐ´)¡£FlLogÖ»°ÑÒÑ¸ñÊ½»¯µÄÐÐÐ´ÈëÎÞËøÐÐ»·,
-	//´ÅÅÌÐ´Ö»·¢ÉúÔÚºóÌ¨Ïß³Ì:
-	//  T1(Temp): È¨Íþ¸±±¾C:\Windows\Temp\gept_log.txt + ÐÄÌø + ¶þ½øÖÆ»·ÅÅ¿Õ
-	//  T2(Desktop): ¾¡Á¦¾µÏñ, DriverEntryÍê³Éºó²Å¿ªÎÄ¼þ(±Ü¿ª¼ÓÔØ´°¿ÚÆÚ)
-	//¼ÍÂÉ: FlLog½öPASSIVE_LEVEL; FlLogSpin¡ÜDISPATCH_LEVEL(×ÔÐýµÈ´ý);
-	//FlRingPushÈÎÒâIRQL(º¬VM-exitÉÏÏÂÎÄ)
-#define GEPT_RING_SIZE       1024   //¶þ½øÖÆÊÂ¼þ»·ÌõÄ¿Êý(ÐëÎª2µÄÃÝ)
-#define GEPT_LINE_RING_SIZE  512    //¸ñÊ½»¯ÐÐ»·ÌõÄ¿Êý(ÐëÎª2µÄÃÝ)
-#define GEPT_LINE_TEXT       496    //µ¥ÐÐ×î´ó³¤¶È
+//===== æ–‡ä»¶æ—¥å¿— =====
+//DriverEntry/DriverUnloadè·¯å¾„é›¶æ–‡ä»¶I/O(åŠ è½½çª—å£æœŸè¿‡æ»¤é©±åŠ¨å¯èƒ½æ­»é”):
+//FlLogåªå†™å…¥æ— é”è¡ŒçŽ¯, ç£ç›˜å†™åªå‘ç”Ÿåœ¨åŽå°çº¿ç¨‹:
+//  T1(Temp): æƒå¨å‰¯æœ¬+å¿ƒè·³+äºŒè¿›åˆ¶çŽ¯æŽ’ç©º;  T2(Desktop): å°½åŠ›é•œåƒ
+//IRQLçº¦æŸ: FlLogä»…PASSIVE_LEVEL; FlLogSpinâ‰¤DISPATCH_LEVEL;
+//FlRingPushä»»æ„IRQL(å«VM-exitä¸Šä¸‹æ–‡)
+#define GEPT_RING_SIZE       1024   //äºŒè¿›åˆ¶äº‹ä»¶çŽ¯æ¡ç›®æ•°(é¡»ä¸º2çš„å¹‚)
+#define GEPT_LINE_RING_SIZE  512    //æ ¼å¼åŒ–è¡ŒçŽ¯æ¡ç›®æ•°(é¡»ä¸º2çš„å¹‚)
+#define GEPT_LINE_TEXT       496    //å•è¡Œæœ€å¤§é•¿åº¦
 #define GEPT_EXIT_REASON_MAX 64
 
-	typedef struct _GEPT_RING_ENTRY
-	{
-		ULONG64 a;        //rip »ò gpa
-		ULONG64 b;        //exit qualification / ¸¨Öú²ÎÊý
-		ULONG64 c;        //¸¨Öú²ÎÊý
-		ULONG64 tsc;
-		ULONG  seq;       //Ìá½»±ê¼Ç: µÈÓÚ»·ÐÎÐòºÅ²ÅËãÓÐÐ§(·À¶Áµ½°ëÐ´ÌõÄ¿)
-		ULONG  reason;
-		USHORT cpu;
-		CHAR   tag;       //»·ÊÂ¼þÀàÐÍ(¼ûÏÂ·½tag±í)
-		USHORT pad;
-	} GEPT_RING_ENTRY, * PGEPT_RING_ENTRY;
+typedef struct _GEPT_RING_ENTRY
+{
+	ULONG64 a;        //rip æˆ– gpa
+	ULONG64 b;        //exit qualification / è¾…åŠ©å‚æ•°
+	ULONG64 c;        //è¾…åŠ©å‚æ•°
+	ULONG64 tsc;
+	ULONG  seq;       //æäº¤æ ‡è®°: ç­‰äºŽçŽ¯å½¢åºå·æ‰ç®—æœ‰æ•ˆ(é˜²è¯»åˆ°åŠå†™æ¡ç›®)
+	ULONG  reason;
+	USHORT cpu;
+	CHAR   tag;       //çŽ¯äº‹ä»¶ç±»åž‹(è§ä¸‹æ–¹tagè¡¨)
+	USHORT pad;
+} GEPT_RING_ENTRY, *PGEPT_RING_ENTRY;
 
-	//»·ÊÂ¼þtagº¬Òå(ÈÕÖ¾ÅÐ¶Á±í; ½âÎöÆ÷ÒÀÀµ´ËÓïÒå):
-	//  E=VM-exit V=EPT violation H=¶¯Ì¬½¨±í S=DPC½×¶Î R=vmresumeÊ§°Ü
-	//  W=ÂäµØÌ½Õë C=EPT misconfig T=ÈýÖØ¹ÊÕÏ G=entryÊ§°Ü33
-	//  D=Í¬(reason,rip)»·Â· X=violation/misconfig·ç±© A=¶¯Ì¬½¨±íÊ§°Ü
-	//  P=µÍµØÖ·»·Â· Z=len0Î´Öªexit U=len>0Î´Öªexit
-	//  L=Ì½ÕëÑ¹²âÑ­»·½ø¶È Y=Ñ¹²âÑ­»·Íê³É Q=guest»Øµ½VMXInitCpuStartÐøÅÜ
-	//  I=Íâ²¿ÖÐ¶Ïµ½´ï(a=vector) i=ÖÐ¶Ï½»¸¶¸øguest(a=vector)
-	//  r=Ð¶ÔØCR3Ö¤¾Ý(a=GUEST_CR3 b=»Ø¶Á c=HOST_CR3¿ìÕÕ)
-	//  v=È«ºËIPIÔ­×ÓÍË³öÁôºÛ(a=±¾ºËÔøin-guest, b=bVmxOnÖÕÖµÓ¦0)
-	//  u=VMCALLÇ©ÃûÃÅ¾Ü¾ø(rsn=18, b=²¡¶¾ÊÔÌ½µÄ¹¦ÄÜÂë; Çø·ÖÓÚcase59
-	//    VMFUNCÊ§°ÜexitµÄ'u'¡ª¡ª°´rsn·Ö)  c=CR·ÃÎÊexit(28)ÁôºÛ(²ÉÑù)
-	//  t=Ð¶ÔØÊ±TSC_OFFSETÖÕÖµ m=vmcall(7)»¹Ô­×Ö½Ú
-	typedef struct _GEPT_LINE_ENTRY
-	{
-		ULONG  seq;       //Ìá½»±ê¼Ç(=Èë»·ÐòºÅ, ¼´×îÖÕÐÐºÅ-1)
-		CHAR   text[GEPT_LINE_TEXT];
-	} GEPT_LINE_ENTRY, * PGEPT_LINE_ENTRY;
+//çŽ¯äº‹ä»¶tagå«ä¹‰(æ—¥å¿—åˆ¤è¯»è¡¨; è§£æžå™¨ä¾èµ–æ­¤è¯­ä¹‰):
+//  E=VM-exit V=EPT violation H=åŠ¨æ€å»ºè¡¨ S=DPCé˜¶æ®µ R=vmresumeå¤±è´¥
+//  W=è½åœ°æŽ¢é’ˆ C=EPT misconfig T=ä¸‰é‡æ•…éšœ G=entryå¤±è´¥33
+//  D=åŒ(reason,rip)çŽ¯è·¯ X=violation/misconfigé£Žæš´ A=åŠ¨æ€å»ºè¡¨å¤±è´¥
+//  P=ä½Žåœ°å€çŽ¯è·¯ Z=len0æœªçŸ¥exit U=len>0æœªçŸ¥exit
+//  L=æŽ¢é’ˆåŽ‹æµ‹å¾ªçŽ¯è¿›åº¦ Y=åŽ‹æµ‹å¾ªçŽ¯å®Œæˆ Q=guestå›žåˆ°VMXInitCpuStartç»­è·‘
+//  I=å¤–éƒ¨ä¸­æ–­åˆ°è¾¾(a=vector) i=ä¸­æ–­äº¤ä»˜ç»™guest(a=vector)
+//  r=å¸è½½CR3è¯æ®(a=GUEST_CR3 b=å›žè¯» c=HOST_CR3å¿«ç…§)
+//  v=å…¨æ ¸IPIåŽŸå­é€€å‡ºç•™ç—•(a=æœ¬æ ¸æ›¾in-guest, b=bVmxOnç»ˆå€¼åº”0)
+//  u=VMCALLç­¾åé—¨æ‹’ç»(rsn=18, b=ç—…æ¯’è¯•æŽ¢çš„åŠŸèƒ½ç ; åŒºåˆ†äºŽcase59
+//    VMFUNCå¤±è´¥exitçš„'u'â€”â€”æŒ‰rsnåˆ†)  c=CRè®¿é—®exit(28)ç•™ç—•(é‡‡æ ·)
+//  t=å¸è½½æ—¶TSC_OFFSETç»ˆå€¼ m=vmcall(7)è¿˜åŽŸå­—èŠ‚
+typedef struct _GEPT_LINE_ENTRY
+{
+	ULONG  seq;       //æäº¤æ ‡è®°(=å…¥çŽ¯åºå·, å³æœ€ç»ˆè¡Œå·-1)
+	CHAR   text[GEPT_LINE_TEXT];
+} GEPT_LINE_ENTRY, *PGEPT_LINE_ENTRY;
 
-	//===== À¶ÆÁºÚÏ»×Ó(¶³½á¹Û²âµÄ×îºóÍ¨µÀ) =====
-	//¼¶Áª¶³½áÊ±´ÅÅÌÈÕÖ¾Í¨µÀ¿ÉÄÜÒ»Æð±»ÍÏËÀ(´æ´¢Á´Â·ÔÚ±¬Õ¨°ë¾¶ÄÚ),
-	//Î¨Ò»ÄÜ´©Ô½¶³½áµÄÍ¨µÀ=Ö÷¶¯À¶ÆÁ: bugcheckµÄcrash dumpÕ»ÊÇ×¨ÓÃµÍ²ã
-	//Â·¾¶(½Ó¹Ü´ÅÅÌ+¶ÀÁ¢IRP, ×¨ÎªÏµÍ³ËÀËøÉè¼Æ), ºÚÏ»×Ó(ÊÂ¼þ»·Î²¿ìÕÕ+
-	//ÈÕÖ¾ÐÐÎ²¿ìÕÕ+È«²¿ÔªÊý¾Ý)ËæMEMORY.DMPÍêÕû±£Áô¡£
-	//¼ì²âÕß=Ë«×ÔÐý¿´ÃÅ¹·Ïß³Ì(¶¤cpu0/cpu1, ´¿rdtsc¼ÆÊ±, ²»Ë¯Ãß²»ÒÀÀµ
-	//¶¨Ê±Æ÷/Ê±ÖÓ/µ÷¶È¡ª¡ªrdtscÊÇ´¿Ó²¼þ¼ÆÊýÆ÷, ¶³½á¶ÔËüÎÞÐ§)¡£
-	//½âÎö: backup/tools/gept_bb_parse.py(.ps1²âÊÔ»ú°æ) É¨MEMORY.DMPÕÒ
-	//"GEPTBB01"Ä§Êý(½âÎöÆ÷Óë´Ë½á¹¹Öð×Ö½ÚÆõÔ¼)
-	typedef struct _GEPT_BLACKBOX
-	{
-		//×Ö½ÚÆ«ÒÆ(½âÎöÆ÷±ØÐëÓë´ËÖð×Ö½ÚÒ»ÖÂ; È«²¿×ÔÈ»¶ÔÆë, ÎÞpragma pack)
-		CHAR    magic[8];       //+0x000 "GEPTBB01"
-		CHAR    build[24];      //+0x008 ¹¹½¨±êÇ©
-		ULONG64 bbVer;          //+0x020 =1(²¼¾Ö°æ±¾)
-		ULONG64 fireTsc;        //+0x028 ´¥·¢Ê±¿Ìrdtsc
-		ULONG64 fireIntrTime;   //+0x030 ´¥·¢Ê±¿ÌÖÐ¶ÏÊ±ÖÓ(100ns)
-		ULONG64 wdArmed;        //+0x038 Îä×°Ê±¿Ì(0=Î´Îä×°)
-		ULONG64 lineHead;       //+0x040 ÐÐ»·Ð´ÓÎ±ê(¶³½áÊ±µÄ×îºóÐÐºÅ)
-		ULONG64 ringHead;       //+0x048 ÊÂ¼þ»·Ð´ÓÎ±ê
-		ULONG64 t1Seq;          //+0x050 T1ÒÑÐ´ÐÐÓÎ±ê
-		ULONG64 t2Seq;          //+0x058 T2ÒÑ¾µÏñÐÐÓÎ±ê
-		ULONG64 writeGuard;     //+0x060 Ð´ÅÌ»¤ÎÀ×´Ì¬
-		ULONG64 launchHot;      //+0x068 ÈÈÂÖÑ¯×´Ì¬
-		ULONG64 vcpuCpu;        //+0x070 ÐéÄâ»¯Ä¿±êºË
-		ULONG64 pendCount;      //+0x078 Ä¿±êºË»ýÑ¹ÖÐ¶ÏÊý
-		ULONG64 pollCnt;        //+0x080 ¿´ÃÅ¹·DPCÀÛ¼ÆÂÖÑ¯Êý(»îÌåÖ¤Ã÷)
-		ULONG64 exitCounts[GEPT_EXIT_REASON_MAX];  //+0x088 È«²¿exit¾«È·¼ÆÊý(512B)
-		GEPT_RING_ENTRY ring[48];   //+0x288 ÊÂ¼þ»·Î²48Ìõ¿ìÕÕ(°´seqÉýÐò)
-		CHAR    lines[20][256];     //+0xB88 ÐÐ»·Î²20Ìõ¿ìÕÕ(³¬256½Ø¶Ï)
-		CHAR    magic2[8];          //+0x1F88 "GEPTBB02"(ÍêÕûÐÔÎ²±ê)
-	} GEPT_BLACKBOX, * PGEPT_BLACKBOX;   //sizeof=0x1F90
-	//(g_flBlackBox/g_flWdTscPerSecµÄexternÔÚÏÂ·½#if DBG¿éÄÚ¡ª¡ªRelease
-	//¹¹½¨ÁãÒýÓÃ²»¶¨Òå; ½á¹¹Ìå¶¨Òå±¾ÉíÎÞÌõ¼þ±£Áô=½âÎöÆ÷ÆõÔ¼ÎÄµµ)
+//===== è“å±é»‘åŒ£å­ =====
+//çº§è”å†»ç»“æ—¶ç£ç›˜æ—¥å¿—å¯èƒ½ä¸€èµ·å¤±æ•ˆ, é»‘åŒ£å­(çŽ¯å°¾å¿«ç…§+å…ƒæ•°æ®)ç”±çœ‹é—¨ç‹—
+//ä¸»åŠ¨KeBugCheckEx(0xDEADC0DE)éšMEMORY.DMPä¿ç•™ã€‚æ£€æµ‹è€…=åŒè‡ªæ—‹çœ‹é—¨ç‹—
+//çº¿ç¨‹(é’‰cpu0/cpu1, çº¯rdtscè®¡æ—¶)ã€‚
+//è§£æž: backup/tools/gept_bb_parse.py(.ps1æµ‹è¯•æœºç‰ˆ) æ‰«MEMORY.DMPæ‰¾
+//"GEPTBB01"é­”æ•°(è§£æžå™¨ä¸Žæ­¤ç»“æž„é€å­—èŠ‚å¥‘çº¦)
+typedef struct _GEPT_BLACKBOX
+{
+	//å­—èŠ‚åç§»(è§£æžå™¨å¿…é¡»ä¸Žæ­¤é€å­—èŠ‚ä¸€è‡´; å…¨éƒ¨è‡ªç„¶å¯¹é½, æ— pragma pack)
+	CHAR    magic[8];       //+0x000 "GEPTBB01"
+	CHAR    build[24];      //+0x008 æž„å»ºæ ‡ç­¾
+	ULONG64 bbVer;          //+0x020 =1(å¸ƒå±€ç‰ˆæœ¬)
+	ULONG64 fireTsc;        //+0x028 è§¦å‘æ—¶åˆ»rdtsc
+	ULONG64 fireIntrTime;   //+0x030 è§¦å‘æ—¶åˆ»ä¸­æ–­æ—¶é’Ÿ(100ns)
+	ULONG64 wdArmed;        //+0x038 æ­¦è£…æ—¶åˆ»(0=æœªæ­¦è£…)
+	ULONG64 lineHead;       //+0x040 è¡ŒçŽ¯å†™æ¸¸æ ‡(å†»ç»“æ—¶çš„æœ€åŽè¡Œå·)
+	ULONG64 ringHead;       //+0x048 äº‹ä»¶çŽ¯å†™æ¸¸æ ‡
+	ULONG64 t1Seq;          //+0x050 T1å·²å†™è¡Œæ¸¸æ ‡
+	ULONG64 t2Seq;          //+0x058 T2å·²é•œåƒè¡Œæ¸¸æ ‡
+	ULONG64 writeGuard;     //+0x060 å†™ç›˜æŠ¤å«çŠ¶æ€
+	ULONG64 launchHot;      //+0x068 çƒ­è½®è¯¢çŠ¶æ€
+	ULONG64 vcpuCpu;        //+0x070 è™šæ‹ŸåŒ–ç›®æ ‡æ ¸
+	ULONG64 pendCount;      //+0x078 ç›®æ ‡æ ¸ç§¯åŽ‹ä¸­æ–­æ•°
+	ULONG64 pollCnt;        //+0x080 çœ‹é—¨ç‹—DPCç´¯è®¡è½®è¯¢æ•°(æ´»ä½“è¯æ˜Ž)
+	ULONG64 exitCounts[GEPT_EXIT_REASON_MAX];  //+0x088 å…¨éƒ¨exitç²¾ç¡®è®¡æ•°(512B)
+	GEPT_RING_ENTRY ring[48];   //+0x288 äº‹ä»¶çŽ¯å°¾48æ¡å¿«ç…§(æŒ‰seqå‡åº)
+	CHAR    lines[20][256];     //+0xB88 è¡ŒçŽ¯å°¾20æ¡å¿«ç…§(è¶…256æˆªæ–­)
+	CHAR    magic2[8];          //+0x1F88 "GEPTBB02"(å®Œæ•´æ€§å°¾æ ‡)
+} GEPT_BLACKBOX, *PGEPT_BLACKBOX;   //sizeof=0x1F90
+//(g_flBlackBox/g_flWdTscPerSecçš„externåœ¨ä¸‹æ–¹#if DBGå—å†…; ç»“æž„ä½“
+//å®šä¹‰æ— æ¡ä»¶ä¿ç•™=è§£æžå™¨å¥‘çº¦)
 
-	//===== ÎÄ¼þÈÕÖ¾ÏµÍ³×Ü¿ª¹Ø(¹¹½¨ÅäÖÃÅÐ¾Ý, v1.3cÖÕÌ¬) =====
-	//Î¨Ò»¿ª¹Ø=DBG(ÓÉVS¹¹½¨ÅäÖÃ¾ö¶¨, vcxprojÁ½¸öÅäÖÃÒÑÏÔÊ½¶¨Òå):
-	//  Debug¹¹½¨(DBG=1)  = ÍêÕû¹Û²âÉèÊ©(T1/T2Ð´ÅÌ+¶þ½øÖÆÊÂ¼þ»·+À¶ÆÁºÚÏ»×Ó
-	//    ¿´ÃÅ¹·, º¬30s¶³½á¼ì²â¡úÖ÷¶¯À¶ÆÁ0xDEADC0DE¡úMEMORY.DMP¡ª¡ªµ÷ÊÔ×¨ÓÃ)
-	//  Release¹¹½¨(DBG=0)= È«²¿Fl*½Ó¿Ú±àÒëÆÚ¿Õ²Ù×÷¡ª¡ªµ÷ÓÃµãµÄ²ÎÊýÓë¸ñÊ½
-	//    ´®ÕûÌå²»²ÎÓë±àÒë(¹¥·ÀÐÎÌ¬: Õï¶Ï×Ö·û´®=¿É¾²Ì¬É¨ÃèµÄIoC), ÁãºóÌ¨
-	//    Ïß³Ì/ÁãÎÄ¼þI/O/Áã»·Ð´Èë, ÈÕÖ¾ÊµÏÖ´úÂë²»½ø²úÎï
-	//ÑØ¸ï: v1.2×¢²á±íLogEnable(¼üÖµ=¿É¾²Ì¬Ç©Ãû±©Â¶Ãæ, ÆúÓÃ)¡úv1.3b±àÒëÆÚ
-	//GEPT_LOG_ENABLEºê(ÐèÊÖ¹¤¸ÄÖµ, ÆúÓÃ)¡úv1.3c DBG¹¹½¨ÅäÖÃÅÐ¾Ý(ÖÕÌ¬:
-	//Ñ¡¹¹½¨¼´Ñ¡²úÎïÐÎÌ¬, ÎÞÈÎºÎÊÖ¹¤²½Öè)
+//===== æ–‡ä»¶æ—¥å¿—å¼€å…³(æž„å»ºé…ç½®åˆ¤æ®) =====
+//å”¯ä¸€å¼€å…³=DBG(VSæž„å»ºé…ç½®):
+//  Debug(DBG=1)  = å®Œæ•´è§‚æµ‹(T1/T2å†™ç›˜+äº‹ä»¶çŽ¯+çœ‹é—¨ç‹—é»‘åŒ£å­)
+//  Release(DBG=0)= å…¨éƒ¨Fl*æŽ¥å£ç©ºæ“ä½œå®, æ—¥å¿—å®žçŽ°ä»£ç ä¸è¿›äº§ç‰©
 #if DBG
-	extern volatile LONG g_flEnabled;      //1=¿ªÆô(FlInitÖÃÎ»; ½öDebug¹¹½¨¿É´ï)
-	VOID FlInit(VOID);                     //DriverEntry×îÏÈµ÷ÓÃ: ´´½¨T1/T2/¿´ÃÅ¹·Ïß³Ì
-	VOID FlShutdown(VOID);                 //DriverUnload×îºóµ÷ÓÃ: Í£Ïß³Ì+T1×îÖÕÂäÅÌ
-	VOID FlLog(const char* fmt, ...);      //½öPASSIVE_LEVEL: ÈëÐÐ»·(ÁãÎÄ¼þI/O)
-	VOID FlLogSpin(const char* fmt, ...);  //×ÔÐýµÈ´ý°æ(IF=0/¡ÜDISPATCH_LEVEL°²È«, rdtscÏÞ½ç500ms)¡ª¡ªFlLogµÄ10msË¯ÃßÒÀÀµÊ±ÖÓÖÐ¶Ï, IF=0µÄguestºËÉÏ»áÓÀ¾ÃË¯ËÀ
-	VOID FlMarkEntryDone(VOID);            //DriverEntryÄ©Î²µ÷ÓÃ: ·ÅÐÐT2µÄDesktop¾µÏñ
-	VOID FlRingPush(CHAR tag, ULONG cpu, ULONG reason, ULONG64 a, ULONG64 b, ULONG64 c);
-	//ÈÎÒâIRQL(º¬VM-exit): ÎÞËøÐ´¶þ½øÖÆÊÂ¼þ»·
-	VOID FlRingExit(ULONG cpu, ULONG reason, ULONG64 rip, ULONG64 qual);
-	//VM-exitÍ³Ò»²ÉÑùÈë¿Ú(ÄÚ²¿º¬reason¼ÆÊý)
-//launch¹Û²âÔ¤ÈÈ: ÖÃhot+ÌßT1+Ë¯5ms(½öPASSIVE_LEVEL, VmxSetupVmcs
-//ÔÚvmlaunchÇ°µ÷ÓÃ)¡ª¡ª±£Ö¤launch´°¿ÚºÁÃë¼¶ÂäÅÌ
-	VOID FlArmLaunchWatch(VOID);
-	//vmlaunchÇ°µ÷ÓÃ(VMX.c): Îä×°¿´ÃÅ¹·¡ª¡ª´ËºóÐÐ»·ÓÎ±ê30s²»¶¯=À¶ÆÁºÚÏ»×Ó¡£
-	//T1²»´æÔÚÔò²»Îä×°¡£±£³ÖÎä×°Ö±µ½Ð¶ÔØ(FlShutdown½â³ý)
-	VOID FlWdArm(VOID);
-	//½öFlShutdown/VMfailÂ·¾¶µ÷ÓÃ: ½â³ýÎä×°
-	VOID FlWdDisarm(VOID);
-	extern volatile LONG64 g_flWriteGuardTsc;   //»¤ÎÀÎä×°Ê±¿Ì(T1²à100nsµ¥Î»)¡ª¡ª³¬Ê±Î´Çå=T1Ç¿ÖÆ½â³ý²¢²¹Ð´(·Àguest¹ÒËÀÊ±»¤ÎÀÓÀ²»Çåµ¼ÖÂÓÀ²»Ð´ÅÌ)
-	extern GEPT_BLACKBOX g_flBlackBox;
-	extern volatile LONG64 g_flWdTscPerSec;     //TSCÆµÂÊ(±ê¶¨, Ä¬ÈÏ2GHz)
+extern volatile LONG g_flEnabled;      //1=å¼€å¯(FlInitç½®ä½; ä»…Debugæž„å»ºå¯è¾¾)
+VOID FlInit(VOID);                     //DriverEntryæœ€å…ˆè°ƒç”¨: åˆ›å»ºT1/T2/çœ‹é—¨ç‹—çº¿ç¨‹
+VOID FlShutdown(VOID);                 //DriverUnloadæœ€åŽè°ƒç”¨: åœçº¿ç¨‹+T1æœ€ç»ˆè½ç›˜
+VOID FlLog(const char* fmt, ...);      //ä»…PASSIVE_LEVEL: å…¥è¡ŒçŽ¯(é›¶æ–‡ä»¶I/O)
+VOID FlLogSpin(const char* fmt, ...);  //è‡ªæ—‹ç­‰å¾…ç‰ˆ(â‰¤DISPATCH_LEVEL/IF=0å®‰å…¨, rdtscé™ç•Œ500ms)
+VOID FlMarkEntryDone(VOID);            //DriverEntryæœ«å°¾è°ƒç”¨: æ”¾è¡ŒT2çš„Desktopé•œåƒ
+VOID FlRingPush(CHAR tag, ULONG cpu, ULONG reason, ULONG64 a, ULONG64 b, ULONG64 c);
+                                       //ä»»æ„IRQL(å«VM-exit): æ— é”å†™äºŒè¿›åˆ¶äº‹ä»¶çŽ¯
+VOID FlRingExit(ULONG cpu, ULONG reason, ULONG64 rip, ULONG64 qual);
+                                       //VM-exitç»Ÿä¸€é‡‡æ ·å…¥å£(å†…éƒ¨å«reasonè®¡æ•°)
+//launchè§‚æµ‹é¢„çƒ­: ç½®hot+è¸¢T1+ç¡5ms(ä»…PASSIVE_LEVEL, vmlaunchå‰è°ƒç”¨),
+//launchçª—å£æ¯«ç§’çº§è½ç›˜
+VOID FlArmLaunchWatch(VOID);
+//æ­¦è£…çœ‹é—¨ç‹—(è¡ŒçŽ¯æ¸¸æ ‡30sä¸åŠ¨=è§¦å‘é»‘åŒ£å­è“å±); FlShutdownè§£é™¤
+VOID FlWdArm(VOID);
+//ä»…FlShutdown/VMfailè·¯å¾„è°ƒç”¨: è§£é™¤æ­¦è£…
+VOID FlWdDisarm(VOID);
+extern volatile LONG64 g_flWriteGuardTsc;   //æŠ¤å«æ­¦è£…æ—¶åˆ»(100nså•ä½)â€”â€”è¶…æ—¶æœªæ¸…=T1å¼ºåˆ¶è§£é™¤å¹¶è¡¥å†™
+extern GEPT_BLACKBOX g_flBlackBox;
+extern volatile LONG64 g_flWdTscPerSec;     //TSCé¢‘çŽ‡(æ ‡å®š, é»˜è®¤2GHz)
 #else
-//Release¹¹½¨: ¿Õ²Ù×÷ºê¡ª¡ªµ÷ÓÃµãÁ¬²ÎÊý´ø¸ñÊ½´®ÕûÌåÏûÊ§
+//Releaseæž„å»º: ç©ºæ“ä½œå®â€”â€”è°ƒç”¨ç‚¹è¿žå‚æ•°å¸¦æ ¼å¼ä¸²æ•´ä½“æ¶ˆå¤±
 #define FlInit()
 #define FlShutdown()
 #define FlLog(fmt, ...)
@@ -224,18 +206,17 @@ extern "C" {
 #define FlWdDisarm()
 #endif
 
-//³£×¤È«¾Ö(ÓëÈÕÖ¾ÎÞ¹Ø, Á½ÖÖ¹¹½¨¶¼±ØÐëÔÚ¡ª¡ªVMX.c/main.cÎÞÌõ¼þÒýÓÃ):
-//launchÈÈÂÖÑ¯±êÖ¾: VMX.cÔÚvmlaunchÇ°ÖÃ1(¾­FlArmLaunchWatch), ½á¹ûÐÐ
-//ÂäÅÌºóÇå0; Debug¹¹½¨ÏÂT1ÈÈÄ£Ê½ºÁÃë¼¶ÂäÅÌ, ÄÚÖÃ¿´ÃÅ¹·×Ô¶¯½µÎÂ
-	extern volatile LONG g_flLaunchHot;
-	//Ì½Õë´°¿ÚÐ´ÅÌ»¤ÎÀ: VMX.cÖÃ1/Çå0, ÖÃÎ»ÆÚ¼äT1(Debug¹¹½¨)Í£Ö¹Ò»ÇÐ
-	//ZwWriteFile(ÊÂ¼þÕÕ³£Èë»·), probe·µ»ØºóÇå0²¹Ð´
-	extern volatile LONG g_flWriteGuard;
-	//exit¾«È·¼ÆÊý: VMX.c exit handlerÎÞÌõ¼þÀÛ¼Ó(Debug¹¹½¨µÄHBÐÄÌø/
-	//ºÚÏ»×Ó/Ð¶ÔØ×Ü½á¶ÁÈ¡Ëü)
-	extern volatile LONG64 g_flExitCounts[GEPT_EXIT_REASON_MAX];
+//å¸¸é©»å…¨å±€(ä¸¤ç§æž„å»ºéƒ½åœ¨, VMX.cæ— æ¡ä»¶å¼•ç”¨):
+//launchçƒ­è½®è¯¢æ ‡å¿—: vmlaunchå‰ç½®1, ç»“æžœè¡Œè½ç›˜åŽæ¸…0(T1çƒ­æ¨¡å¼æ¯«ç§’çº§è½ç›˜)
+extern volatile LONG g_flLaunchHot;
+//æŽ¢é’ˆçª—å£å†™ç›˜æŠ¤å«: ç½®ä½æœŸé—´T1åœæ­¢ZwWriteFile(äº‹ä»¶ç…§å¸¸å…¥çŽ¯), probeè¿”å›žåŽè¡¥å†™
+extern volatile LONG g_flWriteGuard;
+//exitç²¾ç¡®è®¡æ•°: exit handlerç´¯åŠ (HBå¿ƒè·³/é»‘åŒ£å­/å¸è½½æ€»ç»“è¯»å–)
+extern volatile LONG64 g_flExitCounts[GEPT_EXIT_REASON_MAX];
 
-	extern CHAR g_geptBuildTag[24];      //main.c¶¨Òå(=GEPT_BUILD_TAG)
+//æž„å»ºæ ‡ç­¾: æ‰“è¿›æ—¥å¿—ç¬¬ä¸€è¡Œæ ¸å¯¹äºŒè¿›åˆ¶ç‰ˆæœ¬ã€‚ä»£ç æ”¹åŠ¨å¿…é¡»åŒæ­¥ä¿®æ”¹
+#define GEPT_BUILD_TAG "v1.4"
+extern CHAR g_geptBuildTag[24];      //common.cå®šä¹‰(=GEPT_BUILD_TAG)
 
 #ifdef __cplusplus
 }

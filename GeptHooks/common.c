@@ -4,9 +4,9 @@
 #include<ntstrsafe.h>
 BOOLEAN CommCheckBios()
 {
-	ULONG64 bios = __readmsr(MSR_IA32_FEATURE_CONTROL);
+	ULONG64 bios=__readmsr(MSR_IA32_FEATURE_CONTROL);
 	ULONG64 result = bios & 5;
-	if (result == 5)
+	if (result==5)
 	{
 		return TRUE;
 	}
@@ -15,8 +15,8 @@ BOOLEAN CommCheckBios()
 
 BOOLEAN CommCheckCpuid()
 {
-	int cpuinfo[4] = { 0 };
-	__cpuidex(cpuinfo, 1, 0);
+	int cpuinfo[4] = {0};
+	__cpuidex(cpuinfo,1,0);
 	return (cpuinfo[2] >> 5) & 1;
 }
 
@@ -24,7 +24,7 @@ BOOLEAN CommCheckCr4()
 {
 	ULONG64 cr4 = __readcr4();
 	cr4 = cr4 >> 13;
-	if ((cr4 & 1) == 0)
+	if ((cr4&1)==0)
 	{
 		return TRUE;
 	}
@@ -32,9 +32,9 @@ BOOLEAN CommCheckCr4()
 }
 
 //==================== 常驻全局(与日志无关, 两种构建都在) ====================
-//当前虚拟化目标核(-1=未启动), main.c启动循环置位(Debug构建的T1心跳读它)
+//当前虚拟化目标核(-1=未启动), VMX.c启动循环置位(Debug构建的T1心跳读它)
 volatile LONG g_geptVcpuCpu = -1;
-//三重故障park核位掩码(bit i=cpu i已park)——main.c卸载守卫读它
+//三重故障park核位掩码(bit i=cpu i已park)——VMX.c关停守卫读它
 //(park核的VMM栈/代码页仍被占用, 驱动绝不能卸载)
 volatile LONG g_geptParkedMask = 0;
 //launch热轮询标志(VMX.c置位/清零)——Debug构建下T1据此进入1ms热节奏
@@ -43,20 +43,15 @@ volatile LONG g_flLaunchHot = 0;
 volatile LONG g_flWriteGuard = 0;
 //exit精确计数(VMX.c exit handler无条件累加; Debug构建的HB/黑匣子/卸载总结读)
 volatile LONG64 g_flExitCounts[GEPT_EXIT_REASON_MAX] = { 0 };
+//构建标签全局副本——FlInit时拷入黑匣子
+CHAR g_geptBuildTag[24] = GEPT_BUILD_TAG;
 
 #if DBG
-//==================== 冻结存活文件日志(仅Debug构建编译, v1.3c) ====================
-//架构铁律: **DriverEntry/DriverUnload调用路径上零文件I/O**——驱动加载
-//窗口期杀软/过滤驱动可能扣住文件写请求形成循环等待(Desktop用户目录
-//最重), 直接同步写=DriverEntry挂死(sc start无输出)且拖死日志线程。
-//分工:
-//  FlLog: 只格式化并入行环(无锁) + 踢事件唤醒写线程
-//  T1后台线程: 自己打开Temp(系统目录), 排空二进制环+行环+心跳;
-//              权威副本。文件写只发生在此线程上下文
-//  T2后台线程: 等DriverEntry完成(FlMarkEntryDone)后才打开Desktop做
-//              尽力镜像, 被过滤驱动卡死也不影响T1/DriverEntry/系统
-//启动/卸载用串行逐核(亲和性切换)而非KeGenericCallDpc——DPC让全核
-//同时进DISPATCH级, 线程不可能被调度, 期间日志丢失是结构性盲区
+//==================== 文件日志(仅Debug构建编译) ====================
+//DriverEntry/DriverUnload路径零文件I/O(加载窗口期过滤驱动可能死锁):
+//FlLog只入行环; T1线程持有Temp权威副本+心跳+环排空; T2等
+//FlMarkEntryDone后镜像Desktop。启动/卸载用串行逐核而非DPC广播
+//(DPC全核进DISPATCH级, 线程不可调度)
 #define GEPT_LOG_PATH1 L"\\??\\C:\\Users\\User\\Desktop\\gept_log.txt"
 #define GEPT_LOG_PATH2 L"\\??\\C:\\Windows\\Temp\\gept_log.txt"
 
@@ -76,18 +71,13 @@ static LONG g_flT2Seq = 0;                //T2(Desktop)已写行游标(仅T2触�
 static volatile LONG g_flWriteFailsT1 = 0;
 static volatile LONG g_flWriteFailsT2 = 0;
 static volatile LONG g_flT1Lag = 0;     //FlLog等待T1落盘超时(500ms)累计次数
-//护卫武装时刻(T1侧, 100ns单位)——置位时由T1记下, 超时未清=guest已
-//挂死, T1强制解除并补写(否则护卫解除依赖probe返回, guest挂死则
-//T1活着也永远不写盘)
+//护卫武装时刻(100ns单位)——超时未清=T1强制解除并补写
 volatile LONG64 g_flWriteGuardTsc = 0;
 
-//日志系统运行态标志: Debug构建FlInit置1(全部Fl*接口激活); Release
-//构建本文件日志区整体不编译(#if DBG), 本定义不存在——调用点已被
-//common.h的空操作宏消除
+//日志运行态标志: FlInit置1; Release构建本区整体不编译(#if DBG)
 volatile LONG g_flEnabled = 0;
 
-//===== 蓝屏黑匣子 + 自旋看门狗 =====
-//(设计动机见common.h GEPT_BLACKBOX注释)
+//===== 蓝屏黑匣子 + 自旋看门狗(动机见common.h) =====
 static GEPT_RING_ENTRY g_flRing[GEPT_RING_SIZE];   //BSS: 非分页自动清零
 static GEPT_LINE_ENTRY g_flLines[GEPT_LINE_RING_SIZE];
 GEPT_BLACKBOX g_flBlackBox;                    //BSS自动清零(非分页)
@@ -103,7 +93,7 @@ typedef struct _GEPT_WD_TRACK {                //每个看门狗线程私有(无
 
 VOID FlWdArm(VOID)
 {
-	//T1不存在则不武装: 无心跳源=看门狗必然误触发(健康机器被蓝屏)
+	//T1不存在则不武装(无心跳源会误触发)
 	if (g_flThreadT1 == NULL)
 	{
 		return;
@@ -116,13 +106,10 @@ VOID FlWdDisarm(VOID)
 	g_flWdArmed = 0;
 }
 
-//触发: 快照黑匣子+主动蓝屏。机器此刻已级联冻结, 常规路径全死,
-//但crash dump栈是专用低层路径(接管磁盘写DMP, 专为死锁设计),
-//黑匣子必然随MEMORY.DMP落盘
+//触发: 快照黑匣子+主动蓝屏(crash dump栈随MEMORY.DMP保留黑匣子)
 static VOID FlWdFire(ULONG trk)
 {
-	//双路看门狗可能几乎同时检测到stall——只让第一路快照
-	//(第二路进入=黑匣子正在被写, 自旋等待bugcheck接管即可)
+	//双路同时检测: 只让第一路快照, 第二路自旋等bugcheck
 	if (InterlockedCompareExchange(&s_flWdFired, 1, 0) != 0)
 	{
 		for (;;)
@@ -184,17 +171,14 @@ static VOID FlWdFire(ULONG trk)
 		0x3130304242504547ULL, (ULONG64)lh, (ULONG64)trk);
 }
 
-//自旋看门狗线程: 纯rdtsc计时+纯自旋, 不睡眠(睡眠要时钟)、不依赖
-//定时器/时钟/调度——只要本核还能执行指令, 检测就活着(级联冻结会
-//拖死依赖中断时钟的一切检测器, rdtsc是纯硬件计数器免疫冻结)。
-//两路独立: W0钉cpu0, W1钉cpu1
+//自旋看门狗线程: 纯rdtsc计时+纯自旋, 不睡眠不依赖定时器/调度
+//(rdtsc免疫时钟冻结)。W0钉cpu0, W1钉cpu1
 static VOID FlWdThreadProc(PVOID Context)
 {
 	ULONG idx = (ULONG)(ULONG_PTR)Context;
 	//钉核(此处Context只有0/1两值, 见FlInit创建处)
 	KeSetSystemAffinityThread((KAFFINITY)1 << (idx == 0 ? 0 : 1));
-	//W0负责TSC频率标定: 驱动加载期(武装前)时钟健康, "1s睡眠前后
-	//rdtsc差"即真实频率; 范围合理性校验(0.1G-20G)防怪值
+	//W0负责TSC频率标定: 1s睡眠前后rdtsc差=真实频率(0.1G-20G校验)
 	if (idx == 0)
 	{
 		ULONG64 t0 = __rdtsc();
@@ -214,9 +198,8 @@ static VOID FlWdThreadProc(PVOID Context)
 		}
 	}
 	GEPT_WD_TRACK tr;
-	//观测对象=t1Seq(T1已写盘游标)而非lineHead: t1Seq只在ZwWriteFile
-	//真正完成后推进——T1死/T1写阻塞/护卫窗全部覆盖; 健康时T1每250ms
-	//写一批HB行, 30s阈值=120批的裕量
+	//观测t1Seq(已写盘游标): 只在ZwWriteFile完成后推进, 覆盖T1死/写
+	//阻塞场景; 健康时每250ms一批, 30s阈值裕量充足
 	tr.lastLine = g_flT1Seq;
 	tr.lastProgress = __rdtsc();
 	ULONG64 lastPoll = tr.lastProgress;
@@ -243,8 +226,7 @@ static VOID FlWdThreadProc(PVOID Context)
 		}
 		else if (now - tr.lastProgress >= (ULONG64)g_flWdTscPerSec * 30ULL)
 		{
-			//30s写盘零推进(健康时每250ms一批)=T1死/写阻塞=级联冻结
-			//→蓝屏黑匣子(30s裕量: 探针窗~100ms+检查点500ms+护卫1s远不及)
+			//30s写盘零推进=级联冻结→蓝屏黑匣子
 			FlWdFire(idx);    //noreturn
 		}
 		YieldProcessor();
@@ -273,10 +255,8 @@ VOID FlRingPush(CHAR tag, ULONG cpu, ULONG reason, ULONG64 a, ULONG64 b, ULONG64
 	e->tag = tag;
 	MemoryBarrier();      //防止编译器把字段store重排到seq之后
 	e->seq = (ULONG)idx;
-	//注意: 此处绝不KeSetEvent——FlRingPush会被VM-exit上下文调用, 而
-	//VM-exit时IF=0且被中断的guest上下文可能持有任意调度器锁;
-	//KeSetEvent->KiReadyThread要拿调度器/线程锁, 与被中断上下文同核
-	//递归=永久自旋。事件延迟由T1的超时轮询兜底(≤250ms快照)
+	//绝不KeSetEvent: VM-exit上下文(IF=0)可能持调度器锁, 唤醒=死锁;
+	//T1的超时轮询兜底(≤250ms)
 }
 
 //VM-exit统一采样: 所有reason计数; 高频exit只采样前N条入环
@@ -292,33 +272,24 @@ VOID FlRingExit(ULONG cpu, ULONG reason, ULONG64 rip, ULONG64 qual)
 	{
 		return;    //CPUID采样上限: 复用exit计数, 避免额外状态变量
 	}
-	//vmcall环采样上限64——持续压测循环会把环刷爆, 关键标记会被'E'
-	//挤出去。计数仍精确(HB的r18=循环进度)
+	//vmcall采样上限64: 防压测循环刷爆环; 计数仍精确
 	if (reason == EXIT_REASON_VMCALL &&
 		g_flExitCounts[EXIT_REASON_VMCALL] > 64)
 	{
 		return;
 	}
-	//ext-int exiting开启后reason 1高频(时钟1000Hz+设备)——环采样限
-	//前32条, 防中断事件刷出关键标记; HB的r1计数仍精确=中断流量
+	//reason 1/7高频(时钟中断/开窗排空): 采样限前32条, 计数仍精确
 	if (reason == EXIT_REASON_EXTERNAL_INTERRUPT &&
 		g_flExitCounts[EXIT_REASON_EXTERNAL_INTERRUPT] > 32)
 	{
 		return;
 	}
-	//interrupt-window模式的开窗排空会把reason 7成串打出(每条积压
-	//中断一个exit)——同样限前32条; HB的r7计数=开窗投递总量
 	if (reason == EXIT_REASON_PENDING_INTERRUPT &&
 		g_flExitCounts[EXIT_REASON_PENDING_INTERRUPT] > 32)
 	{
 		return;
 	}
-	//已模拟的must-1指令exit(16 RDTSC/14 INVLPG/12 HLT/36 MWAIT)在OS
-	//接管后持续高频(RDTSC~1M/s)——环采样各限32条防刷爆;
-	//HB的r12/r14/r16/r36计数仍精确=各指令真实流量
-	//28 CR访问(CR4.VMXE影子化: 病毒bit13翻转自旋=每次写必exit)与
-	//51 RDTSCP(计时自旋)同性质——各限32条; 'c'环事件(case28自带
-	//采样)与r28/r51计数仍精确
+	//高频指令exit(16/14/12/36/28/51)各限采样32条防刷爆; 计数仍精确
 	if ((reason == 16 || reason == 14 || reason == 12 || reason == 36 ||
 		reason == 28 || reason == 51) &&
 		g_flExitCounts[reason] > 32)
@@ -341,12 +312,8 @@ static LONG FlEnqueueLine(const char* text)
 	return idx;
 }
 
-//T1线程(或T1退出后的FlShutdown): 把行环新行推进Temp文件
-//单写者模型无需锁; g_flT1Seq推进后, 等待中的FlLog(轮询)即被放行
-//写盘纪律: 合并缓冲4KB一批一次ZwWriteFile+强flush限250ms一次——
-//日志文件是FILE_WRITE_THROUGH, 每行一次写IRP在日志密集时=成百次
-//穿透整个过滤栈的同步写, 与密集write-through蓝屏同构; 合并后
-//IRP数量降一个数量级, 崩溃至多丢250ms尾部
+//T1(或T1退出后的FlShutdown): 行环→Temp文件。单写者无锁。
+//写盘合并: 4KB一批+强flush限250ms一次(崩溃至多丢250ms尾部)
 static ULONG64 s_flLastFlushT = 0;
 static VOID FlDrainTempLocked(VOID)
 {
@@ -405,8 +372,7 @@ static VOID FlDrainTempLocked(VOID)
 		wrote = TRUE;
 	}
 	g_flT1Seq = head;
-	//强刷本意: 蓝屏丢缓存页(崩溃前1-2秒日志蒸发)。250ms最多一次:
-	//崩溃至多丢250ms尾部, 换取过滤栈压力大幅下降
+	//强flush限250ms一次: 蓝屏至多丢250ms尾部
 	if (wrote)
 	{
 		ULONG64 nowT = KeQueryUnbiasedInterruptTime();
@@ -418,9 +384,7 @@ static VOID FlDrainTempLocked(VOID)
 	}
 }
 
-//仅PASSIVE_LEVEL: 里程碑日志入行环后**等待T1落盘**(10ms轮询, 上限500ms)。
-//文件写只发生在T1线程; DriverEntry上下文不写文件(加载窗口期死锁, 见
-//文件头注释)。T1异常时500ms超时放行(观测性降级但加载流程不死)
+//仅PASSIVE_LEVEL: 入行环后等待T1落盘(10ms轮询, 上限500ms超时放行)
 VOID FlLog(const char* fmt, ...)
 {
 	char buf[512];
@@ -447,17 +411,12 @@ VOID FlLog(const char* fmt, ...)
 	}
 }
 
-//自旋等待版FlLog(≤DISPATCH_LEVEL安全, IF=0下安全——FlLog的10ms睡眠
-//依赖时钟中断, IF=0的guest核上会永久睡死)。用途: KEEP检查点——sti交付
-//中断(EPT下首个ISR执行=冻结风险点)之前, 强制T1把事件全部落盘。
-//自旋用rdtsc限界(500ms), 不依赖任何中断维护的时钟源;
-//T1在其他核PASSIVE落盘照常
+//自旋等待版FlLog(≤DISPATCH_LEVEL/IF=0安全): 自旋用rdtsc限界500ms,
+//不依赖时钟中断; T1在其他核PASSIVE落盘照常
 VOID FlLogSpin(const char* fmt, ...)
 {
 	char buf[512];
 	va_list args;
-	//IRQL门≤DISPATCH: 自旋等待(YieldProcessor, 不睡眠不阻塞)在DISPATCH
-	//级完全合法, T1在其他核PASSIVE落盘照常
 	if (!g_flEnabled || KeGetCurrentIrql() > DISPATCH_LEVEL)
 	{
 		return;    //日志未开启=空操作
@@ -479,10 +438,8 @@ VOID FlLogSpin(const char* fmt, ...)
 	}
 }
 
-//launch观测预热(仅PASSIVE_LEVEL, VmxSetupVmcs在vmlaunch前调用):
-//置hot+踢T1+睡5ms——保证T1立即醒来进入1ms热节奏, launch窗口
-//(vmlaunch+探针循环+接管初期)全程毫秒级落盘。只踢事件不够:
-//T1可能正睡在250ms超时等待里, 必须踢醒并让它看到hot=1
+//launch观测预热(仅PASSIVE_LEVEL, vmlaunch前调用): 置hot+踢T1+睡5ms,
+//T1醒来进入1ms热节奏, launch窗口毫秒级落盘
 VOID FlArmLaunchWatch(VOID)
 {
 	if (!g_flEnabled)
@@ -537,9 +494,7 @@ static VOID FlDrainBinRing(VOID)
 	g_flBinFlushed = head;
 }
 
-//单文件顺序写: pCursor是该文件已写到的行号(仅属主线程触碰)
-//写盘合并(同FlDrainTempLocked)——Desktop是用户路径=过滤最重,
-//每行一次写IRP同样压过滤栈
+//单文件顺序写: pCursor=已写行号(仅属主线程); 写盘合并同FlDrainTempLocked
 static VOID FlDrainLines(HANDLE hFile, PLONG pCursor, volatile LONG* pFails)
 {
 	char buf[4096];
@@ -594,19 +549,14 @@ static VOID FlDrainLines(HANDLE hFile, PLONG pCursor, volatile LONG* pFails)
 	*pCursor = head;
 }
 
-//T1线程: 排空二进制环([E][W][K][F][f][V][H]...→行环) + 250ms心跳
-//+ Temp排空。文件由T1自己打开(DriverEntry上下文的ZwCreateFile同有
-//加载窗口期风险)
+//T1线程: 排空二进制环→行环 + 250ms心跳 + Temp排空。文件由T1自己打开
 static VOID FlThreadProcT1(PVOID Context)
 {
 	LARGE_INTEGER timeout;
 	LARGE_INTEGER rest;
 	ULONG64 hb = 0;
 	UNREFERENCED_PARAMETER(Context);
-	//T1钉核纪律: 排除cpu0与最后一核——观测通道必须"结构性不依赖任何
-	//虚拟化核": cpu0=首个被虚拟化核+存储MSI/DPC默认路由核(写盘完成
-	//依赖它), 最后一核=安静核虚拟化目标。钉在健康核上, 虚拟化核冻结
-	//时T1的写盘完成走真机核的DPC队列=死亡现场必然落盘
+	//T1钉离cpu0与最后一核(虚拟化目标核): 保证写盘完成不依赖虚拟化核
 	{
 		ULONG nCpu = KeQueryActiveProcessorCount(NULL);
 		if (nCpu > 2)
@@ -626,21 +576,16 @@ static VOID FlThreadProcT1(PVOID Context)
 	}
 	FlEnqueueLine("T1线程启动(Temp+心跳, 已钉离cpu0)");
 	FlDrainTempLocked();
-	//心跳250ms: 最后一条[HB]距离冻结时刻<=250ms, [F]/[f]环事件提供
-	//窗口边界; 更快的心跳=每秒更多次写IRP+flush, 是过滤栈上无意义
-	//的持续压力
+	//心跳250ms: [HB]提供存活证明+状态快照
 	timeout.QuadPart = -2500000LL;     //250毫秒
 	rest.QuadPart = -200000LL;         //20毫秒
-	//launch热轮询节奏: 热模式=等待与附加延时都1ms(vmlaunch窗口毫秒级
-	//观测; 每轮落盘仍是批量一次写, flush仍限250ms, I/O压力不放大)
+	//launch热轮询: 热模式等待与附加延时均1ms
 	LARGE_INTEGER hotRest;
 	ULONG64 hotSince = 0;
 	hotRest.QuadPart = -10000LL;       //1毫秒
 	LARGE_INTEGER hotWait;
 	hotWait.QuadPart = -10000LL;       //1毫秒
-	//心跳按墙钟强制发射——kick事件与心跳共用一次等待, 日志密集时
-	//kick不断重置等待, timeout永不触发, 心跳被饿死。改为每次醒来
-	//查墙钟, 距上次心跳>=间隔就无条件发射
+	//心跳按墙钟强制发射: kick不断重置等待会饿死心跳, 改为醒来查墙钟
 	ULONG64 lastHb = KeQueryUnbiasedInterruptTime();
 	for (;;)
 	{
@@ -654,10 +599,8 @@ static VOID FlThreadProcT1(PVOID Context)
 		FlDrainBinRing();
 		if (KeQueryUnbiasedInterruptTime() - lastHb >= 2500000LL)
 		{
-			//心跳行: 系统存活证明 + vcpu状态快照 + exit计数
+			//心跳行: 存活证明+vcpu状态快照+exit计数
 			//g/f/o掩码: bit i = cpu i 的 bInGuest/bLaunchFailed/bVmxOn
-			//(冻结时最后一条[HB]直接判读——g掩码=1的核vmlaunch成功,
-			// f掩码=1的核启动失败, exits列出冻结前全部exit类型统计)
 			char hbb[512];
 			ULONG guestMsk = 0, failMsk = 0, onMsk = 0;
 			ULONG cpuCnt = KeQueryActiveProcessorCount(NULL);
@@ -669,15 +612,15 @@ static VOID FlThreadProcT1(PVOID Context)
 			{
 				if (g_vcpu[c].bInGuest)     guestMsk |= (1UL << c);
 				if (g_vcpu[c].bLaunchFailed) failMsk |= (1UL << c);
-				if (g_vcpu[c].bVmxOn)       onMsk |= (1UL << c);
+				if (g_vcpu[c].bVmxOn)       onMsk    |= (1UL << c);
 			}
 			RtlStringCbPrintfA(hbb, sizeof(hbb),
-				"[HB%llu] up=%us lag=%ld wf=%ld/%ld g:%X f:%X o:%X p:%X vcpu=%d pend=%d exits:",
-				++hb, (ULONG)(KeQueryUnbiasedInterruptTime() / 10000000ULL),
-				g_flT1Lag, g_flWriteFailsT1, g_flWriteFailsT2,
-				guestMsk, failMsk, onMsk, g_geptParkedMask,
-				(int)g_geptVcpuCpu,
-				(g_geptVcpuCpu >= 0) ? (int)g_vcpu[g_geptVcpuCpu].PendingIntrCount : 0);
+			"[HB%llu] up=%us lag=%ld wf=%ld/%ld g:%X f:%X o:%X p:%X vcpu=%d pend=%d exits:",
+			++hb, (ULONG)(KeQueryUnbiasedInterruptTime() / 10000000ULL),
+			g_flT1Lag, g_flWriteFailsT1, g_flWriteFailsT2,
+			guestMsk, failMsk, onMsk, g_geptParkedMask,
+			(int)g_geptVcpuCpu,
+			(g_geptVcpuCpu >= 0) ? (int)g_vcpu[g_geptVcpuCpu].PendingIntrCount : 0);
 			{
 				char one[40];
 				for (ULONG r = 0; r < GEPT_EXIT_REASON_MAX; r++)
@@ -693,10 +636,8 @@ static VOID FlThreadProcT1(PVOID Context)
 			FlEnqueueLine(hbb);
 			lastHb = KeQueryUnbiasedInterruptTime();
 		}
-		//写盘护卫——护卫期间零ZwWriteFile(HB/环事件照常入行环缓冲,
-		//容量1024行>>护卫窗产量), 清护卫后下轮(≤1ms)一次补写。
-		//超时1000ms自解除: guest挂死时若T1活着, 护卫期事件1秒后
-		//必然上盘(死亡现场!)
+		//写盘护卫: 护卫期间零ZwWriteFile, 清护卫后下轮补写;
+		//超时1000ms自解除(guest挂死时强制落盘)
 		if (g_flWriteGuard)
 		{
 			if (g_flWriteGuardTsc == 0)
@@ -718,9 +659,7 @@ static VOID FlThreadProcT1(PVOID Context)
 		{
 			FlDrainTempLocked();
 		}
-		//launch热轮询——g_flLaunchHot置位期间(vmlaunch前置1, 结果行落盘
-		//后清0), T1睡眠间隔20ms→1ms: 冻结前的[F][W][E]环事件毫秒级上盘。
-		//主线程若死在guest里没清标志, 15秒后T1自动降温
+		//launch热轮询: hot置位期间睡眠间隔20ms→1ms; 15秒未清自动降温
 		if (g_flLaunchHot)
 		{
 			if (hotSince == 0)
@@ -823,10 +762,8 @@ static HANDLE FlOpenOneFile(PCWSTR path)
 	return NT_SUCCESS(st) ? hFile : NULL;
 }
 
-//DriverEntry最先调用(v1.3c): 本函数整体位于#if DBG内——Debug构建
-//(DBG=1)才编译: 置g_flEnabled+创建T1/T2/双看门狗线程; Release构建
-//(DBG=0)common.h已把FlInit定义为空宏, 调用点消失, 本定义不参与
-//编译(日志实现零代码进产物)。开关沿革见common.h"构建配置判据"注释
+//DriverEntry最先调用: 置g_flEnabled+创建T1/T2/看门狗线程(整体在
+//#if DBG内, Release构建不编译)
 VOID FlInit(VOID)
 {
 	g_flEnabled = 1;
@@ -862,9 +799,7 @@ VOID FlInit(VOID)
 	{
 		DbgPrint("[fl]T2线程创建失败=0x%x(无Desktop镜像)\n", st);
 	}
-	//双自旋看门狗线程(W0=cpu0, W1=cpu1)——冻结检测的时基是rdtsc
-	//(纯硬件), 与中断时钟/定时器/调度完全解耦; 线程创建失败仅
-	//DbgPrint(黑匣子降级, 不致命)
+	//双自旋看门狗线程(W0=cpu0, W1=cpu1); 创建失败仅DbgPrint(不致命)
 	for (ULONG w = 0; w < 2; w++)
 	{
 		st = PsCreateSystemThread(&hThread, THREAD_ALL_ACCESS,
@@ -889,8 +824,7 @@ VOID FlShutdown(VOID)
 	{
 		return;    //日志未开启=无任何线程/文件需要收尾
 	}
-	//最先解除看门狗——卸载期间HB可能停顿(线程退出/最终排空),
-	//不解除=可能把健康卸载误判成冻结蓝屏
+	//最先解除看门狗(卸载期间HB停顿会误判冻结)
 	FlWdDisarm();
 	g_flStop = 1;
 	KeSetEvent(&g_flKickT1, IO_NO_INCREMENT, FALSE);
@@ -916,7 +850,7 @@ VOID FlShutdown(VOID)
 		if (KeWaitForSingleObject(g_flThreadT2, Executive, KernelMode,
 			FALSE, &t2) == STATUS_TIMEOUT)
 		{
-			//T2卡死在Desktop写(过滤驱动死锁): 泄漏线程与句柄, 仅调试阶段可接受
+			//T2卡死在Desktop写: 泄漏线程与句柄(仅调试可接受)
 			DbgPrint("[fl]T2卡死在Desktop写! 句柄泄漏, 建议重启而勿反复卸载\n");
 		}
 		else
@@ -925,8 +859,7 @@ VOID FlShutdown(VOID)
 			g_flThreadT2 = NULL;
 		}
 	}
-	//等看门狗线程退出(自旋循环头检查g_flStop, 微秒级退出;
-	//有界等待防异常卡死卸载)
+	//等看门狗线程退出(有界等待防卡死卸载)
 	for (ULONG w = 0; w < 2; w++)
 	{
 		if (g_flWdThread[w] != NULL)

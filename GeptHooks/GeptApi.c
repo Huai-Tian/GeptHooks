@@ -1,66 +1,55 @@
-#include <ntifs.h>
+ï»¿#include <ntifs.h>
 #include "GeptApi.h"
 #include "common.h"
 #include "PageHook.h"
 #include "VMX.h"
 
 //====================================================================
-// ¼òÒ×APIÊµÏÖ(VMFUNCË«EPT detour)
+// APIå®ç°(VMFUNCåŒEPT detour)
 //
-//´¥·¢Á´: hookedÊÓÍ¼hookÒ³(=CodePage, Ä¿±êÆ«ÒÆ´¦14B¾ø¶ÔÌø×ª)
-//   ¡ú ±¾hook¶ÀÏítrampoline²Û(mov r10,entry; jmp GeptStubEntry)
-//   ¡ú GeptStubEntry(hook.asm): vmfunc(0,0)ÇĞclean ¡ú SAVE_ALL
-//     ¡ú GeptCallbackDispatch(±¾ÎÄ¼ş) ¡ú ÓÃ»§»Øµ÷
-//     ¡ú vmfunc(0,1)ÇĞ»Øhooked ¡ú ret»Øµ÷ÓÃÕß(rax=»Øµ÷·µ»ØÖµ)
+//è§¦å‘é“¾: hookedè§†å›¾hooké¡µ(=CodePage)ç›®æ ‡åç§»14Bè·³è½¬ â†’ trampolineæ§½
+//  (mov r10,entry; jmp GeptStubEntry) â†’ GeptStubEntry(hook.asm):
+//  vmfunc(0,0)åˆ‡clean â†’ SAVE_ALL â†’ GeptCallbackDispatch â†’ ç”¨æˆ·å›è°ƒ
+//  â†’ vmfunc(0,1)åˆ‡å›hooked â†’ retå›è°ƒç”¨è€…(rax=å›è°ƒè¿”å›å€¼)
 //
-//ÎŞĞèprologueÖØ·Å/hookLen»úÆ÷µÄÔ­Òò: cleanÊÓÍ¼ÏÂÔ­º¯Êı×Ö½ÚÍêºÃ¡ú
-//GeptCallOriginalÖ±½Ócall TargetÔ­Ê¼Èë¿Ú(violation·½°¸ÀïÖØ·Å+Ìø»Ø
-//µÄÕûÌ×trampoline»úÆ÷Ö»ÎªÈÆ¹ı±»¸²¸ÇµÄÖ¸Áî, Ë«EPTÏÂ¸ÃÎÊÌâ²»´æÔÚ)
-//
-//RemoveÓïÒå: ²»¶¯EPT½á¹¹(hooked PTEÈÔÖ¸CodePage), Ö»°ÑCodePageÀï±»
-//¸²¸ÇµÄÇ°HookLen×Ö½Ú»¹Ô­³ÉÔ­Ò³ÄÚÈİ(Ô­Ò³´ÓÎ´±»ĞŞ¸Ä=È¨Íş¸±±¾)+È«ºË
-//invept ¡ú hookedÊÓÍ¼¡ÔcleanÊÓÍ¼=hookËÀÍ¸; ÔÚÍ¾»Øµ÷(ÒÑ¹ıÌø°åµÄÏß³Ì)
-//°²È«Íê³É(²Û/ÌõÄ¿ÑÓ³Ùµ½Ğ¶ÔØÊÍ·Å)¡£ÖØ×°=PHHookÖØĞÂÕûÒ³¸´ÖÆ+ÖØĞÂ´ò
-//Ìø×ª(CodePageÖØÖÃ), EPTÒÑ²¼·ÀÎŞĞèÔÙ¹ã²¥
+//cleanè§†å›¾ä¸‹åŸå‡½æ•°å­—èŠ‚å®Œå¥½â†’GeptCallOriginalç›´æ¥call Target(æ— éœ€é‡æ”¾)ã€‚
+//Remove: è¿˜åŸCodePageè¢«è¦†ç›–å­—èŠ‚+å…¨æ ¸inveptâ†’hookedâ‰¡clean=hookå¤±æ•ˆ;
+//åœ¨é€”å›è°ƒå®‰å…¨å®Œæˆ(æ§½/æ¡ç›®å»¶è¿Ÿåˆ°å¸è½½é‡Šæ”¾)
 //====================================================================
 
-//ÄÚ²¿ÌõÄ¿(°²×°ºó×Ö¶ÎÈ«²¿²»¿É±ä¡ú·Ö·¢Æ÷ÎŞËø¶Á°²È«)
+//å†…éƒ¨æ¡ç›®(å®‰è£…åå­—æ®µå…¨éƒ¨ä¸å¯å˜â†’åˆ†å‘å™¨æ— é”è¯»å®‰å…¨)
 typedef struct _GEPT_API_ENTRY
 {
 	LIST_ENTRY link;
 	GEPT_HOOK pub;        //Target/Callback/Context
-	PVOID Trampoline;     //±¾hook¶ÀÏítrampoline²Û(¿ÉÖ´ĞĞ³ØÒ³ÄÚ)
-	PVOID ReplayVA;       //LDEÖØ¶¨Î»Ìø°å(¸±±¾prologue+Î²jmp»Ø; fallbackµÄGeptCallOriginal+replay×Ô²â¹²ÓÃ)
-	ULONG ReplayLen;      //ÖØ¶¨Î»¸²¸ÇµÄ×Ö½ÚÊı(=PHHookÌø×ª¸²¸Ç³¤¶È, Á½ÕßÍ¬Ô´Í¬³¤)
-	volatile LONG Removed;//1=ÒÑÒÆ³ı(EnumerateÌø¹ı; ÄÚ´æÑÓ³Ùµ½Ğ¶ÔØ)
-} GEPT_API_ENTRY, * PGEPT_API_ENTRY;
+	PVOID Trampoline;     //æœ¬hookç‹¬äº«trampolineæ§½(å¯æ‰§è¡Œæ± é¡µå†…)
+	PVOID ReplayVA;       //LDEé‡å®šä½è·³æ¿(å‰¯æœ¬prologue+å°¾jmpå›; fallbackçš„GeptCallOriginal+replayè‡ªæµ‹å…±ç”¨)
+	ULONG ReplayLen;      //é‡å®šä½è¦†ç›–çš„å­—èŠ‚æ•°(=PHHookè·³è½¬è¦†ç›–é•¿åº¦, ä¸¤è€…åŒæºåŒé•¿)
+	volatile LONG Removed;//1=å·²ç§»é™¤(Enumerateè·³è¿‡; å†…å­˜å»¶è¿Ÿåˆ°å¸è½½)
+} GEPT_API_ENTRY, *PGEPT_API_ENTRY;
 
-static LIST_ENTRY s_apiList = { 0 };       //live+removedÌõÄ¿(Ğ¶ÔØÍ³Ò»ÊÍ·Å)
-static KSPIN_LOCK s_apiLock = { 0 };       //Install/Remove/Enumerate»¥³â(¾ùPASSIVE)
+static LIST_ENTRY s_apiList = { 0 };       //live+removedæ¡ç›®(å¸è½½ç»Ÿä¸€é‡Šæ”¾)
+static KSPIN_LOCK s_apiLock = { 0 };       //Install/Remove/Enumerateäº’æ–¥(å‡PASSIVE)
 static volatile LONG s_apiLockInit = 0;
 
-//trampoline²Û³Ø: Ã¿²Û64B(mov r10,imm64=10B + jmp[rip+0]=12B + 4BÓàÁ¿),
-//Ã¿³ØÒ³64²Û¡£³ØÒ³=NonPagedPool(x64 WinÉÏNonPagedPool·ÖÅä¼´¿ÉÖ´ĞĞÄÚ´æ;
-//NonPagedPoolNx²ÅÊÇ²»¿ÉÖ´ĞĞ±äÌå¡ª¡ªtrampoline±ØĞë¿ÉÖ´ĞĞ)
+//trampolineæ§½æ± : æ¯æ§½64B, æ¯æ± é¡µ64æ§½ã€‚NonPagedPool=x64ä¸Šå¯æ‰§è¡Œ
+//(NonPagedPoolNxæ‰æ˜¯ä¸å¯æ‰§è¡Œå˜ä½“)
 #define GEPT_TRAMP_SLOT  64
 #define GEPT_TRAMP_PER_PAGE (PAGE_SIZE / GEPT_TRAMP_SLOT)
-static PVOID s_trampPool[32];    //³ØÒ³(ÉÏÏŞ32Ò³=2048¸öhook, demo×ã¹»)
+static PVOID s_trampPool[32];    //æ± é¡µ(ä¸Šé™32é¡µ=2048ä¸ªhook, demoè¶³å¤Ÿ)
 static volatile LONG s_trampUsed = 0;
 static KIRQL s_apiOldIrql = 0;
 
-//Ã¿ºËµ±Ç°hook(GeptCallbackDispatchÉèÖÃ/Ç¶Ì×save-restore, GeptCallOriginal¶Á)
+//æ¯æ ¸å½“å‰hook(åµŒå¥—save-restore, GeptCallOriginalè¯»)
 static PGEPT_API_ENTRY volatile s_currentHook[128] = { 0 };
-//Ã¿ºËµ±Ç°´¥·¢Ö¡(Óës_currentHookÍ¬µãÎ»ÉèÖÃ/Ç¶Ì×save-restore¡ª¡ª
-//GeptCallOriginal¾İ´ËÈ¡µÚ5+Õ»²ÎÊıÔ´; »Øµ÷ÄÚÇ¶Ì×´¥·¢ÁíÒ»hookÊ±ÕıÈ··Ö²ã)
+//æ¯æ ¸å½“å‰è§¦å‘å¸§(GeptCallOriginalæ®æ­¤å–ç¬¬5+æ ˆå‚æ•°æº; åµŒå¥—æ­£ç¡®åˆ†å±‚)
 static PGUEST_REGS volatile s_currentRegs[128] = { 0 };
 
-//hook.asmµÄdetour stubÈë¿Ú(Ìî½øÃ¿¸ötrampoline²Û)
+//hook.asmçš„detour stubå…¥å£(å¡«è¿›æ¯ä¸ªtrampolineæ§½)
 extern VOID GeptStubEntry(VOID);
 
-//hook.asmµÄÕ»²ÎÊı×ª·¢×®(GeptCallOrigAsmµÄ²ÎÊı¿é¡ª¡ªÆ«ÒÆÓë
-//hook.asm×®×¢ÊÍÓ²ÆõÔ¼, ¸ÄÒ»´¦±ØĞëÍ¬²½ÁíÒ»´¦):
-//  +00h Target(VMFUNCºË=Ô­Èë¿Ú/fallbackºË=ÖØ¶¨Î»Ìø°å)
-//  +08h StackArgsÔ´  +10h Count  +18h..30h Arg1-4
+//hook.asm GeptCallOrigAsmçš„å‚æ•°å—(åç§»ä¸hook.asmç¡¬å¥‘çº¦, æ”¹ä¸€å¤„é¡»åŒæ­¥):
+//  +00h Target  +08h StackArgsæº  +10h Count  +18h..30h Arg1-4
 typedef struct _GEPT_ORIG_CALL
 {
 	ULONG64 Target;
@@ -90,10 +79,7 @@ static VOID GeptApiUnlock(VOID)
 	KeReleaseSpinLock(&s_apiLock, s_apiOldIrql);
 }
 
-//ÊÖ¶¯ÊÓÍ¼ÇĞ»»(asm stub/GeptCallOriginal¹²ÓÃ)¡ª¡ªVTÒÑ¹Ø/ÎŞVMFUNCºË
-//°²È«no-op¡£Ğ¶ÔØ¾ºÌ¬·ÀÓù: vmx_offºónon-rootÖ´ĞĞvmfunc=#UDÀ¶ÆÁ, ±¾¼ì²é°Ñ
-//"ÔÚÍ¾»Øµ÷¿çĞ¶ÔØ´°¿Ú"Ëõµ½checkÓëvmfuncÁ½ÌõÖ¸Áî¼ä±»ÇÀÕ¼µÄ¼«Ğ¡¸ÅÂÊ
-//(ÅäºÏDriverUloadµÄGeptApiRemoveAll+2s¿íÏŞ, ²ĞÓà·çÏÕ¿ÉºöÂÔ)
+//æ‰‹åŠ¨è§†å›¾åˆ‡æ¢: VTå·²å…³/æ— VMFUNCæ ¸=no-op(vmx_offåvmfunc=#UDè“å±)
 VOID GeptViewSwitch(ULONG eptpIndex)
 {
 	ULONG cpu = KeGetCurrentProcessorNumber();
@@ -104,12 +90,9 @@ VOID GeptViewSwitch(ULONG eptpIndex)
 	CmVmfuncSwitch(eptpIndex);
 }
 
-//asm stubµ÷ÓÃ(rcx=APIÌõÄ¿, rdx=GUEST_REGSÖ¡): ÉèÖÃÃ¿ºËµ±Ç°hook+´¥·¢Ö¡
-//(Ç¶Ì×save-restore¡ª¡ª»Øµ÷ÄÚ¾­Ïß³ÌÇ¨ÒÆÔÙ´¥·¢ÁíÒ»hookÊ±ÕıÈ·Ç¶Ì×)ºó½ø
-//ÓÃ»§»Øµ÷¡£ÉùÃ÷ÁËStackArgs>0µÄhook, »Øµ÷ÊÕµÚ5+²ÎÊıÊı×éÖ¸Õë
-//(=´¥·¢Ö¡ÉÏÊµ²Î, regs->rsp+28h¡ª¡ªRSP0=guestÈë¿Úrsp, Õ»²ÎÔÚÓ°×Ó¿Õ¼ä
-//Ö®ÉÏ, ¼ûhook.asm GeptStubEntryÖ¡²¼¾Ö×¢ÊÍ; ¿É¶Á¿ÉĞ´, Ğ´ºó
-//GeptCallOriginal°´¸ÄĞ´Öµ×ª·¢)
+//asm stubè°ƒç”¨(rcx=APIæ¡ç›®, rdx=GUEST_REGSå¸§): è®¾ç½®æ¯æ ¸å½“å‰hook+è§¦å‘å¸§
+//åè¿›ç”¨æˆ·å›è°ƒã€‚StackArgs>0æ—¶å›è°ƒæ”¶ç¬¬5+å‚æ•°æŒ‡é’ˆ(=è§¦å‘å¸§ä¸Šå®å‚
+//regs->rsp+28h, å¯è¯»å¯å†™, å†™åæŒ‰æ”¹å†™å€¼è½¬å‘)
 ULONG64 GeptCallbackDispatch(PVOID entryPtr, PGUEST_REGS regs)
 {
 	PGEPT_API_ENTRY e = (PGEPT_API_ENTRY)entryPtr;
@@ -133,7 +116,7 @@ ULONG64 GeptCallOriginal(ULONG64 Arg1, ULONG64 Arg2, ULONG64 Arg3, ULONG64 Arg4)
 	PGEPT_API_ENTRY e = s_currentHook[cpu];
 	if (e == NULL)
 	{
-		//·Ç»Øµ÷ÉÏÏÂÎÄµ÷ÓÃ(ÓÃ»§ÎóÓÃ): ¾²Ä¬·µ»Ø0+Ò»´ÎĞÔÁôºÛ
+		//éå›è°ƒä¸Šä¸‹æ–‡è°ƒç”¨(ç”¨æˆ·è¯¯ç”¨): é™é»˜è¿”å›0+ä¸€æ¬¡æ€§ç•™ç—•
 		static volatile LONG s_warned = 0;
 		if (InterlockedCompareExchange(&s_warned, 1, 0) == 0)
 		{
@@ -141,23 +124,17 @@ ULONG64 GeptCallOriginal(ULONG64 Arg1, ULONG64 Arg2, ULONG64 Arg3, ULONG64 Arg4)
 		}
 		return 0;
 	}
-	//Ë«Â·¾¶¡ª¡ªVMFUNCºË(Ë«EPT)ÓëfallbackºË(violationµ¥EPT)°´**µ±Ç°ºË**
-	//ÄÜÁ¦·ÖÅÉ(»ìºÏ»úÆ÷ÉÏ»Øµ÷ÔÚÄÄ¸öºË´¥·¢¾Í×ßÄÄÌõÂ·):
-	//  VMFUNCºË: ÇĞcleanÊÓÍ¼¡úÖ±½ÓcallÔ­Ê¼Èë¿Ú(cleanÊÓÍ¼Ô­º¯Êı×Ö½Ú
-	//    ÍêºÃ, ÎŞÖØ·Å)¡ú¹éÎ»hooked¡£ÊÓÍ¼ÇĞ»»ÃİµÈ(SDM ¡ì28.5.7.3)
-	//  fallbackºË: Ô­º¯ÊıÊ××Ö½ÚÔÚCodePage(Ö´ĞĞÊÓÍ¼)Àï=14BÌø×ª,
-	//    Ö±½Ócall Target=×²Ìø×ªÎŞÏŞµİ¹é!¡ú¾­**ÖØ¶¨Î»Ìø°å**(prologue
-	//    ¸±±¾+Î²jmp+N½øÈëº¯ÊıÌå, Ìø°åÒ³Î´±»hook)¡ª¡ª¾­µäDetoursÓïÒå
-	//ÉùÃ÷ÁËStackArgs>0µÄhook×ßGeptCallOrigAsm×®¡ª¡ª°´x64 ABIÖØ½¨
-	//ÍêÕûµ÷ÓÃÖ¡(32BÓ°×Ó+NÕ»²Î¸´ÖÆ+¼Ä´æÆ÷×°ÔØ), Õ»²ÎÔ´=´¥·¢Ö¡ÉÏÊµ²Î
-	//(»Øµ÷¿ÉÄÜÒÑ¸ÄĞ´)¡£Á½ÌõÂ·¾¶(Ô­Èë¿Ú/ÖØ¶¨Î»Ìø°å)¶ÔÕ»²Î×ª·¢ÓïÒåµÈ¼Û:
-	//Ìø°åÖØ·ÅµÄrspÏà¶ÔÖ¸Áî¶Á**Ìø°å×ÔÉíµÈ¼Ûµ÷ÓÃÖ¡**µÄÍ¬Æ«ÒÆ
+	//åŒè·¯å¾„æŒ‰å½“å‰æ ¸èƒ½åŠ›åˆ†æ´¾:
+	//  VMFUNCæ ¸: åˆ‡cleanâ†’ç›´æ¥callåŸå§‹å…¥å£â†’å½’ä½hooked
+	//  fallbackæ ¸: ç›´æ¥call Target=æ’è·³è½¬æ— é™é€’å½’â†’ç»é‡å®šä½è·³æ¿
+	//StackArgs>0æ—¶èµ°GeptCallOrigAsmæ¡©é‡å»ºå®Œæ•´x64è°ƒç”¨å¸§, æ ˆå‚æº=
+	//è§¦å‘å¸§ä¸Šå®å‚(å›è°ƒå¯èƒ½å·²æ”¹å†™)
 	if (e->pub.StackArgs != 0 && s_currentRegs[cpu] != NULL)
 	{
 		GEPT_ORIG_CALL oc;
 		oc.Target = g_vcpu[cpu].bVmfuncOn
 			? (ULONG64)e->pub.Target : (ULONG64)e->ReplayVA;
-		oc.StackArgs = s_currentRegs[cpu]->rsp + 0x28;   //Õ»²ÎÔ´(Ó°×ÓÖ®ÉÏ)
+		oc.StackArgs = s_currentRegs[cpu]->rsp + 0x28;   //æ ˆå‚æº(å½±å­ä¹‹ä¸Š)
 		oc.Count = e->pub.StackArgs;
 		oc.Arg1 = Arg1;
 		oc.Arg2 = Arg2;
@@ -170,7 +147,7 @@ ULONG64 GeptCallOriginal(ULONG64 Arg1, ULONG64 Arg2, ULONG64 Arg3, ULONG64 Arg4)
 			GeptViewSwitch(1);
 			return ret;
 		}
-		return GeptCallOrigAsm(&oc);   //fallbackºË: Ìø°åÎ´±»hook, ÎŞĞèÇĞÊÓÍ¼
+		return GeptCallOrigAsm(&oc);   //fallbackæ ¸: è·³æ¿æœªè¢«hook, æ— éœ€åˆ‡è§†å›¾
 	}
 	if (g_vcpu[cpu].bVmfuncOn)
 	{
@@ -184,19 +161,14 @@ ULONG64 GeptCallOriginal(ULONG64 Arg1, ULONG64 Arg2, ULONG64 Arg3, ULONG64 Arg4)
 	return ((GEPT_REPLAY_FN)e->ReplayVA)(Arg1, Arg2, Arg3, Arg4);
 }
 
-//·ÖÅäÒ»¸ötrampoline²Û²¢ÌîÈëÌø°å»úÆ÷Âë:
-//  49 BA <entry64>       mov r10, imm64   (r10=volatile, º¯ÊıÈë¿ÚclobberºÏ·¨)
-//  FF 25 00 00 00 00     jmp [rip+0]
-//  <GeptStubEntry64>                      (Î»ÖÃÎŞ¹Ø, ²»ÒÀÀµ¡À2GBÁÚ½ü)
-//²Û²¼¾Ö(24B/64B): [0..9]=mov r10 | [10..15]=jmp | [16..23]=8BÄ¿±êÖ¸Õë¡£
-//**Ö¸Õë±ØĞëÂät+16**: Ö¸ÁîÔÚt+10³¤6B¡úRIP_after=t+16, disp32=0¡úCPU´Ó
-//t+16¶Á²Ù×÷Êı¡£Ğ´´íÆ«ÒÆ(Èçt+18)=CPU¶Á³ö[00 00+µØÖ·µÍ6B]=·Ç¹æ·¶µØÖ·
-//¡ú#GP(0)ÓÚjmpÖ¸Áî±¾Éí¡úInstallºóÊ×´Îhook´¥·¢¼´À¶ÆÁ, ¹ÊÓĞÏÂ·½»Ø¶Á×Ô¼ì
+//trampolineæ§½æœºå™¨ç (24B/64B): [0..9]=mov r10,imm64 | [10..15]=jmp [rip+0]
+//| [16..23]=GeptStubEntryåœ°å€ã€‚æŒ‡é’ˆå¿…é¡»è½t+16(jmpçš„RIP_after=t+16,
+//disp32=0â†’CPUä»t+16è¯»æ“ä½œæ•°), å†™é”™åç§»=jmpå¤„#GP, æ•…æœ‰å›è¯»è‡ªæ£€
 static PVOID GeptAllocTrampoline(PGEPT_API_ENTRY entry)
 {
 	if (s_trampUsed >= (LONG)(sizeof(s_trampPool) / sizeof(s_trampPool[0]) * GEPT_TRAMP_PER_PAGE))
 	{
-		return NULL;    //2048¸öhookÉÏÏŞ
+		return NULL;    //2048ä¸ªhookä¸Šé™
 	}
 	LONG slotIdx = InterlockedIncrement(&s_trampUsed) - 1;
 	ULONG pageIdx = (ULONG)(slotIdx / GEPT_TRAMP_PER_PAGE);
@@ -217,11 +189,10 @@ static PVOID GeptAllocTrampoline(PGEPT_API_ENTRY entry)
 	t[10] = 0xFF; t[11] = 0x25;                       //jmp [rip+0]
 	*(ULONG32*)(t + 12) = 0;
 	*(ULONG64*)(t + 16) = (ULONG64)&GeptStubEntry;
-	//»Ø¶Á×Ô¼ì: °´**CPUÊµ¼Ê¶ÁÈ¡Â·¾¶**(t+16)ÑéÖ¤Ä¿±êÖ¸Õë¡ª¡ª±àÂëÆ«ÒÆ
-	//»Ø¹éµ±³¡À¹½Ø(InstallÊ§°ÜÁôºÛ)¶ø·ÇÉÏ»úÀ¶ÆÁ
+	//å›è¯»è‡ªæ£€: æŒ‰CPUå®é™…è¯»å–è·¯å¾„(t+16)éªŒè¯ç›®æ ‡æŒ‡é’ˆ
 	if (*(volatile ULONG64*)(t + 16) != (ULONG64)&GeptStubEntry)
 	{
-		FlLog("[API] trampoline±àÂë×Ô¼ìFAIL(t+16¶Á»Ø¡ÙGeptStubEntry)¡ª¡ª¾Ü¾ø¸Ã²Û(±àÂë»Ø¹é?)");
+		FlLog("[API] trampolineç¼–ç è‡ªæ£€FAIL(t+16è¯»å›â‰ GeptStubEntry)â€”â€”æ‹’ç»è¯¥æ§½(ç¼–ç å›å½’?)");
 		return NULL;
 	}
 	return t;
@@ -233,19 +204,19 @@ NTSTATUS GeptHookInstall(const GEPT_HOOK* Hook)
 	{
 		return STATUS_INVALID_PARAMETER;
 	}
-	//Õ»²ÎÊı¸öÊıÉÏÏŞ(=hook.asm GeptCallOrigAsm¹Ì¶¨Ö¡32²Û, ³¬ÏŞ
-	//¾Ü¾ø¡ª¡ª¾ø²»ÈÃ×®¸´ÖÆÔ½½ç)
+	//æ ˆå‚æ•°ä¸ªæ•°ä¸Šé™(=hook.asm GeptCallOrigAsmå›ºå®šå¸§32æ§½, è¶…é™
+	//æ‹’ç»â€”â€”ç»ä¸è®©æ¡©å¤åˆ¶è¶Šç•Œ)
 	if (Hook->StackArgs > GEPT_MAX_STACK_ARGS)
 	{
-		FlLog("[API] Install¾Ü¾ø: StackArgs=%u³¬ÉÏÏŞ%u(Ä¿±ê%p)",
+		FlLog("[API] Installæ‹’ç»: StackArgs=%uè¶…ä¸Šé™%u(ç›®æ ‡%p)",
 			Hook->StackArgs, (ULONG)GEPT_MAX_STACK_ARGS, Hook->Target);
 		return STATUS_INVALID_PARAMETER;
 	}
-	//°²×°gate="ÖÁÉÙÒ»ºËin-guest"(ÁãºË=VTÆô¶¯È«°Ü, PHHookÎŞ´¦²¼·À, ¾Ü¾ø):
-	//  VMFUNCºË: Ë«EPTÁãVM-Exit detour
-	//  ÎŞVMFUNCºË(ÀÏCPU/½µ¼¶ºË): violation½µ¼¶¡ª¡ªEptSetHook°´ºË·ÖÅÉ,
-	//    detour stubÍ³Ò»(GeptViewSwitch°´ºËno-op), GeptCallOriginal
-	//    °´ºË×ßÖØ¶¨Î»Ìø°å(¼ûÆä×¢ÊÍ)
+	//å®‰è£…gate="è‡³å°‘ä¸€æ ¸in-guest"(é›¶æ ¸=VTå¯åŠ¨å…¨è´¥, PHHookæ— å¤„å¸ƒé˜², æ‹’ç»):
+	//  VMFUNCæ ¸: åŒEPTé›¶VM-Exit detour
+	//  æ— VMFUNCæ ¸(è€CPU/é™çº§æ ¸): violationé™çº§â€”â€”EptSetHookæŒ‰æ ¸åˆ†æ´¾,
+	//    detour stubç»Ÿä¸€(GeptViewSwitchæŒ‰æ ¸no-op), GeptCallOriginal
+	//    æŒ‰æ ¸èµ°é‡å®šä½è·³æ¿(è§å…¶æ³¨é‡Š)
 	{
 		ULONG cpuCount = KeQueryActiveProcessorCount(NULL);
 		ULONG inGuest = 0, vmfuncCores = 0;
@@ -262,17 +233,17 @@ NTSTATUS GeptHookInstall(const GEPT_HOOK* Hook)
 		}
 		if (inGuest == 0)
 		{
-			FlLog("[API] Install¾Ü¾ø: ÁãºËin-guest(VTÎ´Æô¶¯), ÎŞ´¦²¼·À");
+			FlLog("[API] Installæ‹’ç»: é›¶æ ¸in-guest(VTæœªå¯åŠ¨), æ— å¤„å¸ƒé˜²");
 			return STATUS_NOT_SUPPORTED;
 		}
 		if (vmfuncCores < inGuest)
 		{
-			FlLog("[API] Install: %u/%uºËÎŞVMFUNC¡ª¡ªÕâĞ©ºË×ßviolation½µ¼¶"
-				"(Ã¿´Î´¥·¢1+´ÎVM-Exit, ¹¦ÄÜ/APIÓïÒåµÈ¼Û, Ö»ÊÇÒş²ØĞÔ½µ¼¶)",
+			FlLog("[API] Install: %u/%uæ ¸æ— VMFUNCâ€”â€”è¿™äº›æ ¸èµ°violationé™çº§"
+				"(æ¯æ¬¡è§¦å‘1+æ¬¡VM-Exit, åŠŸèƒ½/APIè¯­ä¹‰ç­‰ä»·, åªæ˜¯éšè—æ€§é™çº§)",
 				inGuest - vmfuncCores, inGuest);
 		}
 	}
-	//ÖØ¸´°²×°¼ì²é(Í¬Target)
+	//é‡å¤å®‰è£…æ£€æŸ¥(åŒTarget)
 	GeptApiLock();
 	for (PLIST_ENTRY p = s_apiList.Flink; p != &s_apiList; p = p->Flink)
 	{
@@ -280,7 +251,7 @@ NTSTATUS GeptHookInstall(const GEPT_HOOK* Hook)
 		if (e->pub.Target == Hook->Target && !e->Removed)
 		{
 			GeptApiUnlock();
-			FlLog("[API] Install¾Ü¾ø: Ä¿±ê%pÒÑ°²×°(Removeºó¿ÉÖØ×°)", Hook->Target);
+			FlLog("[API] Installæ‹’ç»: ç›®æ ‡%på·²å®‰è£…(Removeåå¯é‡è£…)", Hook->Target);
 			return STATUS_UNSUCCESSFUL;
 		}
 	}
@@ -295,17 +266,17 @@ NTSTATUS GeptHookInstall(const GEPT_HOOK* Hook)
 	entry->Removed = 0;
 	entry->ReplayVA = NULL;
 	entry->ReplayLen = 0;
-	//LDEÖØ¶¨Î»Ìø°å(ËùÓĞÂ·¾¶ÎŞÌõ¼ş¹¹½¨¡ª¡ªfallbackµÄCallOriginal±ØĞè
-	//+replay×Ô²âÓÃ; VMFUNC´¿ºËÉÏ½ö×Ô²âÓÃµ½, 96B³É±¾¿ÉºöÂÔ)¡£
-	//MinLen=14=PHHookÌø×ª¸²¸Ç³¤¶È, Á½ÕßÍ¬Ô´(PHGetHookLenÍ¬¿î½âÂëÑ­»·)
-	//¡úreplay¸²¸Ç×Ö½ÚÊı¡ÔCodePageÌø×ª¸²¸Ç×Ö½ÚÊı, ÖØ·Å/jmp»ØÑÏ¸ñÅäÌ×
+	//LDEé‡å®šä½è·³æ¿(æ‰€æœ‰è·¯å¾„æ— æ¡ä»¶æ„å»ºâ€”â€”fallbackçš„CallOriginalå¿…éœ€
+	//+replayè‡ªæµ‹ç”¨; VMFUNCçº¯æ ¸ä¸Šä»…è‡ªæµ‹ç”¨åˆ°, 96Bæˆæœ¬å¯å¿½ç•¥)ã€‚
+	//MinLen=14=PHHookè·³è½¬è¦†ç›–é•¿åº¦, ä¸¤è€…åŒæº(PHGetHookLenåŒæ¬¾è§£ç å¾ªç¯)
+	//â†’replayè¦†ç›–å­—èŠ‚æ•°â‰¡CodePageè·³è½¬è¦†ç›–å­—èŠ‚æ•°, é‡æ”¾/jmpå›ä¸¥æ ¼é…å¥—
 	ULONG replayLen = 0;
 	entry->ReplayVA = PHBuildRelocTrampoline((ULONG64)Hook->Target,
 		sizeof(JMP_OPCODE64), &replayLen);
 	if (entry->ReplayVA == NULL)
 	{
 		ExFreePool(entry);
-		FlLog("[API] InstallÊ§°Ü: Ä¿±ê%p prologue²»¿ÉÖØ¶¨Î»(Ïà¶Ô·ÖÖ§/RIPÏà¶Ô³¬½ç, Ïê¼û[Reloc]ĞĞ)",
+		FlLog("[API] Installå¤±è´¥: ç›®æ ‡%p prologueä¸å¯é‡å®šä½(ç›¸å¯¹åˆ†æ”¯/RIPç›¸å¯¹è¶…ç•Œ, è¯¦è§[Reloc]è¡Œ)",
 			Hook->Target);
 		return STATUS_UNSUCCESSFUL;
 	}
@@ -317,34 +288,34 @@ NTSTATUS GeptHookInstall(const GEPT_HOOK* Hook)
 		ExFreePool(entry);
 		return STATUS_INSUFFICIENT_RESOURCES;
 	}
-	//PHHook: CodePageÕûÒ³¸´ÖÆ+Ä¿±êÆ«ÒÆ14B¾ø¶ÔÌø×ª¡úÎÒÃÇµÄtrampoline²Û
-	//+DPCÖğºËEptSetHook(VMFUNCºË: hooked±íPTE¡úCodePage+ÇĞhookedÊÓÍ¼;
-	//fallbackºË: ²ğÒ³+ÇåexecuteµÄviolation²¼·À¡ª¡ª°´ºË×Ô¶¯·ÖÅÉ)
+	//PHHook: CodePageæ•´é¡µå¤åˆ¶+ç›®æ ‡åç§»14Bç»å¯¹è·³è½¬â†’æˆ‘ä»¬çš„trampolineæ§½
+	//+DPCé€æ ¸EptSetHook(VMFUNCæ ¸: hookedè¡¨PTEâ†’CodePage+åˆ‡hookedè§†å›¾;
+	//fallbackæ ¸: æ‹†é¡µ+æ¸…executeçš„violationå¸ƒé˜²â€”â€”æŒ‰æ ¸è‡ªåŠ¨åˆ†æ´¾)
 	NTSTATUS st = PHHook(Hook->Target, entry->Trampoline);
 	if (!NT_SUCCESS(st))
 	{
-		//PHHookÊ§°Ü(×ÊÔ´/ÖĞÖ¹): ÌõÄ¿×÷·Ï(²ÛÀË·Ñ, Ğ¶ÔØÍ³Ò»ÊÍ·Å)
+		//PHHookå¤±è´¥(èµ„æº/ä¸­æ­¢): æ¡ç›®ä½œåºŸ(æ§½æµªè´¹, å¸è½½ç»Ÿä¸€é‡Šæ”¾)
 		entry->Removed = 1;
 		GeptApiLock();
 		InsertTailList(&s_apiList, &entry->link);
 		GeptApiUnlock();
-		FlLog("[API] InstallÊ§°Ü: PHHook´íÎó=0x%X(Ä¿±ê%p)", st, Hook->Target);
+		FlLog("[API] Installå¤±è´¥: PHHooké”™è¯¯=0x%X(ç›®æ ‡%p)", st, Hook->Target);
 		return st;
 	}
 	GeptApiLock();
 	InsertTailList(&s_apiList, &entry->link);
 	GeptApiUnlock();
-	FlLog("[API] Install OK: Ä¿±ê=%p »Øµ÷=%p ÉÏÏÂÎÄ=%p Ìø°å²Û=%p replay=%p(%uB, »ØÉ¨×Ô¼ì¹ı) Õ»²Î=%u(detourÊ½, ÁãÖØ·Å»úÆ÷)",
+	FlLog("[API] Install OK: ç›®æ ‡=%p å›è°ƒ=%p ä¸Šä¸‹æ–‡=%p è·³æ¿æ§½=%p replay=%p(%uB, å›æ‰«è‡ªæ£€è¿‡) æ ˆå‚=%u(detourå¼, é›¶é‡æ”¾æœºå™¨)",
 		Hook->Target, Hook->Callback, Hook->Context, entry->Trampoline,
 		entry->ReplayVA, entry->ReplayLen, Hook->StackArgs);
 	return STATUS_SUCCESS;
 }
 
-//RemoveµÄDPCÉÏÏÂÎÄ(È«ºË¹ã²¥: Ã¿ºËvmcall(7)»¹Ô­×Ö½Ú+invept×ÔÉíTLB)
+//Removeçš„DPCä¸Šä¸‹æ–‡(å…¨æ ¸å¹¿æ’­: æ¯æ ¸vmcall(7)è¿˜åŸå­—èŠ‚+inveptè‡ªèº«TLB)
 typedef struct _GEPT_REMOVE_CTX
 {
-	ULONG64 DstVA;    //CodePage+Ò³ÄÚÆ«ÒÆ(»¹Ô­Ä¿±ê)
-	ULONG64 SrcVA;    //Ô­Ò³+Ò³ÄÚÆ«ÒÆ(È¨Íş¸±±¾, Ô­Ò³´ÓÎ´±»¸Ä)
+	ULONG64 DstVA;    //CodePage+é¡µå†…åç§»(è¿˜åŸç›®æ ‡)
+	ULONG64 SrcVA;    //åŸé¡µ+é¡µå†…åç§»(æƒå¨å‰¯æœ¬, åŸé¡µä»æœªè¢«æ”¹)
 	ULONG64 Len;      //HookLen
 } GEPT_REMOVE_CTX;
 
@@ -357,8 +328,8 @@ static VOID GeptRemoveDpc(_In_ struct _KDPC* Dpc, _In_opt_ PVOID DeferredContext
 	{
 		if (g_vcpu[cpu].bInGuest)
 		{
-			//vmcall(7): exit handlerÀïmemcpy+Ë«ÊÓÍ¼invept(Ã¿ºË¸÷Ò»´Î:
-			//memcpyÃİµÈÎŞº¦, invept°´ºËÉúĞ§¹ÊÃ¿ºË±Ø×ö)
+			//vmcall(7): exit handleré‡Œmemcpy+åŒè§†å›¾invept(æ¯æ ¸å„ä¸€æ¬¡:
+			//memcpyå¹‚ç­‰æ— å®³, inveptæŒ‰æ ¸ç”Ÿæ•ˆæ•…æ¯æ ¸å¿…åš)
 			CmVmCall(7, ctx->DstVA, ctx->SrcVA, ctx->Len);
 		}
 		else
@@ -397,12 +368,12 @@ NTSTATUS GeptHookRemove(PVOID Target)
 	PPAGE_HOOK_ENTRY pe = PHGetHookEntryPage(PAGE_ALIGN(Target));
 	if (pe == NULL)
 	{
-		FlLog("[API] RemoveÒì³£: Ä¿±ê%pÎŞCodePageÌõÄ¿(PHHook×´Ì¬Æ¯ÒÆ?)", Target);
+		FlLog("[API] Removeå¼‚å¸¸: ç›®æ ‡%pæ— CodePageæ¡ç›®(PHHookçŠ¶æ€æ¼‚ç§»?)", Target);
 		return STATUS_UNSUCCESSFUL;
 	}
-	//×Ö½Ú»¹Ô­+È«ºËinvept(vmcall(7)¹ã²¥)¡£´ËºóhookedÊÓÍ¼¡ÔcleanÊÓÍ¼=
-	//hookËÀÍ¸; ÒÑ¹ıÌø°åµÄÔÚÍ¾»Øµ÷°²È«Íê³É(²Û/ÌõÄ¿²»¶¯)
-	//(»¹Ô­³¤¶È=ReplayLen¡ª¡ªÓëCodePageÌø×ª¸²¸Ç³¤¶ÈÍ¬Ô´Í¬³¤)
+	//å­—èŠ‚è¿˜åŸ+å…¨æ ¸invept(vmcall(7)å¹¿æ’­)ã€‚æ­¤åhookedè§†å›¾â‰¡cleanè§†å›¾=
+	//hookæ­»é€; å·²è¿‡è·³æ¿çš„åœ¨é€”å›è°ƒå®‰å…¨å®Œæˆ(æ§½/æ¡ç›®ä¸åŠ¨)
+	//(è¿˜åŸé•¿åº¦=ReplayLenâ€”â€”ä¸CodePageè·³è½¬è¦†ç›–é•¿åº¦åŒæºåŒé•¿)
 	found->Removed = 1;
 	GEPT_REMOVE_CTX ctx;
 	ULONG off = (ULONG)((ULONG_PTR)Target & (PAGE_SIZE - 1));
@@ -410,7 +381,7 @@ NTSTATUS GeptHookRemove(PVOID Target)
 	ctx.SrcVA = (ULONG64)pe->OriginalPageVA + off;
 	ctx.Len = found->ReplayLen;
 	KeGenericCallDpc(GeptRemoveDpc, &ctx);
-	FlLog("[API] Remove OK: Ä¿±ê=%p »¹Ô­%uB@CodePage+%03Xh+È«ºËinvept(hookÊ§Ğ§; ÔÚÍ¾»Øµ÷°²È«Íê³É)",
+	FlLog("[API] Remove OK: ç›®æ ‡=%p è¿˜åŸ%uB@CodePage+%03Xh+å…¨æ ¸invept(hookå¤±æ•ˆ; åœ¨é€”å›è°ƒå®‰å…¨å®Œæˆ)",
 		Target, found->ReplayLen, off);
 	return STATUS_SUCCESS;
 }
@@ -457,11 +428,11 @@ NTSTATUS GeptHookEnumerate(GEPT_HOOK* Buffer, ULONG* InOutCount)
 	return STATUS_SUCCESS;
 }
 
-//DriverUloadÔÚ¹ØVT**Ö®Ç°**µ÷ÓÃ: ÒÆ³ıÈ«²¿live hook(ĞÂ´¥·¢Í£Ö¹;
-//ÔÚÍ¾»Øµ÷ËæºóµÄvmfunc(0,1)´Ë¿ÌVTÈÔ¿ª×Å=°²È«), ¿íÏŞÆÚÓÉµ÷ÓÃ·½°²ÅÅ
+//DriverUloadåœ¨å…³VT**ä¹‹å‰**è°ƒç”¨: ç§»é™¤å…¨éƒ¨live hook(æ–°è§¦å‘åœæ­¢;
+//åœ¨é€”å›è°ƒéšåçš„vmfunc(0,1)æ­¤åˆ»VTä»å¼€ç€=å®‰å…¨), å®½é™æœŸç”±è°ƒç”¨æ–¹å®‰æ’
 VOID GeptApiRemoveAll(VOID)
 {
-	//¿ìÕÕÄ¿±êÁĞ±í(RemoveÄÚ²¿»áÔÙÄÃËø)
+	//å¿«ç…§ç›®æ ‡åˆ—è¡¨(Removeå†…éƒ¨ä¼šå†æ‹¿é”)
 	PVOID targets[32];
 	ULONG n = 0;
 	GeptApiLock();
@@ -480,16 +451,16 @@ VOID GeptApiRemoveAll(VOID)
 	}
 	if (n > 0)
 	{
-		FlLog("[API] RemoveAll: ÒÑÒÆ³ı%u¸öhook(ÔÚÍ¾»Øµ÷½«°²È«Íê³É)", n);
+		FlLog("[API] RemoveAll: å·²ç§»é™¤%uä¸ªhook(åœ¨é€”å›è°ƒå°†å®‰å…¨å®Œæˆ)", n);
 	}
 }
 
-//replay×Ô²â¡ª¡ªÖ±½Óµ÷ÓÃÖ¸¶¨hookµÄÖØ¶¨Î»Ìø°å(Ö´ĞĞ¸±±¾prologue¡úÎ²jmp
-//½øÈëÔ­º¯ÊıÌå¡úÍêÕûÅÜÍêÔ­º¯Êı¡úÕı³£·µ»Ø)¡£ÓÃÓÚÉÏ»úÑéÖ¤LDEÖØ¶¨Î»Éú³ÉÆ÷
-//(ÈÎºÎWindows°æ±¾µÄÄ¿±êº¯Êı, ²»ÒÀÀµ±¾»ú¹¹½¨); ´«ÈëÎ±¾ä±ú
-//NtCurrentProcess()=°²È«ÇÒÈ·¶¨µÄÅĞ¾İ(NtClose·µ»Ø
-//STATUS_INVALID_HANDLE 0xC0000008)¡£½öPASSIVE_LEVELµ÷ÊÔ/×Ô²âÓÃ,
-//**²»½øÈÎºÎÉú²úÂ·¾¶**
+//replayè‡ªæµ‹â€”â€”ç›´æ¥è°ƒç”¨æŒ‡å®šhookçš„é‡å®šä½è·³æ¿(æ‰§è¡Œå‰¯æœ¬prologueâ†’å°¾jmp
+//è¿›å…¥åŸå‡½æ•°ä½“â†’å®Œæ•´è·‘å®ŒåŸå‡½æ•°â†’æ­£å¸¸è¿”å›)ã€‚ç”¨äºä¸ŠæœºéªŒè¯LDEé‡å®šä½ç”Ÿæˆå™¨
+//(ä»»ä½•Windowsç‰ˆæœ¬çš„ç›®æ ‡å‡½æ•°, ä¸ä¾èµ–æœ¬æœºæ„å»º); ä¼ å…¥ä¼ªå¥æŸ„
+//NtCurrentProcess()=å®‰å…¨ä¸”ç¡®å®šçš„åˆ¤æ®(NtCloseè¿”å›
+//STATUS_INVALID_HANDLE 0xC0000008)ã€‚ä»…PASSIVE_LEVELè°ƒè¯•/è‡ªæµ‹ç”¨,
+//**ä¸è¿›ä»»ä½•ç”Ÿäº§è·¯å¾„**
 NTSTATUS GeptApiSelfTestReplay(PVOID Target, ULONG64 Arg1)
 {
 	PGEPT_API_ENTRY found = NULL;
@@ -512,10 +483,10 @@ NTSTATUS GeptApiSelfTestReplay(PVOID Target, ULONG64 Arg1)
 	return ((GEPT_REPLAY_FN)found->ReplayVA)(Arg1);
 }
 
-//DriverUloadÔÚ¹ØVT**Ö®ºó**µ÷ÓÃ(´¿ÄÚ´æÊÍ·Å, ÎŞVTÒÀÀµ)
+//DriverUloadåœ¨å…³VT**ä¹‹å**è°ƒç”¨(çº¯å†…å­˜é‡Šæ”¾, æ— VTä¾èµ–)
 VOID GeptApiFreeMemory(VOID)
 {
-	//Î´°²×°¹ıÈÎºÎhook(Á´±íÍ·Î´³õÊ¼»¯)=Ö±½Ó·µ»Ø
+	//æœªå®‰è£…è¿‡ä»»ä½•hook(é“¾è¡¨å¤´æœªåˆå§‹åŒ–)=ç›´æ¥è¿”å›
 	if (s_apiList.Flink == NULL)
 	{
 		return;
@@ -534,7 +505,7 @@ VOID GeptApiFreeMemory(VOID)
 		ExFreePool(e);
 		entries++;
 	}
-	s_apiList.Flink = NULL;    //ÃİµÈ: ÖØ¸´µ÷ÓÃ°²È«
+	s_apiList.Flink = NULL;    //å¹‚ç­‰: é‡å¤è°ƒç”¨å®‰å…¨
 	ULONG pages = 0;
 	for (ULONG i = 0; i < sizeof(s_trampPool) / sizeof(s_trampPool[0]); i++)
 	{
@@ -548,7 +519,7 @@ VOID GeptApiFreeMemory(VOID)
 	s_trampUsed = 0;
 	if (entries != 0 || pages != 0)
 	{
-		FlLog("[API] FreeMemory: ÌõÄ¿%u¸ö(º¬replayÌø°å%u¸ö)+Ìø°å³Ø%uÒ³ÒÑÊÍ·Å",
+		FlLog("[API] FreeMemory: æ¡ç›®%uä¸ª(å«replayè·³æ¿%uä¸ª)+è·³æ¿æ± %ué¡µå·²é‡Šæ”¾",
 			entries, replays, pages);
 	}
 }

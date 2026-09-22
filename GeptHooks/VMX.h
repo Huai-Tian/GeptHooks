@@ -1,4 +1,4 @@
-#pragma once
+ï»¿#pragma once
 #ifndef VMX_H
 #define VMX_H
 #include<ntifs.h>
@@ -43,52 +43,35 @@
 #define EXIT_REASON_TPR_BELOW_THRESHOLD 43
 #define EXIT_REASON_EPT_VIOLATION       48
 #define EXIT_REASON_EPT_CONFIG          49
-//INVEPT/INVVPID±àÂë(È¨ÍşÔ´: Linux asm/vmx.h, ÓëSDMÒ»ÖÂ)¡£
-//INVEPTÖ¸ÁîÒ³(SDMÔ­ÎÄ): "not in VMX operation¡ú#UD"ÇÒnon-rootÎŞÌõ¼ş
-//VMexit¡ª¡ªÓëVMXOFFÍ¬×å, È±case=Âädefault'U'ÌÓÉú(²¡¶¾DoSÃæ)
+//INVEPT: non-rootæ— æ¡ä»¶exit(ä¸VMXOFFåŒæ—, éœ€caseå¤„ç½®)
 #define EXIT_REASON_INVEPT              50
-//RDTSCP(SDM Table"Basic Exit Reasons"=51): "RDTSC exiting"Î»¿ªÇÒ
-//ctls2 rdtscpÎ»¿ªµÄCPU²¼¾Ö²Åexit¡ª¡ª±¾»úmust-1¼¯²»º¬bit12=ËÀ´úÂë,
-//»»CPU²¼¾Ö¼´´¥·¢; ÎŞcaseÂädefault'U'ÌÓÉú(vmx_off)=ÔÖÄÑ±Û
+//RDTSCP: ä»…ç‰¹å®šæ§åˆ¶ä½å¸ƒå±€ä¸‹exit(ä¿ç•™caseé˜²å¾¡)
 #define EXIT_REASON_RDTSCP              51
 #define EXIT_REASON_INVVPID             53
 #define EXIT_REASON_WBINVD              54
 #define EXIT_REASON_XSETBV              55
-//VMFUNCÊ§°Üexit(SDM ¡ì28.5.7.2/28.5.7.3: º¯ÊıÎ´ÆôÓÃ/EAXÎŞĞ§/EPTP-list
-//Ïî·Ç·¨/ECX>=512 ¡ú VM-exit reason 59, **¾ø·Ç#UD**)
+//VMFUNCå¤±è´¥exit(reason 59, é#UD)
 #define EXIT_REASON_VMFUNC              59
 #define VMX_MAX_GUEST_VMEXIT	EXIT_REASON_VMFUNC
 
-//vmresumeÊ§°Ü´¦Àí(asmµ÷ÓÃ, noreturn): 'R'±ê¼ÇÈë»·ºóÌÓÉú(vmx_off+Ìø»Øguest)
+//vmresumeå¤±è´¥å¤„ç†(asmè°ƒç”¨, noreturn): 'R'æ ‡è®°å…¥ç¯åé€ƒç”Ÿ(vmx_off+è·³å›guest)
 void VmxResumeFailedEntry(void);
-//EPTÊÂ¼ş·ç±©ÌÓÉú(noreturn): ±ê¼ÇÈë»·ºóvmx_offÍÑÀëVT, Ìø»Øguest
-//´¥·¢µãÖØÖ´ĞĞ(RIP²»ÍÆ½ø¡ª¡ªÌÓÉú³¡¾°Ö¸Áî¾ùÎ´³É¹¦Ö´ĞĞ)¡£
-//Í£ºË·½°¸±»·ñ¾ö: Í£ºË»á¼¶Áª¶³½áÈÕÖ¾Í¨µÀ(´ÅÅÌÖĞ¶ÏÂäÍ£ºËÓÀ²»Íê³É¡ú
-//ZwWriteFile¹ÒËÀ¡úËÀÒòÀ§ÔÚÄÚ´æ»·=ÁãĞÅÏ¢¶³½á)¡£
-//tag: 'X'=violation/misconfig·ç±© 'A'=¶¯Ì¬½¨±íÊ§°Ü 'P'=µÍµØÖ·»·Â·
-//     'D'=Í¬(reason,rip)Í¨ÓÃ»·Â· 'Z'=len0Î´Öªexit 'U'=len>0Î´Öªexit
-//     'R'=vmresumeÊ§°Ü 'G'=VM-entry failure(guest×´Ì¬·Ç·¨, Ö÷Ïß³Ì×ßÊ§°Ü·ÖÖ§)
-//     'J'=ext-int exitÒâÍâµ½´ï·ç±©(pin=0Ö±Í¶ÏÂÀíÂÛ²»¿É´ï, µ½´ï=
-//         ÅäÖÃÎ´ÉúĞ§, case1·ÀÓù>100´Î´¥·¢)
-//guestRegs²ÎÊı: ·ÇNULL=´Óexit handlerµÄCÉÏÏÂÎÄµ÷ÓÃ(Ö¡ÉÏ±£´æ×Åguest
-//È«²¿GPR), Ìø»ØÇ°ÓÃVmxJumGuestRegs»Ö¸´·ÇÒ×Ê§GPR¡ª¡ª²»»Ö¸´Ôòµ÷ÓÃÕßÄÃ
-//handler²ĞÁôÀ¬»ø¼Ä´æÆ÷¼ÌĞøÅÜ(Ğ¶ÔØÀ¶ÆÁ0x7E¸ùÒò, ¼ûvmx-asm.asm
-//VmxJumGuestRegs×¢ÊÍ); NULL=¼Ä´æÆ÷ÒÑ±»asm popÁ´»Ö¸´µÄÂ·¾¶
-//(VmxResumeFailedEntry), Ö±½ÓÇĞÕ»Ìø
+//é£æš´é€ƒç”Ÿ(noreturn): æ ‡è®°å…¥ç¯åvmx_offè„±ç¦»VT, è·³å›guestè§¦å‘ç‚¹é‡æ‰§è¡Œ
+//(RIPä¸æ¨è¿›; å”¯ä¸€ä¾‹å¤–reason=18é¡»æ¨è¿›)ã€‚
+//tag: 'X'=violation/misconfigé£æš´ 'A'=åŠ¨æ€å»ºè¡¨å¤±è´¥ 'P'=ä½åœ°å€ç¯è·¯
+//     'D'=åŒ(reason,rip)ç¯è·¯ 'Z'=len0æœªçŸ¥exit 'U'=len>0æœªçŸ¥exit
+//     'R'=vmresumeå¤±è´¥ 'G'=VM-entry failure 'J'=ext-intæ„å¤–åˆ°è¾¾é£æš´
+//guestRegs: éNULL=exit handler Cä¸Šä¸‹æ–‡(è·³å›å‰æ¢å¤éæ˜“å¤±GPR);
+//NULL=å¯„å­˜å™¨å·²è¢«asm popé“¾æ¢å¤
 void VmxExitStormEscape(char tag, ULONG reason, ULONG64 a, ULONG64 b,
-    PVOID guestRegs);
-//CÉÏÏÂÎÄvmx_offÌø»ØguestµÄ³ö¿Ú¡ª¡ª´ÓGuestRegsÖ¡»Ö¸´È«²¿·ÇÒ×Ê§
-//GPR(rbx/rbp/rsi/rdi/r12-r15)ºóÔÙÇĞRSP/JMP(¼ûvmx-asm.asmÏê×¢)
+	PVOID guestRegs);
+//vmx_offè·³å›guestçš„å‡ºå£: ä»GuestRegså¸§æ¢å¤éæ˜“å¤±GPRååˆ‡RSP/JMP
 void VmxJumGuestRegs(PVOID guestRegs, ULONG64 targetRsp, ULONG64 targetRip);
-//lgdt/lidt¡ª¡ªrcx=10×Ö½ÚÃèÊö·û(WORD limit@+0, QWORD base@+2)¡£
-//VM-exit°ÑGDTR/IDTR limitÇ¿ÖÆ0xFFFF(host-stateÎŞlimit×Ö¶Î), vmx_off
-//»ØÕæ»úÇ°Ğë»¹Ô­guestÔ­limit
+//lgdt/lidtâ€”â€”rcx=10å­—èŠ‚æè¿°ç¬¦(WORD limit@+0, QWORD base@+2)
 void VmxLoadGdtr(PVOID descriptor);
 void VmxLoadIdtr(PVOID descriptor);
-//ÈıÖØ¹ÊÕÏ×¨ÓÃpark(noreturn): guest²»¿É»Ö¸´(ÖØÖ´ĞĞ=Õæ»úÈıÖØ¹ÊÕÏ
-//=ÖØÆô)¡£vmx_off+ÇåEOIÕ®+sti/hlt×ÔĞı¡ª¡ª±¾ºË¼ÌĞø·şÎñÖĞ¶Ï(IPIµÈ´ıÕß
-//½â³ı, ¼¶Áª¶³½á±»ÇĞ¶Ï), 'T'±ê¼Ç+»·Î²ÓÉT1ÂäÅÌ; ±¾ºËÓÀ¾Ãpark, Çı¶¯
-//²»µÃĞ¶ÔØ(g_geptParkedMaskÊØÎÀ)
+//ä¸‰é‡æ•…éšœpark(noreturn): vmx_off+sti/hltè‡ªæ—‹ç»§ç»­æœåŠ¡ä¸­æ–­, åˆ‡æ–­
+//çº§è”å†»ç»“; æœ¬æ ¸æ°¸ä¹…park, é©±åŠ¨ä¸å¾—å¸è½½(g_geptParkedMaskå®ˆå«)
 void VmxTripleFaultPark(void);
 typedef struct _VMX_VMCS
 {
@@ -104,31 +87,25 @@ typedef struct _VCPU
     PVOID MsrBitMap;
     PEPT_DATA PeptData;
     EPT_EPTP Eptp;
-    //hookedÊÓÍ¼EPT(clean=PeptData, violation·½°¸¼æÈİ/¶µµ×)¡£guestÄ¬ÈÏ
-    //ÔÚcleanÊÓÍ¼; hook°²×°Ê±VMMÔÚexitÉÏÏÂÎÄvmwrite(EPT_POINTER,
-    //EptpHooked)ÇĞÈëhookedÊÓÍ¼(SDM ¡ì28.5.7.3: VMFUNCÇĞ»»»áĞ´»Ø
-    //EPT_POINTER×Ö¶Î=Á½Í¨µÀÍ¬Òå), hookÒ³ÔÚhooked EPTÀïPTE¡úCodePage
-    //(X=1,R=1,W=0)=Ö´ĞĞÁãVM-Exit; cleanÊÓÍ¼ÏÂÔ­Ò³×Ö½ÚÍêºÃ(¶Á/Ğ´¿´µ½
-    //µÄ¶¼ÊÇÔ­Ê¼×Ö½Ú, Òş±ÎĞÔ¸ù»ù)¡£Éî¿½±´Ê±pdpte/pde×ÔÖ¸ÎïÀíµØÖ·È«²¿
-    //ÖØÖ¸hooked×Ô¼ºµÄ±í(ept.c EptInitHookedEptData)
+    //hookedè§†å›¾EPT: hooké¡µPTEâ†’CodePage(X=1,R=1,W=0)=æ‰§è¡Œé›¶VM-Exit;
+    //cleanè§†å›¾ä¸‹åŸé¡µå­—èŠ‚å®Œå¥½ã€‚EptSetHookåœ¨rootä¾§vmwrite(EPT_POINTER)
+    //åˆ‡è§†å›¾(ä¸VMFUNCåˆ‡æ¢åŒå­—æ®µ)
     PEPT_DATA PeptDataHooked;
     EPT_EPTP EptpHooked;
-    //EPTP-listÒ³(4KBÎïÀíÁ¬Ğø+¶ÔÆë, MmAllocateContiguousMemory±£Ö¤)¡£
-    //list[0]=clean EPTP, list[1]=hooked EPTP¡£VMFUNC(0,idx)ÔÚguestÄÚ
-    //ÇĞ»»EPTP=ÁãVM-ExitµÄÊÓÍ¼ÇĞ»»(ÁãVM-Exit hookµÄ»ùÊ¯)
+    //EPTP-listé¡µ(4KBå¯¹é½): [0]=clean EPTP, [1]=hooked EPTPã€‚
+    //VMFUNC(0,idx)åœ¨guestå†…é›¶VM-Exitåˆ‡æ¢
     PVOID VmfuncEptpList;
-    PVOID HighPdptVa[512];      //¶¯Ì¬½¨Á¢µÄpml4[i>0]¶ÔÓ¦pdptÒ³µÄĞéÄâµØÖ·(>512GB MMIOÇø)
-    PVOID HighPdptRawVa[512];   //ÉÏÊöpdptµÄÔ­Ê¼poolÖ¸Õë(4KB¶ÔÆëºóÎŞ·¨·´ÍÆraw, Ğ¶ÔØÊ±ÓÃËüExFreePool)
-    volatile LONG bInGuest;     //¸ÃCPUÒÑ³É¹¦½øÈëVMX non-root(Ğ¶ÔØÊ±ÓÃÓÚÅĞ¶ÏÄÜ·ñvmcall)
-    volatile LONG bLaunchFailed;//vmlaunchÊ§°Ü±êÖ¾(Çø·Öfall-throughÂ·¾¶)
-    volatile LONG bVmxOn;       //¸ÃCPUµÄ__vmx_onÒÑ³É¹¦(Ğ¶ÔØÊ±Ğèvmx_off+ÇåCR4.VMXE)
-    volatile LONG bVmfuncOn;    //¸ÃºËVMFUNCÒÑÆôÓÃ(ctls2 bit13Êµ¼ÊĞ´Èë³É¹¦); guestÄÚÖ´ĞĞvmfuncµÄÇ°Ìá, ·ñÔò#UDÀ¶ÆÁ
-    //ÒÑackÎ´Í¶µİµÄÖĞ¶Ï¼ÆÊı(ÀúÊ·ÒÅÁô: interrupt-windowÄ£Ê½ÓÃ)¡£
-    //µ±Ç°Ö±Í¶Ä£Ê½ÏÂºã0, ±£Áô¸øEOIÇåÕ®Â·¾¶ÅĞ¶Ï
+    PVOID HighPdptVa[512];      //åŠ¨æ€å»ºç«‹çš„pml4[i>0]å¯¹åº”pdpté¡µçš„è™šæ‹Ÿåœ°å€(>512GB MMIOåŒº)
+    PVOID HighPdptRawVa[512];   //ä¸Šè¿°pdptçš„åŸå§‹poolæŒ‡é’ˆ(4KBå¯¹é½åæ— æ³•åæ¨raw, å¸è½½æ—¶ç”¨å®ƒExFreePool)
+    volatile LONG bInGuest;     //è¯¥CPUå·²æˆåŠŸè¿›å…¥VMX non-root(å¸è½½æ—¶ç”¨äºåˆ¤æ–­èƒ½å¦vmcall)
+    volatile LONG bLaunchFailed;//vmlaunchå¤±è´¥æ ‡å¿—(åŒºåˆ†fall-throughè·¯å¾„)
+    volatile LONG bVmxOn;       //è¯¥CPUçš„__vmx_onå·²æˆåŠŸ(å¸è½½æ—¶éœ€vmx_off+æ¸…CR4.VMXE)
+    volatile LONG bVmfuncOn;    //è¯¥æ ¸VMFUNCå·²å¯ç”¨(ctls2 bit13å®é™…å†™å…¥æˆåŠŸ); guestå†…æ‰§è¡Œvmfuncçš„å‰æ, å¦åˆ™#UDè“å±
+    //å·²ackæœªæŠ•é€’çš„ä¸­æ–­è®¡æ•°(ç›´æŠ•æ¨¡å¼ä¸‹æ’0, EOIæ¸…å€ºè·¯å¾„ç”¨)
     volatile LONG PendingIntrCount;
     UCHAR PendingIntrVec[256];
 } VCPU, * PVCPU;
-extern VCPU g_vcpu[128];      //¶¨ÒåÓÚVMX.c, Ã¿CPUÒ»¸öĞéÄâCPUÊµÀı
+extern VCPU g_vcpu[128];      //å®šä¹‰äºVMX.c, æ¯CPUä¸€ä¸ªè™šæ‹ŸCPUå®ä¾‹
 typedef enum _INV_TYPE
 {
     //TLB
@@ -143,27 +120,30 @@ typedef struct _EPT_CTX
     ULONG64 High;
 } EPT_CTX, * PEPT_CTX;
 PVCPU VmxGetCurrentVcpu(ULONG cpuNumber);
-int VMXInitCpuAlloc(ULONG cpuNumber);   //PASSIVE_LEVEL: Ô¤·ÖÅäVMXON/VMCS/VMMÕ»/MSRÎ»Í¼
-int VMXInitCpuStart();                  //´®ĞĞÄ£Ê½(Ç×ºÍĞÔÒÑÇĞ»»µ½Ä¿±êºË, PASSIVE): vmxon+vmptrld+vmlaunch
-void VmxStopCpu();                      //´®ĞĞÄ£Ê½(Í¬ÉÏ): ¸ÃºËÍË³öVT(vmcall/vmx_off+ÇåVMXE); Ö÷Ğ¶ÔØÂ·¾¶ÒÑÍËÒÛ(½öÈ«°ÜÂ·¾¶·ÀÓùĞÔ±£Áô)
-//È«ºËIPIÔ­×ÓÍË³ö(KeIpiGenericCall¹ã²¥´¦Àí³ÌĞò, DriverUloadÔÚPASSIVE
-//µ÷ÓÃ)¡ª¡ªÃ¿ºËÔÚIPI_LEVELÉÏÏÂÎÄÔ­×ÓÍê³É×Ô¼ºµÄVTÍË³ö+ÇåVMXE+Ë«PGE
-//³åË¢, Áãµ÷¶ÈÁã´°¿Ú(»úÀí¼ûVMX.cÊµÏÖ×¢ÊÍ); IPIÄÚ¼ÍÂÉ=Ö»FlRingPush('v')
+int VMXInitCpuAlloc(ULONG cpuNumber);   //PASSIVE_LEVEL: é¢„åˆ†é…VMXON/VMCS/VMMæ ˆ/MSRä½å›¾
+int VMXInitCpuStart();                  //ä¸²è¡Œæ¨¡å¼(äº²å’Œæ€§å·²åˆ‡æ¢åˆ°ç›®æ ‡æ ¸, PASSIVE): vmxon+vmptrld+vmlaunch
+void VmxStopCpu();                      //ä¸²è¡Œé€æ ¸é€€å‡ºVT(ä»…DriverEntryå…¨è´¥æ¸…ç†ç”¨; ä¸»å¸è½½è·¯å¾„=VmxStopAllIpi)
+//å…¨æ ¸IPIåŸå­é€€å‡º(KeIpiGenericCallå¹¿æ’­): æ¯æ ¸åŸå­å®ŒæˆVTé€€å‡º+æ¸…VMXE
+//+PGEå†²åˆ·; IPIå†…åªFlRingPush('v')
 ULONG64 VmxStopAllIpi(ULONG_PTR Argument);
+//æ¡†æ¶ç”Ÿå‘½å‘¨æœŸå…¥å£(main.cåªè°ƒè¿™ä¸¤ä¸ª, å®ç°è§VMX.c):
+//å¯åŠ¨: èµ„æºé¢„åˆ†é…â†’ä¸²è¡Œé€æ ¸VTæ¥ç®¡â†’å†…ç½®0x3Aäº’æ–¥hookâ†’æ”¾è¡Œæ—¥å¿—é•œåƒã€‚
+//å¤±è´¥æ—¶å·²è‡ªæ¸…ç†èµ„æº, è°ƒç”¨æ–¹ç›´æ¥è¿”å›å³å¯
+NTSTATUS VmxStartAllCpus(_In_ PDRIVER_OBJECT DriverObject);
+//å…³åœ: ç§»é™¤å…¨éƒ¨hookâ†’å…¨æ ¸IPIåŸå­é€€å‡ºVTâ†’é‡Šæ”¾å…¨éƒ¨èµ„æº
+//(parkæ ¸åœ¨åœºæ—¶æ‹’ç»å…³åœ, ç›´æ¥è¿”å›)
+VOID VmxShutdownAllCpus(VOID);
 int VmxSetupVmcs();
 void VmxFillSelectorData();
-//¿ØÖÆ×Ö¶Î¼ÆËã(¾­µä¹«Ê½, ¶ÔĞÂ¾ÉMSR¾ùÕıÈ·): (MSRµÍ32|ÆÚÍû)&¸ß32¡£
-//µÍ32=±ØĞëÎª1µÄÎ», ¸ß32=ÔÊĞíÎª1µÄÎ»; TRUE MSR(0x48D-0x490)Óë¾ÉÊ½MSR
-//(0x481-0x484)Î»ÓïÒåÏàÍ¬(ÎğÓÃ²¹Âë¹«Ê½, ¼ûVMX.cÊµÏÖ×¢ÊÍ)
+//æ§åˆ¶å­—æ®µè®¡ç®—: (MSRä½32|æœŸæœ›)&é«˜32(ä½32=å¿…é¡»1ä½, é«˜32=å…è®¸1ä½)
 ULONG VmxMsrAdjuest(ULONG64 msrNum, ULONG controlValue);
-//TSC²¹³¥(Òş²Ø; vmx-asm.asm VmxVmexitHandlerÃ¿exitµ÷ÓÃ)¡ª¡ª
-//TSC_OFFSET -= exit×¤ÁôÊ±³¤, guestµÄRDTSC/RDTSCP¶ÁÊı¿ÛµôexitÊ±¼ä
+//TSCè¡¥å¿(æ¯exitè°ƒç”¨): TSC_OFFSET -= exité©»ç•™æ—¶é•¿
 void VmxTscCompensate(ULONG64 entryTsc, ULONG64 exitTsc);
 void VmxVmexitHandler();
 void VmxExitHandler();
-void VmxJumGuest(ULONG64 targetRsp, ULONG64 targetRip);
-void VmxFreeCpuResources(ULONG cpuNumber);  //PASSIVE_LEVEL: ÊÍ·ÅÖ¸¶¨CPUµÄÈ«²¿VT×ÊÔ´
+void VmxJumGuest(ULONG64 targetRsp,ULONG64 targetRip);
+void VmxFreeCpuResources(ULONG cpuNumber);  //PASSIVE_LEVEL: é‡Šæ”¾æŒ‡å®šCPUçš„å…¨éƒ¨VTèµ„æº
 void VmxInvd();
-BOOLEAN VmxInvept(INVEPT_TYPE type, PEPT_CTX ctx);  //·µ»ØTRUE=VMfail(Ê§°Ü)
+BOOLEAN VmxInvept(INVEPT_TYPE type, PEPT_CTX ctx);  //è¿”å›TRUE=VMfail(å¤±è´¥)
 
 #endif // VMX_H

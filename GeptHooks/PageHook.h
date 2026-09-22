@@ -1,9 +1,9 @@
-#pragma once
+ï»¿#pragma once
 #ifndef PAGEHOOK_H
 #define PAGEHOOK_H
 #include<ntifs.h>
 
-NTSTATUS PHHook(PVOID pFun, PVOID pHook);
+NTSTATUS PHHook(PVOID pFun,PVOID pHook);
 
 #pragma pack(push,1)
 typedef struct _JMP_OPCODE64
@@ -13,49 +13,40 @@ typedef struct _JMP_OPCODE64
 	ULONG movOp;
 	ULONG jmpAddressHigh;
 	UCHAR retOp;
-}JMP_OPCODE64, * PJMP_OPCODE64;
+}JMP_OPCODE64,*PJMP_OPCODE64;
 #pragma pack(pop)
 
 typedef struct _PAGE_HOOK_ENTRY
 {
-	PVOID OriginalPtr;//Ô­º¯ÊýµØÖ·
-	PVOID OriginalPageVA;//Ô­º¯ÊýËùÔÚÒ³µÄÆðÊ¼µØÖ·
-	PVOID OriginalPagePFN;//Ô­º¯ÊýËùÔÚÒ³µÄÎïÀíµØÖ·
-	PVOID CodePageVA;//copyº¯ÊýËùÔÚÒ³Ê×µØÖ·
+	PVOID OriginalPtr;//åŽŸå‡½æ•°åœ°å€
+	PVOID OriginalPageVA;//åŽŸå‡½æ•°æ‰€åœ¨é¡µçš„èµ·å§‹åœ°å€
+	PVOID OriginalPagePFN;//åŽŸå‡½æ•°æ‰€åœ¨é¡µçš„ç‰©ç†åœ°å€
+	PVOID CodePageVA;//copyå‡½æ•°æ‰€åœ¨é¡µé¦–åœ°å€
 	LIST_ENTRY link;
-	PVOID CodePagePFN;//copyº¯ÊýËùÔÚÒ³µÄÎïÀíµØÖ·
-}PAGE_HOOK_ENTRY, * PPAGE_HOOK_ENTRY;
+	PVOID CodePagePFN;//copyå‡½æ•°æ‰€åœ¨é¡µçš„ç‰©ç†åœ°å€
+}PAGE_HOOK_ENTRY,*PPAGE_HOOK_ENTRY;
 
 typedef struct _HOOK_CONTEXT
 {
 	ULONG64 OriginalPagePFN;
 	ULONG64 CodePagePFN;
-}HOOK_CONTEXT, * PHOOK_CONTEXT;
+}HOOK_CONTEXT,*PHOOK_CONTEXT;
 
-void PHInitJmpCode(PJMP_OPCODE64 jmpCode, ULONG64 jmpTo);
-ULONG PHGetHookLen(ULONG64 codeAddr, ULONG codeSize, BOOLEAN is64);
+void PHInitJmpCode(PJMP_OPCODE64 jmpCode,ULONG64 jmpTo);
+ULONG PHGetHookLen(ULONG64 codeAddr,ULONG codeSize,BOOLEAN is64);
 PPAGE_HOOK_ENTRY PHGetHookEntryPage(PVOID funAddr);
 PPAGE_HOOK_ENTRY PHGetHookEntryPageBy(ULONG64 gpa);
 VOID PHHookCallBackDpc(_In_ struct _KDPC* Dpc, _In_opt_ PVOID DeferredContext, _In_opt_ PVOID SystemArgument1, _In_opt_ PVOID SystemArgument2);
 
-//KeGenericCallDpc×åÔ­ÐÍÏÔÊ½»¯¡ª¡ªÈý¸öº¯ÊýÊÇ**Î´ÎÄµµ»¯**ÄÚºËµ¼³ö
-//(Microsoft LearnÎÞÒ³Ãæ; NT5.2µÄ"Generic DPC"È«ºËDPC»Øµ÷»úÖÆ),
-//**WDK¹«¹²wdm.hÎÞÉùÃ÷**¡ª¡ªÈ¨ÍþÇ©ÃûÔ´=ReactOS NDK
-//(sdk/include/ndk/kefuncs.h, NDK×¨ÊÕÎ´ÎÄµµ»¯API; ntoskrnl.libµ¼³ö)¡£
-//²»ÏÔÊ½ÉùÃ÷Ôò¿¿CÒþÊ½ÉùÃ÷µ÷ÓÃ(¹¹½¨²úÉúC4013µÈ¾¯¸æ; Á´½ÓÆÚ°´µ¼³ö
-//·ûºÅ½âÎöÇ¡ºÃÕýÈ·, µ«ÏÔÊ½Ô­ÐÍÒ»´Î¸ù³ý)¡£
-//Ç©ÃûÓëÇ±ÔÚµÄÎ´À´ÉùÃ÷¼æÈÝ(LOGICALÓëBOOLEANÍ¬ÎªUCHAR, typedefÃû
-//²»²ÎÓëCÀàÐÍ¼æÈÝÐÔÅÐ¶¨)
+//KeGenericCallDpcæ—=æœªæ–‡æ¡£åŒ–å†…æ ¸å¯¼å‡º(WDKæ— å£°æ˜Ž, ç­¾åæº=ReactOS NDK),
+//æ˜¾å¼åŽŸåž‹æ¶ˆé™¤éšå¼å£°æ˜Žè­¦å‘Š
 VOID KeGenericCallDpc(_In_ PKDEFERRED_ROUTINE Routine, _In_opt_ PVOID Context);
 VOID KeSignalCallDpcDone(_In_ PVOID SystemArgument1);
 LOGICAL KeSignalCallDpcSynchronize(_In_ PVOID SystemArgument2);
 
-//LDEÖØ¶¨Î»Éú³ÉÆ÷¡ª¡ª°ÑÄ¿±êº¯ÊýÇ°¡ÝMinLen×Ö½ÚµÄprologue¸´ÖÆµ½¿ÉÖ´ÐÐ
-//»º³å²¢ÖØ¶¨Î»RIP-relative, Î²½Ójmp»ØTarget+Len¡£
-//violation·½°¸"°æ±¾ÎÞ¹Ø»¯"µÄºËÐÄ(Ó²±àÂëÖØ·Å»á°ó¶¨ÌØ¶¨Windows¹¹½¨)¡£
-//Ê§°Ü·µ»ØNULL(±£ÊØ²ßÂÔ: Ïà¶Ô·ÖÖ§/RIP-relative³¬¡À2GB/»ØÉ¨×Ô¼ì²»·û
-//=¾Ü¾ø, ¾ø²»´ø²¡ÉÏ»ú)¡£µ÷ÓÃËü=Ö´ÐÐÔ­prologueºó½øÈëÔ­º¯ÊýÌå²¢Õý³£
-//·µ»Ø(¾­µäDetoursÓïÒå)
+//LDEé‡å®šä½ç”Ÿæˆå™¨: å¤åˆ¶ç›®æ ‡prologueâ‰¥MinLenå­—èŠ‚åˆ°å¯æ‰§è¡Œç¼“å†²å¹¶é‡å®šä½
+//RIP-relative, å°¾æŽ¥jmpå›žTarget+Len(ç»å…¸Detoursè¯­ä¹‰, ç‰ˆæœ¬æ— å…³)ã€‚
+//å¤±è´¥è¿”å›žNULL(ç›¸å¯¹åˆ†æ”¯/è¶…Â±2GB/è‡ªæ£€ä¸ç¬¦=æ‹’ç»)
 PVOID PHBuildRelocTrampoline(ULONG64 Target, ULONG MinLen, PULONG OutLen);
 
 #endif // PAGEHOOK_H

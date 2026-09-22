@@ -1,4 +1,4 @@
-#pragma once
+ï»¿#pragma once
 #define MSR_APIC_BASE                       0x01B
 #define MSR_IA32_FEATURE_CONTROL            0x03A
 #define MSR_IA32_PAT						0x277
@@ -69,15 +69,9 @@ enum
 	TSC_OFFSET_HIGH = 0x00002011,
 	VIRTUAL_APIC_PAGE_ADDR = 0x00002012,
 	VIRTUAL_APIC_PAGE_ADDR_HIGH = 0x00002013,
-	//(VMFUNC EPTP switching): VMCS 64-bit control×Ö¶Î±àÂë
-	//**È¨ÍşÔ´: Linux arch/x86/include/asm/vmx.h enum vmcs_field(Intel³öÆ·)**
-	//  0x2014/15=APIC_ACCESS_ADDR 0x2016/17=POSTED_INTR_DESC_ADDR
-	//  0x2018=VM_FUNCTION_CONTROL 0x201A=EPT_POINTER 0x2024=EPTP_LIST_ADDRESS
-	//×¢Òâ: VMCS×Ö¶Î±àÂë**±ØĞë²éÈ¨ÍşÔ´**, Æ¾¼ÇÒäĞ´´í(Èç°ÑVM_FUNCTION_
-	//CONTROLĞ´³É0x2015=APIC-access¸ß°ëÇø)¡ú×Ö¶Î±»Ó²¼şºöÂÔ¡úvmfuncÖ´ĞĞ
-	//=unsupported function=#UD(guestÄÚÖ±½ÓÒì³£)¡úÀ¶ÆÁ
+	//VMCS 64-bit controlå­—æ®µ(ç¼–ç å¯¹ç…§SDMé™„å½•/Linux vmx.h vmcs_field)
 	VMFUNC_CONTROL = 0x00002018,          //VM-function control(bit0=EPTP switching)
-	EPTP_LIST_ADDRESS = 0x00002024,        //EPTP-list(4KB¶ÔÆë, 512Ïî¡Á8B)
+	EPTP_LIST_ADDRESS = 0x00002024,        //EPTP-list(4KBå¯¹é½, 512é¡¹Ã—8B)
 	EPT_POINTER = 0x0000201a,
 	GUEST_PHYSICAL_ADDRESS = 0x00002400,
 	GUEST_PHYSICAL_ADDRESS_HIGH = 0x00002401,

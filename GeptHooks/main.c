@@ -1,291 +1,94 @@
-#include<ntifs.h>
-#include<intrin.h>
+ï»¿#include<ntifs.h>
 #include"common.h"
-#include"PageHook.h"
 #include"VMX.h"
-#include"ept.h"
 #include"GeptApi.h"
 #include"GeptMsr.h"
 #include"CPU.h"
 
-//¹¹½¨±êÇ©: »á´ò½øÈÕÖ¾µÚÒ»ĞĞ, ÓÃÓÚºË¶Ô²âÊÔ»úÅÜµÄÊÇ²»ÊÇ±¾´Î±àÒëµÄ
-//¶ş½øÖÆ(¼ûDriverEntryºá·ù)¡£**´úÂëÃ¿´Î¸Ä¶¯±ØĞëÍ¬²½ĞŞ¸Ä!**
-//²»ÓÃ__DATE__/__TIME__¡ª¡ªÓÃ»§²àVS»·¾³¶ÔÆä±¨"Î´ÉùÃ÷µÄ±êÊ¶·û"
-#define GEPT_BUILD_TAG "v1.3c"
+//æœ¬æ–‡ä»¶=æ¡†æ¶ä½¿ç”¨ç¤ºä¾‹:
+//  DriverEntry  â†’ VmxStartAllCpusæ¥ç®¡å…¨æ ¸ â†’ å®‰è£…è‡ªå·±çš„hook
+//  DriverUnload â†’ ç§»é™¤hook â†’ VmxShutdownAllCpuså…³åœå¹¶é‡Šæ”¾èµ„æº
+//æ¡†æ¶ç»†èŠ‚(èµ„æºåˆ†é…/ä¸²è¡Œå¯åŠ¨/äº’æ–¥ä»²è£/å†…ç½®éšè—/æ—¥å¿—)å…¨åœ¨VMX.c,
+//APIå¥‘çº¦è§GeptApi.h/GeptMsr.hå¤´æ³¨é‡Š
 
-//¹¹½¨±êÇ©È«¾Ö¸±±¾¡ª¡ªºÚÏ»×Ó(GEPT_BLACKBOX)ÔÚFlInitÊ±¿½Èë,
-//À¶ÆÁDMP½âÎöÊ±×ÔÖ¤¶ş½øÖÆ°æ±¾
-CHAR g_geptBuildTag[24] = GEPT_BUILD_TAG;
+//ç›®æ ‡: NtClose(æ¼”ç¤ºæœŸé—´å…¨ç³»ç»Ÿå¥æŸ„å…³é—­éƒ½ä¼šè¢«æ‹¦æˆª)
+static PVOID g_demoNtClose = NULL;
 
-//±¾Çı¶¯=¿ò¼ÜÉúÃüÖÜÆÚÄ£°å: ×ÊÔ´·ÖÅä¡ú´®ĞĞÖğºËÆô¶¯VT¡ú»¥³âÖÙ²Ã¡ú³£×¤¡£
-//APIÊ¹ÓÃ·½Ê½: °Ñ¿ò¼ÜÎÄ¼ş¼ÓÈëÄã×Ô¼ºµÄÇı¶¯¹¤³Ì, DriverEntryÍê³ÉÈ«ºË
-//½Ó¹Üºó¼´¿Éµ÷ÓÃGeptHookInstall/GeptMsrHookInstall(¼ûREADME)
-
-//0x3A(IA32_FEATURE_CONTROL)¶ÁÎ±Ôì»Øµ÷(P0-1): ºã·µ1=Ëø¶¨Î»ÖÃ1+VMX½ûÓÃ
-//("BIOSËøVT"±ê×¼ĞÎÌ¬)¡ª¡ªÓëvmxon×¢Èë#GP(0)¶Á/ĞĞÎª»¥Ö¤(Âã»ú¶Áµ½1ÇÒ
-//vmxonÊ§°Ü=Ò»ÖÂ, ¼ûVMX.c case EXIT_REASON_VMXON), ²¢ÈÃºóµ½juniorµÄ
-//CommCheckBiosÔÚµÚÒ»²ã¼´¸É¾»ÍË³ö¡£exitÉÏÏÂÎÄ¼ÍÂÉ: Ö»·µ»ØÖµÁã¸±×÷ÓÃ
-//(GeptMsr.h»Øµ÷ÆõÔ¼)
-static ULONG64 GeptFeatCtlOnRead(PVOID Context, ULONG32 Msr)
+//EPT hookå›è°ƒ(detourè¯­ä¹‰, è¿”å›å€¼=æ–°å‡½æ•°è¿”å›å€¼)
+//å›è°ƒè¿è¡Œåœ¨ä»»æ„çº¿ç¨‹/ä»»æ„IRQL(å«DISPATCHçº§): åªåšIRQLå®‰å…¨æ“ä½œ,
+//ç¦æ­¢FlLog/DbgPrint/åˆ†é¡µå†…å­˜/é˜»å¡(å®Œæ•´çºªå¾‹è§GeptApi.h)
+static ULONG64 DemoNtCloseCallback(PVOID Context, ULONG64 Handle,
+	ULONG64 Arg2, ULONG64 Arg3, ULONG64 Arg4, ULONG64* StackArgs)
 {
 	UNREFERENCED_PARAMETER(Context);
-	UNREFERENCED_PARAMETER(Msr);
-	return 1;
+	UNREFERENCED_PARAMETER(StackArgs);
+	//ç¤ºä¾‹=é€ä¼ åŸå‡½æ•°å¹¶è¿”å›å…¶ç»“æœã€‚
+	//æ‹¦æˆª=ç›´æ¥return STATUS_INVALID_HANDLE;
+	//ç¯¡æ”¹=ä¿®æ”¹Handle/Argåç»GeptCallOriginalè½¬å‘æ”¹å†™å€¼
+	return GeptCallOriginal(Handle, Arg2, Arg3, Arg4);
 }
 
-void DriverUload(PDRIVER_OBJECT pDriverObjct)
+//MSR hookè¯»å›è°ƒ(LSTAR=ç³»ç»Ÿè°ƒç”¨å…¥å£åœ°å€, 0xC0000082)
+static ULONG64 DemoLstarOnRead(PVOID Context, ULONG32 Msr)
 {
-	UNREFERENCED_PARAMETER(pDriverObjct);
-	//parkÊØÎÀ: ÈıÖØ¹ÊÕÏparkºËµÄVMMÕ»/park´úÂëÒ³(sti+hltÑ­»·)ÈÔ±»
-	//Õ¼ÓÃ, Ğ¶ÔØ=ÊÍ·ÅºóparkºËÖ´ĞĞÒÑÊÍ·ÅÄÚ´æ=ÑÓ³Ù±ÀÀ£¡£¾Ü¾øĞ¶ÔØ,
-	//±£³Ö¼ÓÔØÈÃÈÕÖ¾Ïß³Ì¼ÌĞøÂäÅÌ, ÓÃ»§ÊÕ¼¯ÈÕÖ¾ºóÖØÆôÇåÀí
-	if (g_geptParkedMask != 0)
-	{
-		FlLog("Unload: ¾Ü¾øĞ¶ÔØ! cpuÑÚÂë%XÔÚÈıÖØ¹ÊÕÏparkÖĞ(´úÂëÒ³/VMMÕ»±»parkºËÕ¼ÓÃ, »úÆ÷Ó¦´æ»î)¡ª¡ªÇëÊÕ¼¯ÈÕÖ¾ºóÖØÆôÏµÍ³", g_geptParkedMask);
-		return;
-	}
-	FlLog("Unload: ¿ªÊ¼¹Ø±ÕVT(È«ºËIPIÔ­×ÓÍË³ö)");
-	//±ØĞëÏÈÒÆ³ıÈ«²¿API hookÔÙ¹ØVT: ¢ÙÒÆ³ıºóĞÂ´¥·¢Í£Ö¹ ¢ÚÔÚÍ¾»Øµ÷
-	//(stubµÄvmfunc/GeptCallOriginal)´Ë¿ÌVTÈÔ¿ª=°²È«Ö´ĞĞÍê±Ï¡£
-	//ËæºóµÄ2s¿íÏŞÈÃ±»ÇÀÕ¼µÄÔÚÍ¾»Øµ÷ÅÜÍê; GeptViewSwitchµÄbInGuest
-	//¼ì²éÔÙ¶µÒ»²ã(vmx_offºóÖ´ĞĞvmfunc=#UDÀ¶ÆÁ, ÕâÊÇÒÑÖª×îºó·çÏÕµã)
-	GeptApiRemoveAll();
-	{
-		LARGE_INTEGER tick;
-		tick.QuadPart = -2000000LL;    //2Ãë¿íÏŞ
-		KeDelayExecutionThread(KernelMode, FALSE, &tick);
-	}
-	ULONG cpuCount = KeQueryActiveProcessorCount(NULL);
-	//È«ºËIPIÔ­×ÓÍË³ö: KeIpiGenericCallÒ»´Î¹ã²¥È«²¿ºË(º¬·¢ÆğºË)½ø
-	//IPI_LEVEL´¦Àí³ÌĞò, Ã¿ºË**Ô­×Ó**Íê³Évmcall(1)ÍË³ö+ÇåVMXE+Ë«PGE
-	//³åË¢¡£IPI_LEVEL¸ßÓÚDISPATCH, ´¦Àí³ÌĞòÄÚÁãµ÷¶ÈÁãÏß³Ì=¸÷ºËÍË³ö
-	//¹ı³ÌÖ®¼ä²»´æÔÚÈÎºÎÏß³ÌÇĞ»»´°¿Ú; IPI·µ»Øºó¸÷ºËVTÒÑ¹ØËÀ+TLBÒÑ
-	//³å¿Õ, ºóĞøÒ»ÇĞ½ø³ÌÇĞ»»»ùÓÚ¿ÕTLB´ÓÁãÖØ½¨¡£¾ø²»ÄÜÓÃ"ÖğºËÇ×ºÍĞÔ
-	//ÇĞ»»ÍË³ö": DISPATCH¼¶ÏÂÏß³Ì²»Ç¨ÒÆ, Ñ­»·È«ÔÚ·¢ÆğºËÖ´ĞĞ=Ö»ÍË
-	//1ºË=ÊÍ·ÅÆäÓàºËÕıÔÚÊ¹ÓÃµÄVMCS/EPT=Ë«ÖØ¹ÊÕÏÀ¶ÆÁ
-	//(ÊµÏÖ: VmxStopAllIpi, ¼ûVMX.c)
-	KeIpiGenericCall(VmxStopAllIpi, 0);
-	FlLog("Unload: È«ºËIPIÍË³öÍê³É(Ã¿ºËÔ­×Óvmcall(1)+ÇåVMXE+Ë«PGE³åË¢, »·'v'¡Á%uºËÁôºÛ, Áãµ÷¶ÈÁã´°¿Ú)", cpuCount);
-	//ÈÏÖªºË²éÏî(v1.3, ²»¸ÄĞĞÎª): CPUID exit¼ÆÊıÖÕÖµ¡ª¡ª¶¨°¸CPUID
-	//handlerÊÇ·ñ»îÔ¾(ÀúÊ·Ö¤¾İ×ÔÏàÃ¬¶Ü: ¿ØÖÆ×Ö¶ÎÎ´¼ûCPUID exitingÎ»
-	//vs v3.49×Ô²â"µ¥´ÎCPUID(1exit)¡Ö2k cyc"±íÃ÷exitÔÚ·¢Éú)¡£
-	//>0=Í¸´«ĞŞ¸ÄÂ·¾¶ÔÚÅÜ; =0=nativeÖ±Í¨; Á½Õßguest²à¾ùÂã»úÒ»ÖÂ
-	FlLog("Unload: CPUID exit¼ÆÊıÖÕÖµ=%lld (r10; >0=handler»îÔ¾ /=0=Ö±Í¨, ¾ùÂã»úÒ»ÖÂ)",
-		(LONGLONG)g_flExitCounts[EXIT_REASON_CPUID]);
-	FlLog("Unload: VTÒÑ¹Ø±Õ, ÊÍ·Å×ÊÔ´");
-	//PASSIVE_LEVELÊÍ·ÅÈ«²¿×ÊÔ´(º¬EPT_DATAÓë¶¯Ì¬Ò³±í)
-	for (ULONG i = 0; i < cpuCount; i++)
-	{
-		VmxFreeCpuResources(i);
-	}
-	//ÊÍ·Å¹²Ïí¸ßÇøÒ³±í(È«²¿ºËEPT¹²ÓÃµÄpdpt, ÃİµÈ)
-	EptShutdownHighMappings();
-	//APIÄÚ´æ(ÌõÄ¿+Ìø°å³Ø, ´¿poolÊÍ·ÅÎŞVTÒÀÀµ; ´Ë¿ÌÒÑÎŞÈÎºÎÔÚÍ¾
-	//´úÂëÒıÓÃ¡ª¡ªhookÒÑÒÆ³ı+VTÒÑ¹Ø)
-	GeptApiFreeMemory();
-	FlLog("Unload: Íê³É, ¹Ø±ÕÎÄ¼şÈÕÖ¾");
-	FlShutdown();
+	UNREFERENCED_PARAMETER(Context);
+	//ç¤ºä¾‹=è¿”å›çœŸå€¼(é›¶å‰¯ä½œç”¨ç›‘æ§)ã€‚
+	//ä¼ªé€ =ç›´æ¥returnä»»æ„å€¼(guestçš„rdmsråªèƒ½è§åˆ°å®ƒ)
+	return GeptMsrReadReal(Msr);
 }
 
-NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObjct, PUNICODE_STRING pRegPath)
+static VOID DemoHookInstall(VOID)
 {
-	//×¢²á±íÂ·¾¶ÒÑ²»Ê¹ÓÃ: ÈÕÖ¾¿ª¹Øv1.3cÆğÓÉ¹¹½¨ÅäÖÃÍ³Ï½(DBGºê,
-	//common.h)¡ª¡ª¹¥·ÀĞÎÌ¬ÏÂ×¢²á±íÖµ=¿É±»AV/EDR¾²Ì¬Ç©ÃûµÄ±©Â¶Ãæ
+	//EPT hook: ç›®æ ‡=å†…æ ¸å‡½æ•°åœ°å€
+	UNICODE_STRING ntCloseName;
+	RtlInitUnicodeString(&ntCloseName, L"NtClose");
+	g_demoNtClose = MmGetSystemRoutineAddress(&ntCloseName);
+	if (g_demoNtClose != NULL)
+	{
+		GEPT_HOOK hook = { 0 };
+		hook.Target = g_demoNtClose;
+		hook.Callback = DemoNtCloseCallback;
+		NTSTATUS st = GeptHookInstall(&hook);
+		FlLog("[Demo] EPT hook NtClose(%p): %s",
+			g_demoNtClose, NT_SUCCESS(st) ? "OK" : "FAIL(è§[API]è¡Œ)");
+	}
+	//MSR hook: è¯»æ‹¦æˆª
+	{
+		GEPT_MSR_HOOK msrHook = { 0 };
+		msrHook.Msr = MSR_LSTAR;
+		msrHook.OnRead = DemoLstarOnRead;
+		NTSTATUS st = GeptMsrHookInstall(&msrHook);
+		FlLog("[Demo] MSR hook LSTAR(0x%X): %s",
+			(ULONG)MSR_LSTAR, NT_SUCCESS(st) ? "OK" : "FAIL(è§[MSR]è¡Œ)");
+	}
+}
+
+VOID DriverUload(PDRIVER_OBJECT pDriverObject)
+{
+	UNREFERENCED_PARAMETER(pDriverObject);
+	//æŒ‰ç›®æ ‡ç§»é™¤(æœªæ˜¾å¼ç§»é™¤çš„hookç”±å…³åœæµç¨‹ç»Ÿä¸€æ¸…ç†)
+	GeptMsrHookRemove(MSR_LSTAR);
+	if (g_demoNtClose != NULL)
+	{
+		GeptHookRemove(g_demoNtClose);
+	}
+	//å…³åœ: ç§»é™¤æ®‹ä½™hookâ†’å…¨æ ¸IPIåŸå­é€€å‡ºVTâ†’é‡Šæ”¾å…¨éƒ¨èµ„æº
+	VmxShutdownAllCpus();
+}
+
+NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObject, PUNICODE_STRING pRegPath)
+{
 	UNREFERENCED_PARAMETER(pRegPath);
-	pDriverObjct->DriverUnload = DriverUload;
+	pDriverObject->DriverUnload = DriverUload;
 
-	//ÎÄ¼şÈÕÖ¾×îÏÈ³õÊ¼»¯(Ö®ºóÎŞÂÛÔÚÄÄÒ»²½¿¨ËÀ, ÈÕÖ¾¶¼±£ÁôÏÖ³¡)¡£
-	//¿ª¹Ø=¹¹½¨ÅäÖÃ(v1.3cÖÕÌ¬, ÎŞ±àÒëÆÚºêÎŞ×¢²á±í): Debug¹¹½¨(DBG=1)
-	//Ê±ÍêÕû¹Û²â(T1/T2/¿´ÃÅ¹·, µ÷ÊÔ×¨ÓÃ¡ª¡ª¿´ÃÅ¹·30s¶³½á»áÖ÷¶¯À¶ÆÁ
-	//0xDEADC0DE); Release¹¹½¨Ê±FlInit/FlLog/FlShutdown¾ùÎª¿Õ²Ù×÷ºê,
-	//ÁãºóÌ¨Ïß³ÌÁãÎÄ¼şI/OÁã×¢²á±í¶ÁÈ¡
-	FlInit();
-
-	//Ô¤·ÖÅä±ØĞëÔÚPASSIVE_LEVEL: Ã¿ºËVMXON/VMCS/VMMÕ»/MSRÎ»Í¼/EPT_DATA
-	//¾ø²»ÄÜÍÆ³Ùµ½DPC(DISPATCH_LEVEL)Àï·ÖÅä
-	ULONG cpuCount = KeQueryActiveProcessorCount(NULL);
-	FlLog("==== GeptHooks build %s | cpuÊı=%d ====",
-		GEPT_BUILD_TAG, cpuCount);
-	FlLog("ºÚÏ»×Ó: BB=%p Ä§Êı=GEPTBB01 ¿´ÃÅ¹·v2(×ÔĞı+rdtsc, 30s²»¶¯)¡úÀ¶ÆÁ0xDEADC0DE¡úDMP",
-		(PVOID)&g_flBlackBox);
-	//À¶ÆÁµØÖ·ÅĞ¶ÁÃªµã: bugcheck 0x1E²ÎÊı2ÈôÂäÔÚ[base, base+size)ÄÚ
-	//=Çı¶¯ÄÚ´úÂë, ·ñÔò(ntoskrnlµÈ)¡ª¡ªÅäºÏÊÂ¼ş²é¿´Æ÷µÄBugCheck²ÎÊıÊ¹ÓÃ
-	FlLog("Çı¶¯Ó³Ïñ: base=%p size=0x%X", pDriverObjct->DriverStart, pDriverObjct->DriverSize);
-	//Ä£¿éÇåµ¥: ÑØDriverSectionµÄInLoadOrderLinks±éÀúÈ«²¿ÒÑ¼ÓÔØÄ£¿é,
-	//À¶ÆÁÊ±ÓÃbugcheck²ÎÊı2¶ÔÕÕ±¾Çåµ¥¼´Öª±ÀÀ£Ä£¿é(ÎŞĞèWinDbgÀëÏßÅĞ¶Á)
+	//æ¡†æ¶æ¥ç®¡å…¨æ ¸; å¤±è´¥æ—¶èµ„æºå·²è‡ªæ¸…ç†, ç›´æ¥è¿”å›å³å¯
+	NTSTATUS st = VmxStartAllCpus(pDriverObject);
+	if (!NT_SUCCESS(st))
 	{
-		typedef struct _GEPT_KLDR_ENTRY {
-			LIST_ENTRY InLoadOrderLinks;          //+0x00
-			LIST_ENTRY InMemoryOrderLinks;        //+0x10
-			LIST_ENTRY InInitializationOrderLinks;//+0x20
-			PVOID DllBase;                        //+0x30
-			PVOID EntryPoint;                     //+0x38
-			ULONG SizeOfImage;                    //+0x40
-			UNICODE_STRING FullDllName;           //+0x48
-			UNICODE_STRING BaseDllName;           //+0x58
-		} GEPT_KLDR_ENTRY;
-		GEPT_KLDR_ENTRY* start = (GEPT_KLDR_ENTRY*)pDriverObjct->DriverSection;
-		if (start != NULL)
-		{
-			FlLog("=== Ä£¿éÇåµ¥(À¶ÆÁ²ÎÊı2ÅĞ¶Á: ¿´ÂäÔÚÄÄ¸öÄ£¿éµÄ[base,base+size)ÄÚ) ===");
-			GEPT_KLDR_ENTRY* mod = start;
-			ULONG cnt = 0;
-			do
-			{
-				char name[24];
-				ULONG n = mod->BaseDllName.Length / sizeof(WCHAR);
-				if (n > 23)
-				{
-					n = 23;
-				}
-				for (ULONG c = 0; c < n; c++)
-				{
-					WCHAR wch = mod->BaseDllName.Buffer
-						? mod->BaseDllName.Buffer[c] : L'?';
-					name[c] = (wch < 128) ? (char)wch : '?';
-				}
-				name[n] = 0;
-				FlLog("MOD %p +%06X %s", mod->DllBase, mod->SizeOfImage, name);
-				mod = (GEPT_KLDR_ENTRY*)mod->InLoadOrderLinks.Flink;
-				cnt++;
-			} while (mod != start && cnt < 400);
-		}
-	}
-	for (ULONG i = 0; i < cpuCount; i++)
-	{
-		//Ãæ°üĞ¼: Ã¿²½¶¼ÂäÅÌ, ¿¨ËÀÊ±×îºóÒ»ĞĞ¼´¾«È·¿¨µã
-		FlLog("cpu%u/%u: VMX×ÊÔ´·ÖÅä(4¿éÁ¬ĞøÄÚ´æ)...", i, cpuCount);
-		if (VMXInitCpuAlloc(i) != 0)
-		{
-			FlLog("cpu%u VMX×ÊÔ´·ÖÅäÊ§°Ü! »Ø¹ö·µ»Ø(´ËÊ±sc startÓ¦±¨´í¶ø·Ç¹ÒÆğ)", i);
-			for (ULONG j = 0; j <= i; j++)
-			{
-				VmxFreeCpuResources(j);
-			}
-			EptShutdownHighMappings();   //¹²Ïí¸ßÇøÒ³(ÃİµÈ)
-			FlShutdown();
-			return STATUS_INSUFFICIENT_RESOURCES;
-		}
-		FlLog("cpu%u: EPT_DATA·ÖÅä(2MBÁ¬Ğø)+½¨±í...", i);
-		if (!NT_SUCCESS(EptInitEptData(i)))
-		{
-			FlLog("cpu%u EPT³õÊ¼»¯Ê§°Ü! »Ø¹ö·µ»Ø(´ËÊ±sc startÓ¦±¨´í¶ø·Ç¹ÒÆğ)", i);
-			for (ULONG j = 0; j <= i; j++)
-			{
-				VmxFreeCpuResources(j);
-			}
-			EptShutdownHighMappings();   //¹²Ïí¸ßÇøÒ³(ÃİµÈ)
-			FlShutdown();
-			return STATUS_INSUFFICIENT_RESOURCES;
-		}
-		FlLog("cpu%u: Ô¤·ÖÅäOK", i);
-	}
-	FlLog("Ô¤·ÖÅäÍê³É, ´®ĞĞÖğºËÆô¶¯VT(Ã¿²½ÂäÅÌ, ¶³½áÊ±×îºóÒ»ĞĞ=¾«È·¿¨µã)");
-
-	//´®ĞĞÖğºËÆô¶¯(PASSIVE¼¶+Ç×ºÍĞÔÇĞ»»): ²»ÓÃKeGenericCallDpc¡ª¡ª
-	//DPCÈÃÈ«ºËÍ¬Ê±½øDISPATCH¼¶, ÆÚ¼äÏß³Ì²»¿ÉÄÜ±»µ÷¶È, ÈÕÖ¾³öÏÖ
-	//½á¹¹ĞÔÃ¤Çø; ´®ĞĞÄ£Ê½Ã¿²½ÂäÅÌºóÔÙÇ°½ø
-#if GEPT_LAUNCH_CPU_BASE >= 0
-	ULONG launchBase = GEPT_LAUNCH_CPU_BASE;
-#else
-	ULONG launchBase = cpuCount - 1;    //-1=×îºóÒ»ºË(°²¾²ºË)
-#endif
-	FlLog("Æô¶¯Ä£Ê½: launchBase=cpu%u LIMIT=%d(0=²»ÏŞÖÆ), Ä¿±ê=È«²¿%uºË½Ó¹Ü",
-		launchBase, GEPT_LAUNCH_CPU_LIMIT, cpuCount);
-	KAFFINITY allCpus = KeQueryActiveProcessors();
-	for (ULONG i = 0; i < cpuCount; i++)
-	{
-		//Ö»ĞéÄâ»¯[launchBase, launchBase+LIMIT)Çø¼äµÄºË, ÆäÓàÕæ»ú
-		if (GEPT_LAUNCH_CPU_LIMIT != 0 &&
-			(i < launchBase || i >= launchBase + GEPT_LAUNCH_CPU_LIMIT))
-		{
-			FlLog("cpu%u Ìø¹ıÆô¶¯(Ä¿±êÇø¼äÍâµÄºË±£³ÖÕæ»ú)", i);
-			continue;
-		}
-		if (g_vcpu[i].VMXON == NULL || g_vcpu[i].VMCS == NULL)
-		{
-			FlLog("cpu%u ÎŞ×ÊÔ´, Ìø¹ı", i);
-			continue;
-		}
-		FlLog("cpu%u: ÇĞ»»Ç×ºÍĞÔ, VT»·¾³¼ì²é+Æô¶¯...", i);
-		KeSetSystemAffinityThread((KAFFINITY)1 << i);
-		//¼ÇÂ¼ĞéÄâ»¯Ä¿±êºË(ÈÕÖ¾ĞÄÌø¶ÁËü)
-		g_geptVcpuCpu = (LONG)i;
-		if (CommCheckBios() && CommCheckCpuid() && CommCheckCr4())
-		{
-			VMXInitCpuStart();
-		}
-		else
-		{
-			FlLog("cpu%u VT»·¾³¼ì²éÎ´Í¨¹ı, Ìø¹ı", i);
-		}
-		KeSetSystemAffinityThread(allCpus);
+		return st;
 	}
 
-	//¸÷ºËÆô¶¯½á¹ûÂäÅÌ: ÄÄĞ©ºË½øÁËguest/ÄÄĞ©Ê§°Ü, Ò»Ä¿ÁËÈ»
-	FlLog("È«²¿ºËĞÄÆô¶¯Á÷³ÌÍê³É, ¸÷ºË×´Ì¬:");
-	{
-		ULONG inGuestTotal = 0;
-		for (ULONG i = 0; i < cpuCount; i++)
-		{
-			FlLog("cpu%d inGuest=%d launchFailed=%d vmxon=%d",
-				i, g_vcpu[i].bInGuest, g_vcpu[i].bLaunchFailed, g_vcpu[i].bVmxOn);
-			if (g_vcpu[i].bInGuest)
-			{
-				inGuestTotal++;
-			}
-		}
-		//ÁãºËin-guest=VTÆô¶¯È«°Ü, Á½´ó³ÉÒò: ¢ÙHyper-V/VBSÕ¼ÓÃ
-		//¢ÚÍ¬¿ò¼ÜËŞÖ÷ÒÑÔÚ³¡¡ª¡ªÎÒÃÇµÄvmxonÔÚËŞÖ÷guestÄÚÖ´ĞĞ¡úexit¡ú
-		//ËŞÖ÷Î±ÔìÊ§°Ü¡ú__vmx_onÖğºË·µ»ØÊ§°Ü=VT-xÔ­Éú»¥³âÖÙ²ÃÉúĞ§
-		//(ÁãÇ©ÃûÁã¹²Ïí¶ÔÏóÁã±©Â¶Ãæ)¡£´ËÊ±ÊÖ¶¯ÊÍ·ÅÈ«²¿×ÊÔ´
-		//(DriverEntryÊ§°ÜÊ±I/O¹ÜÀíÆ÷Ğ¶ÔØÓ³Ïñ**²»µ÷DriverUnload**,
-		//±ØĞëÔÚ´Ë×ÔÇå)+·µ»ØÊ§°Ü=sc start±¨´í¸É¾»ÍË³ö, ËŞÖ÷ÁãÈÅ¶¯
-		//(»¥³âĞ­Òé: ºóµ½ÕßÈÃÎ»)
-		if (inGuestTotal == 0)
-		{
-			FlLog("DriverEntry: **ÁãºËin-guest¡ª¡ªVTÆô¶¯È«°Ü**¡£³ÉÒò: "
-				"Hyper-V/VBSÕ¼ÓÃ »ò Í¬¿ò¼ÜËŞÖ÷hypervisorÒÑÔÚ³¡¡£"
-				"ÊÍ·ÅÈ«²¿×ÊÔ´ºó¸É¾»ÍË³ö, ÏµÍ³²»ÊÜÓ°Ïì");
-			for (ULONG i = 0; i < cpuCount; i++)
-			{
-				if (g_vcpu[i].bVmxOn)
-				{
-					//·ÀÓùĞÔ: vmxon³É¹¦µ«Î´½øguestµÄºË×ö±ê×¼Í£ºË
-					//(´ËĞÎÌ¬ÏÂÍ¨³£bVmxOn=0, ·ÖÖ§¿Õ×ª¡ª¡ª±£ÏÕ²»ÉË)
-					KeSetSystemAffinityThread((KAFFINITY)1 << i);
-					VmxStopCpu();
-					KeSetSystemAffinityThread(allCpus);
-				}
-			}
-			for (ULONG i = 0; i < cpuCount; i++)
-			{
-				VmxFreeCpuResources(i);
-			}
-			EptShutdownHighMappings();
-			FlShutdown();
-			return STATUS_UNSUCCESSFUL;
-		}
-	}
-	//¿ò¼ÜÄÚÖÃMSR hook(P0-1): 0x3A¶ÁÎ±Ôìºã·µ1¡ª¡ª**¿ò¼ÜÓïÒå·Çdemo, ÎğÔÚ
-	//ÇåÀíÊ±°şÀë**(v1.2ÔøÎóµ±demo²ğµô: »¥³âË«²ã·ÀÏß½µ¼¶µ¥²ã+¶Á/ĞĞÎª
-	//Ã¬¶ÜĞ¹Â©¡ª¡ª²¡¶¾¶Á0x3AÕæÖµ5¶øvmxon±»#GP="¶Áµ½5È´Ê§°Ü"=¶Á/ĞĞÎª
-	//Ã¬¶Ü=hypervisorÌúÖ¤)¡£Ë«ÖØ×÷ÓÃ: ¢Ù»¥³âµÚÒ»²ã(juniorµÄ
-	//CommCheckBios¶Á1¡úVT»·¾³¼ì²éÊ§°Ü¡ú¸É¾»ÍË³ö, sc start±¨1062)
-	//¢ÚÒş²Ø²ã(0x3A=1+CR4.VMXEÓ°×Ó0+vmxon #GP(0)Èı²ã"BIOSËøVT"¹ÊÊÂ
-	//×ÔÇ¢)¡£GeptMsrHookInstallµÄin-guest gateÇ¡ÔÚ´ËÂú×ã(ÉÏÃæÒÑÅĞ¶¨
-	//inGuestTotal>0); Î»Í¼Ö±Ğ´Ó²¼şÃ¿´ÎexitÏÖ²é=PASSIVE×°Ò»´Î¼´Ê±
-	//ÉúĞ§ÎŞĞèDPC
-	{
-		GEPT_MSR_HOOK featCtlHook = { 0 };
-		featCtlHook.Msr = MSR_IA32_FEATURE_CONTROL;   //0x3A
-		featCtlHook.OnRead = GeptFeatCtlOnRead;
-		NTSTATUS msrSt = GeptMsrHookInstall(&featCtlHook);
-		FlLog("¿ò¼ÜÄÚÖÃ0x3A¶ÁÎ±Ôì(ºã·µ1): %s¡ª¡ª»¥³âµÚÒ»²ã+vmxon #GP(0)¶Á/ĞĞÎª»¥Ö¤",
-			NT_SUCCESS(msrSt) ? "°²×°OK" : "°²×°Ê§°Ü(²»Ó°ÏìVTÔËĞĞ, Ïê¼û[MSR]ĞĞ)");
-	}
-	//·ÅĞĞDesktop¾µÏñ: µ½´ËÇı¶¯¼ÓÔØ´°¿ÚÆÚ½áÊø, ÓÃ»§Ä¿Â¼ÎÄ¼ş²Ù×÷
-	//²»ÔÙÓĞ¹ıÂËÇı¶¯ËÀËø·çÏÕ
-	FlMarkEntryDone();
+	//æ¥ç®¡æˆåŠŸ, å®‰è£…æ¼”ç¤ºhook
+	DemoHookInstall();
 	return STATUS_SUCCESS;
 }

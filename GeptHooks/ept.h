@@ -1,4 +1,4 @@
-#pragma once
+ï»¿#pragma once
 #ifndef EPT_H
 #define EPT_H
 #include<ntifs.h>
@@ -10,19 +10,19 @@ typedef union _EPT_EPTP
 	ULONG64 ALL;
 	struct
 	{
-		ULONG64 memoryType : 3;    //bits 2:0   EPTÒ³±íÄÚ´æÀàĞÍ(0=UC 6=WB)
-		ULONG64 walkLen : 3;       //bits 5:3   Ò³±í¼¶Êı-1, 4¼¶EPT±ØĞëÌî3(SDM 29.2.1.1)
-		ULONG64 dirty : 1;         //bit 6      accessed/dirty±êÖ¾
-		ULONG64	reseved1 : 5;      //bits 11:7  ±£Áô, ±ØĞëÎª0
-		ULONG64 physicalAddr : 40; //bits 51:12 PML4±íÎïÀíµØÖ·
+		ULONG64 memoryType : 3;    //bits 2:0   EPTé¡µè¡¨å†…å­˜ç±»å‹(0=UC 6=WB)
+		ULONG64 walkLen : 3;       //bits 5:3   é¡µè¡¨çº§æ•°-1, 4çº§EPTå¿…é¡»å¡«3(SDM 29.2.1.1)
+		ULONG64 dirty : 1;         //bit 6      accessed/dirtyæ ‡å¿—
+		ULONG64	reseved1 : 5;      //bits 11:7  ä¿ç•™, å¿…é¡»ä¸º0
+		ULONG64 physicalAddr : 40; //bits 51:12 PML4è¡¨ç‰©ç†åœ°å€
 		ULONG64	reseved2 : 12;
 	}fileds;
-}EPT_EPTP, * PEPT_EPTP;
+}EPT_EPTP,*PEPT_EPTP;
 
 typedef union _EPT_PML4
 {
 	ULONG64 ALL;
-	struct
+	struct 
 	{
 		ULONG64 present : 1;
 		ULONG64 write : 1;
@@ -33,7 +33,7 @@ typedef union _EPT_PML4
 		ULONG64	physicalAddr : 40;
 		ULONG64	reseved3 : 12;
 	}fileds;
-}EPT_PML4, * PEPT_PML4;
+}EPT_PML4,*PEPT_PML4;
 
 typedef union _EPT_PDPTE
 {
@@ -49,7 +49,7 @@ typedef union _EPT_PDPTE
 		ULONG64	physicalAddr : 40;
 		ULONG64	reseved3 : 12;
 	}fileds;
-}EPT_PDPTE, * PEPT_PDPTE;
+}EPT_PDPTE,*PEPT_PDPTE;
 typedef union _EPT_PDPTE_1G
 {
 	ULONG64 ALL;
@@ -80,20 +80,20 @@ typedef union _EPT_PDE
 		ULONG64	execute : 1;
 		ULONG64 reseved1 : 5;
 		ULONG64	accessd : 1;
-		ULONG64 reseved2 : 1;
+		ULONG64 reseved2 : 1;	
 		ULONG64 userModeExecute : 1;
 		ULONG64	reseved3 : 1;
 		ULONG64	physicalAddr : 36;
 		ULONG64	reseved4 : 16;
 	}fileds;
-}EPT_PDE, * PEPT_PDE;
+}EPT_PDE,*PEPT_PDE;
 
 typedef union _EPT_PDE_2M
 {
 	ULONG64 ALL;
 	struct
 	{
-		ULONG64 present : 1;
+		ULONG64 present :1;
 		ULONG64 write : 1;
 		ULONG64	execute : 1;
 		ULONG64 memoryType : 3;
@@ -124,14 +124,14 @@ typedef union _EPT_PTE
 		ULONG64	physicalAddr : 40;
 		ULONG64	reseved3 : 12;
 	}fileds;
-}EPT_PTE, * PEPT_PTE;
+}EPT_PTE,*PEPT_PTE;
 
 typedef struct _EPT_DATA
 {
 	EPT_PML4 pml4[EPT_PREALLOC_PAGES];
 	EPT_PDPTE pdpte[EPT_PREALLOC_PAGES];
 	EPT_PDE_2M pde[EPT_PREALLOC_PAGES][EPT_PREALLOC_PAGES];
-}EPT_DATA, * PEPT_DATA;
+}EPT_DATA,*PEPT_DATA;
 
 typedef union _EPT_EXITDATA
 {
@@ -154,39 +154,32 @@ typedef union _EPT_EXITDATA
 }EPT_EXITDATA, * PEPT_EXITDATA;
 
 NTSTATUS EptInitEptData(ULONG cpuNumber);
-//ÊÍ·Å¹²Ïí¸ßÇøÒ³±í(512GB-256TBÔ¤½¨Ò³, DriverUload/»Ø¹öµ÷ÓÃ, ÃİµÈ)
-//(¼æÊÍ·ÅË«EPT±ê¼ÇÒ³Ò»¶Ô)
+//é‡Šæ”¾å…±äº«é«˜åŒºé¡µè¡¨+åŒEPTæ ‡è®°é¡µ(DriverUload/å›æ»šè°ƒç”¨, å¹‚ç­‰)
 VOID EptShutdownHighMappings(VOID);
-//vmlaunchÇ°EPTÈí¼ş×Ô¼ìÃÅ(PASSIVE¼¶, FlLogÖğÏîÂäÅÌ)¡£
-//·µ»ØÊ§°ÜÏîÊı(0=Í¨¹ı)¡£VmxSetupVmcs¾İ´Ë¾ö¶¨ÊÇ·ñ·ÅÆúvmlaunch
-//×·¼Ó[7][8][9]=hooked EPT×Ô¼ì(Ë«ÊÓÍ¼µÚ¶şÌ×±í, ¼ûº¯ÊıÎ²)
+//vmlaunchå‰EPTè½¯ä»¶è‡ªæ£€: è¿”å›å¤±è´¥é¡¹æ•°(0=é€šè¿‡), å«hooked EPTçš„
+//[7][8][9]é¡¹; VmxSetupVmcsæ®æ­¤å†³å®šæ˜¯å¦æ”¾å¼ƒvmlaunch
 ULONG EptVerifyTables(ULONG cpuNumber, ULONG64 guestRspVa);
 void EptExitHandler(PGUEST_REGS GuestRegs);
-void EptSetHook(ULONG64 orginalPagePFN, ULONG64 codePagePFN);
-//(Ë«EPT): walkerÈ«²¿´øÏÔÊ½PEPT_DATA²ÎÊı¡ª¡ªÈí¼ş×ß²é/¸ÄĞ´
-//±ØĞëÃ÷È·Ä¿±êÊÓÍ¼(´«´í±í=¸Ä´íÒ³±í=¾²Ä¬´íÒë)¡£clean=g_vcpu[n].PeptData,
-//hooked=g_vcpu[n].PeptDataHooked, µ±Ç°ÊÓÍ¼=EptGetActiveData()
+void EptSetHook(ULONG64 orginalPagePFN,ULONG64 codePagePFN);
+//walkerå¸¦æ˜¾å¼PEPT_DATAå‚æ•°(é¡»æ˜ç¡®ç›®æ ‡è§†å›¾): clean=g_vcpu[n].PeptData,
+//hooked=g_vcpu[n].PeptDataHooked, å½“å‰è§†å›¾=EptGetActiveData()
 PEPT_PDE_2M EptGetPde2B(PEPT_DATA ept, ULONG64 PFN);
 BOOLEAN EptPdeToPte(PEPT_PDE_2M pde2M);
 PEPT_PTE EptGetPte(PEPT_DATA ept, ULONG64 PFN);
-void EptUpdatePageAcess(PEPT_DATA ept, ULONG64 gpa, UCHAR acess, PPAGE_HOOK_ENTRY pageEntry);
-//±¾ºË**µ±Ç°ÊÓÍ¼**µÄEPT¡ª¡ªvmread EPT_POINTER±È¶Ôclean/hooked EPTP
-//(SDM ¡ì28.5.7.3: VMFUNCÇĞ»»»áĞ´»ØEPT_POINTER×Ö¶Î, ×Ö¶ÎÖµ=ÕæÏà)¡£
-//½öVMX root+VMCSÒÑ¼ÓÔØÉÏÏÂÎÄ¿Éµ÷(exit handler/EptSetHook)
+void EptUpdatePageAcess(PEPT_DATA ept, ULONG64 gpa,UCHAR acess,PPAGE_HOOK_ENTRY pageEntry);
+//æœ¬æ ¸å½“å‰è§†å›¾çš„EPT(vmread EPT_POINTERæ¯”å¯¹, ä»…VMX rootä¸Šä¸‹æ–‡å¯è°ƒ)
 PEPT_DATA EptGetActiveData(VOID);
-VOID EptInveptCurrent(VOID);   //Í³Ò»inveptÈë¿Ú(ÄÜÁ¦Ì½²â+EPTPÌî³ä+VMfailÁôºÛ)
-VOID EptInveptBothViews(VOID); //vmx_offÇ°Ë«ÊÓÍ¼invept(all-context¶ÌÂ·; single-contextĞÍCPUÖğÊÓÍ¼Ê§Ğ§)
+VOID EptInveptCurrent(VOID);   //ç»Ÿä¸€inveptå…¥å£(èƒ½åŠ›æ¢æµ‹+EPTPå¡«å……+VMfailç•™ç—•)
+VOID EptInveptBothViews(VOID); //vmx_offå‰åŒè§†å›¾invept(all-contextçŸ­è·¯; single-contextå‹CPUé€è§†å›¾å¤±æ•ˆ)
 BOOLEAN EptBuildHighMapping(ULONG64 gpa);
 extern BOOLEAN g_bEpt1GbPage;
 
-//==== Ë«EPT±ê¼ÇÒ³ ====
-//hooked EPTÀï°ÑpageAµÄGPA¸ÄÒëµ½pageBÎïÀíÒ³(EptInitEptData²¼·À);
-//guestÄÚ¶ÁÍ¬Ò»VA: cleanÊÓÍ¼=GEPT_MARK_A / hookedÊÓÍ¼=GEPT_MARK_B
-//=VMFUNCÇĞ»»µÄÊÇÕæÊµ¶ÀÁ¢EPTµÄÖ±½ÓÈí¼şÖ¤¾İ(Çø±ğÓÚno-opÍù·µÑéÖ¤)¡£
-//È«ºË¹²ÓÃÒ»¶ÔÒ³, EptShutdownHighMappingsÊÍ·Å
-extern PVOID g_geptMarkVA;         //pageAĞéÄâµØÖ·(GPA=PA_AºãµÈ, ×Ô²â¶ÁËü)
-extern ULONG64 g_geptMarkPaB;      //pageBÎïÀíµØÖ·(hookedÊÓÍ¼·­ÒëÄ¿±ê)
-#define GEPT_MARK_A 0x5450454E41454C43ULL   //Ğ¡¶ËÄÚ´æ=ASCII "CLEANEPT"
-#define GEPT_MARK_B 0x545044454B4F4F48ULL   //Ğ¡¶ËÄÚ´æ=ASCII "HOOKEDPT"
+//==== åŒEPTæ ‡è®°é¡µ ====
+//hooked EPTæŠŠpageAæ”¹è¯‘åˆ°pageB: guestè¯»åŒä¸€VA, clean=GEPT_MARK_A /
+//hooked=GEPT_MARK_B=åŒEPTç‹¬ç«‹ç¿»è¯‘çš„è½¯ä»¶éªŒè¯ã€‚å…¨æ ¸å…±ç”¨, éšé«˜åŒºé‡Šæ”¾
+extern PVOID g_geptMarkVA;         //pageAè™šæ‹Ÿåœ°å€(GPA=PA_Aæ’ç­‰, è‡ªæµ‹è¯»å®ƒ)
+extern ULONG64 g_geptMarkPaB;      //pageBç‰©ç†åœ°å€(hookedè§†å›¾ç¿»è¯‘ç›®æ ‡)
+#define GEPT_MARK_A 0x5450454E41454C43ULL   //å°ç«¯å†…å­˜=ASCII "CLEANEPT"
+#define GEPT_MARK_B 0x545044454B4F4F48ULL   //å°ç«¯å†…å­˜=ASCII "HOOKEDPT"
 
 #endif // EPT_H

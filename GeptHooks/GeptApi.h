@@ -1,98 +1,98 @@
-#pragma once
+﻿#pragma once
 #ifndef GEPTAPI_H
 #define GEPTAPI_H
 #include<ntifs.h>
 
 //====================================================================
-// ����API������ͨ�����������⻯֪ʶ�����������HOOK
-// (VMFUNC˫EPT detourʽ)
+// 简易API——普通开发者零虚拟化知识即可用虚拟层HOOK
+// (VMFUNC双EPT detour式)
 //
-//����:
-//  - hook����=CodePage��ת��GeptStubEntry��vmfunc��clean��ͼ��SAVE_ALL
-//    ���û��ص���vmfunc�л�hooked��ͼ��ret�ص�����(ȫ����VM-Exit)
-//  - clean��ͼ��ԭ�����ֽ����������ص���GeptCallOriginal**ֱ�ӵ���**
-//    ԭ����(����prologue�ط�/hookLen/trampoline����=������Ӳ��������)
-//  - �ص�����ֵ=hook�������·���ֵ(����detour����Ȩ: �ɸĲ���/����ֵ/
-//    ������ԭ����ֱ������)
+//语义:
+//  - hook触发=CodePage跳转→GeptStubEntry→vmfunc切clean视图→SAVE_ALL
+//    →用户回调→vmfunc切回hooked视图→ret回调用者(全程零VM-Exit)
+//  - clean视图下原函数字节完好无损→回调内GeptCallOriginal**直接调用**
+//    原函数(无需prologue重放/hookLen/trampoline机器=特征码硬编码消亡)
+//  - 回调返回值=hook函数的新返回值(完整detour控制权: 可改参数/返回值/
+//    不调用原函数直接拦截)
 //
-//ʹ�ü���(Υ��=����/��������):
-//  1. �ص�������ԭ������**�����߳�/����IRQL������**(��DISPATCH��):
-//     ֻ��IRQL��ȫ����(Interlocked*/�������¼�/GeptCallOriginal);
-//     ����FlLog(�ȴ������߳�����)/����DbgPrint(���ܷ籩)/������ҳ�ڴ�
-//     ����/���������ȴ�
-//  2. �ص��ڵ��ñ�hook��ԭ����**���뾭GeptCallOriginal**(��֤clean��ͼ
-//     +��ͼ��λ); ֱ�ӵ���Target��clean��ͼ������Ҳ��ȫ, ���߳�Ǩ��
-//     �󲻱�֤����ͳһ��GeptCallOriginal
-//  3. ��֪����(�ĵ���): �ص�ִ���ڼ䱾�˴���clean��ͼ�����ص������
-//     ������hookĿ��(��ԭ�����ڲ����õ�����hookĿ��)��������;
-//     �ص�����=����hook����ʧЧֱ������
-//  4. ��5+����(ջ����)��ת��: ��װʱGEPT_HOOK.StackArgs=Ŀ��
-//     ����ջ��������(��GEPT_MAX_STACK_ARGS)���ص��յ�StackArgsָ��
-//     (ָ�򴥷�֡��ʵ��, **�ɶ���д**����д��GeptCallOriginal����дֵ
-//     ת��)+GeptCallOriginal�Զ�ת��; StackArgs=0=������(��4�Ĵ�����)
+//使用纪律(违反=蓝屏/死锁风险):
+//  1. 回调运行在原函数的**任意线程/任意IRQL上下文**(含DISPATCH级):
+//     只做IRQL安全操作(Interlocked*/无锁环事件/GeptCallOriginal);
+//     绝不FlLog(等待落盘线程死锁)/绝不DbgPrint(性能风暴)/绝不分页内存
+//     访问/绝不阻塞等待
+//  2. 回调内调用本hook的原函数**必须经GeptCallOriginal**(保证clean视图
+//     +视图归位); 直接调用Target在clean视图下碰巧也安全, 但线程迁移
+//     后不保证——统一走GeptCallOriginal
+//  3. 已知限制(文档化): 回调执行期间本核处于clean视图——回调里调用
+//     的其他hook目标(或原函数内部调用的其他hook目标)不被拦截;
+//     回调阻塞=本核hook持续失效直到返回
+//  4. 第5+参数(栈参数)可转发: 安装时GEPT_HOOK.StackArgs=目标
+//     函数栈参数个数(≤GEPT_MAX_STACK_ARGS)→回调收到StackArgs指针
+//     (指向触发帧上实参, **可读可写**——写后GeptCallOriginal按改写值
+//     转发)+GeptCallOriginal自动转发; StackArgs=0=旧语义(仅4寄存器参)
 //
-//Ӳ��Ҫ��: ����һ��VT in-guest���ɰ�װ����
-//  VMFUNC��(Haswell+): ˫EPT��VM-Exit detour(����������)
-//  ��VMFUNC��(��CPU/����): violation��������API������ȫ�ȼ�, ֻ��
-//    ÿ�δ�������1+��VM-Exit(�����Խ���); CallOriginal�Զ���LDE
-//    �ض�λ����(�汾�޹�, ��prologueӲ����)
-//  Ŀ��prologue����Է�֧/RIP-relative����2GB=Install�ܾ�(������,
-//  ��־[Reloc]������, ���������ϻ�)
+//硬件要求: 至少一核VT in-guest即可安装——
+//  VMFUNC核(Haswell+): 双EPT零VM-Exit detour(隐藏性最优)
+//  无VMFUNC核(老CPU/降级): violation降级——API语义完全等价, 只是
+//    每次触发产生1+次VM-Exit(隐藏性降级); CallOriginal自动走LDE
+//    重定位跳板(版本无关, 无prologue硬编码)
+//  目标prologue含相对分支/RIP-relative超±2GB=Install拒绝(极罕见,
+//  日志[Reloc]行留痕, 绝不带病上机)
 //====================================================================
 
-//detour�ص�: ����ֵ=hook�����ķ���ֵ; Context=��װʱԭ������;
-//Arg1-4=ԭ������rcx/rdx/r8/r9(x64ǰ4���Ĵ�������);
-//StackArgs=��5+��������(ָ�򴥷�֡��ʵ��, �ɶ�**��д**����д��
-//GeptCallOriginal����дֵת��; NULL=��װʱStackArgs=0δ����)
-typedef ULONG64(*GEPT_CALLBACK)(
+//detour回调: 返回值=hook函数的返回值; Context=安装时原样传入;
+//Arg1-4=原函数的rcx/rdx/r8/r9(x64前4个寄存器参数);
+//StackArgs=第5+参数数组(指向触发帧上实参, 可读**可写**——写后
+//GeptCallOriginal按改写值转发; NULL=安装时StackArgs=0未声明)
+typedef ULONG64 (*GEPT_CALLBACK)(
 	PVOID Context, ULONG64 Arg1, ULONG64 Arg2, ULONG64 Arg3, ULONG64 Arg4,
 	ULONG64* StackArgs);
 
-//ջ����ת������(hook.asm GeptCallOrigAsm�̶�֡=32�ۡ�8B)
+//栈参数转发上限(hook.asm GeptCallOrigAsm固定帧=32槽×8B)
 #define GEPT_MAX_STACK_ARGS 32
 
-//��װ����(ֵ����, ��װ���ڲ��Գ�)
+//安装描述(值语义, 安装后内部自持)
 typedef struct _GEPT_HOOK
 {
-	PVOID Target;             //Ŀ�꺯��(�ں������ַ)
-	GEPT_CALLBACK Callback;   //detour�ص�
-	PVOID Context;            //�û�������(ԭ�������ص�)
-	ULONG StackArgs;          //Ŀ�꺯����5+ջ��������(0=��ת��;
-	//>0ʱ�ص���StackArgsָ��+CallOriginal�Զ�
-	//ת��; ��GEPT_MAX_STACK_ARGS, ����Install�ܾ�)
-} GEPT_HOOK, * PGEPT_HOOK;
+	PVOID Target;             //目标函数(内核虚拟地址)
+	GEPT_CALLBACK Callback;   //detour回调
+	PVOID Context;            //用户上下文(原样传给回调)
+	ULONG StackArgs;          //目标函数第5+栈参数个数(0=不转发;
+	                          //>0时回调收StackArgs指针+CallOriginal自动
+	                          //转发; ≤GEPT_MAX_STACK_ARGS, 超限Install拒绝)
+} GEPT_HOOK, *PGEPT_HOOK;
 
-//��װhook(PASSIVE_LEVEL): CodePage����+ÿ��hooked EPT����(PHHook����)
+//安装hook(PASSIVE_LEVEL): CodePage构建+每核hooked EPT布防(PHHook复用)
 NTSTATUS GeptHookInstall(const GEPT_HOOK* Hook);
 
-//�Ƴ�hook(PASSIVE_LEVEL): ��ԭCodePage�������ֽ�(Դ=ԭҳ, ԭҳ��δ��
-//�޸�)+ȫ��˫��ͼinvept��hook����ʧЧ(hooked��ͼ��clean��ͼ);
-//���ڻص��е��̰߳�ȫ���(��/��Ŀ�ӳٵ�ж���ͷ�)
+//移除hook(PASSIVE_LEVEL): 还原CodePage被覆盖字节(源=原页, 原页从未被
+//修改)+全核双视图invept→hook立即失效(hooked视图≡clean视图);
+//正在回调中的线程安全完成(槽/条目延迟到卸载释放)
 NTSTATUS GeptHookRemove(PVOID Target);
 
-//ö��live hook(Buffer=NULLʱ*InOutCount��������)
+//枚举live hook(Buffer=NULL时*InOutCount返回数量)
 NTSTATUS GeptHookEnumerate(GEPT_HOOK* Buffer, ULONG* InOutCount);
 
-//�ص��ڵ���ԭ����(���ص���������Ч, ���������ķ���0):
-//VMFUNC��: ��clean��ͼ��ֱ��call Target(ԭʼ�ֽ�)����λhooked;
-//fallback��: ��LDE�ض�λ����(�汾�޹�, ��prologueӲ����)
-//����StackArgs>0��hook, ��5+�����Զ��Ӵ���֡ת��
-//(�ص���StackArgs����ĸ�дһ����Ч; Arg1-4=������ʵ�Ρ���
-//��hook.asm GeptCallOrigAsm�ؽ���������֡)
+//回调内调用原函数(仅回调上下文有效, 其他上下文返回0):
+//VMFUNC核: 切clean视图→直接call Target(原始字节)→归位hooked;
+//fallback核: 经LDE重定位跳板(版本无关, 无prologue硬编码)
+//声明StackArgs>0的hook, 第5+参数自动从触发帧转发
+//(回调对StackArgs数组的改写一并生效; Arg1-4=本函数实参——
+//经hook.asm GeptCallOrigAsm重建完整调用帧)
 ULONG64 GeptCallOriginal(ULONG64 Arg1, ULONG64 Arg2, ULONG64 Arg3, ULONG64 Arg4);
 
-//�߼�: �ֶ��л�EPT��ͼ(0=cleanԭʼ�ֽ�/1=hooked)��
-//VT�ѹ�/δ����VMFUNC�ĺ�=��ȫno-op��GeptStubEntry/GeptCallOriginal�ڲ�ʹ��
+//高级: 手动切换EPT视图(0=clean原始字节/1=hooked)。
+//VT已关/未启用VMFUNC的核=安全no-op。GeptStubEntry/GeptCallOriginal内部使用
 VOID GeptViewSwitch(ULONG eptpIndex);
 
-//ж����β: DriverUload�ڹ�VT**֮ǰ**����(�Ƴ�ȫ��hook, ����;�ص�
-//��ȫ���); ��VT֮�����GeptApiFreeMemory�ͷ��ڴ�
+//卸载收尾: DriverUload在关VT**之前**调用(移除全部hook, 让在途回调
+//安全完成); 关VT之后调用GeptApiFreeMemory释放内存
 VOID GeptApiRemoveAll(VOID);
 VOID GeptApiFreeMemory(VOID);
 
-//replay�Բ�(������/��ʾ��)����ֱ�ӵ���ָ��hook��LDE�ض�λ����,
-//ִ�и���prologue�����ԭ�����岢�������ء��ϻ���֤�ض�λ������:
-//��α���NtCurrentProcess()��NtClose��replay��Ӧ����STATUS_INVALID_HANDLE
+//replay自测(仅调试/演示用)——直接调用指定hook的LDE重定位跳板,
+//执行副本prologue后进入原函数体并正常返回。上机验证重定位生成器:
+//传伪句柄NtCurrentProcess()给NtClose的replay→应返回STATUS_INVALID_HANDLE
 NTSTATUS GeptApiSelfTestReplay(PVOID Target, ULONG64 Arg1);
 
 #endif // GEPTAPI_H

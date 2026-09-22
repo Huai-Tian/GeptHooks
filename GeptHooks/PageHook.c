@@ -1,82 +1,82 @@
-#include <intrin.h>
+ï»¿#include <intrin.h>
 #include"PageHook.h"
 #include"LDasm.h"
 #include"common.h"
 #include"VMX.h"
-LIST_ENTRY g_PageList = { 0 };
+LIST_ENTRY g_PageList = {0};
 NTSTATUS PHHook(PVOID pFun, PVOID pHook)
 {
 	NTSTATUS status = STATUS_SUCCESS;
-	PHYSICAL_ADDRESS phys = { 0 };
+	PHYSICAL_ADDRESS phys = {0};
 	phys.QuadPart = MAXULONG64;
 	PUCHAR CodePage = NULL;
 	BOOLEAN isNewCodePage = FALSE;
-	//ÅÐ¶ÏÊÇ·ñ±»hook¹ý
-	PPAGE_HOOK_ENTRY pEntry = PHGetHookEntryPage(pFun);
-	//Èç¹û¸ÄÒ³Ã»ÓÐ±»HOOK¹ý,ÄÇÎÒÃÇ¾ÍÉêÇëÒ»¸öÐÂµÄÒ³
-	if (pEntry == NULL)
+	//åˆ¤æ–­æ˜¯å¦è¢«hookè¿‡
+	PPAGE_HOOK_ENTRY pEntry=PHGetHookEntryPage(pFun);
+	//å¦‚æžœæ”¹é¡µæ²¡æœ‰è¢«HOOKè¿‡,é‚£æˆ‘ä»¬å°±ç”³è¯·ä¸€ä¸ªæ–°çš„é¡µ
+	if (pEntry==NULL)
 	{
-		//ÐÂÉêÇëÒ»¸öÒ³ÓÃÀ´´æ·ÅÔ­º¯ÊýµÄÒ³Êý¾Ý
+		//æ–°ç”³è¯·ä¸€ä¸ªé¡µç”¨æ¥å­˜æ”¾åŽŸå‡½æ•°çš„é¡µæ•°æ®
 		CodePage = MmAllocateContiguousMemory(PAGE_SIZE, phys);
 		isNewCodePage = TRUE;
-		//Ìí¼Ó
+		//æ·»åŠ 
 		RtlZeroMemory(CodePage, PAGE_SIZE);
 	}
 	else
 	{
 		CodePage = pEntry->CodePageVA;
 	}
-	//¸´ÖÆÔ­º¯ÊýËùÔÚÒ³µ½ÐÂÉêÇëµÄÒ³
-
+	//å¤åˆ¶åŽŸå‡½æ•°æ‰€åœ¨é¡µåˆ°æ–°ç”³è¯·çš„é¡µ
+	
 	memcpy(CodePage, PAGE_ALIGN(pFun), PAGE_SIZE);
-	//¹¹½¨Ìø×ª´úÂë
+	//æž„å»ºè·³è½¬ä»£ç 
 	JMP_OPCODE64 jmpCode64 = { 0 };
 	PHInitJmpCode(&jmpCode64, pHook);
 	ULONG_PTR page_offset = (ULONG_PTR)pFun - (ULONG_PTR)PAGE_ALIGN(pFun);
 	memcpy(CodePage + page_offset, &jmpCode64, sizeof(JMP_OPCODE64));
-	//»ñÈ¡hookµÄÊµ¼Ê´úÂë³¤¶È³¬³öÁË¶àÉÙ¸ö×Ö½Ú,½²³¬³ö²¿ÃÅÓÃnopÌî³ä£¬ÒÔÃâ¸ÉÈÅ
+	//èŽ·å–hookçš„å®žé™…ä»£ç é•¿åº¦è¶…å‡ºäº†å¤šå°‘ä¸ªå­—èŠ‚,è®²è¶…å‡ºéƒ¨é—¨ç”¨nopå¡«å……ï¼Œä»¥å…å¹²æ‰°
 	ULONG realHookLen = PHGetHookLen(pFun, sizeof(JMP_OPCODE64), TRUE);
 	ULONG offset = realHookLen - sizeof(JMP_OPCODE64);
 	if (offset > 0)
 	{
 		memset(CodePage + page_offset + sizeof(JMP_OPCODE64), 0x90, offset);
 	}
-	//¸±±¾+Ìø°å¹¹½¨Íê³ÉÂäÅÌ¡ª¡ª´ËºóµÄËÀÍö¿ÉÓÃÈÕÖ¾Ãªµã¶þ·Ö¶¨Î»µ½
-	//"·ÖÅä/¸´ÖÆ/Ð´Ìø°å"Óë"DPC¹ã²¥"Á½¸ö×Ó´°¿Ú
-	FlLog("[PHHook] ¸±±¾¾ÍÐ÷: Ô­Ò³PFN=%llX CodePagePFN=%llX va=%p Ìø°å%uB hookLen=%u(Ò³ÄÚÆ«ÒÆ%u)",
+	//å‰¯æœ¬+è·³æ¿æž„å»ºå®Œæˆè½ç›˜â€”â€”æ­¤åŽçš„æ­»äº¡å¯ç”¨æ—¥å¿—é”šç‚¹äºŒåˆ†å®šä½åˆ°
+	//"åˆ†é…/å¤åˆ¶/å†™è·³æ¿"ä¸Ž"DPCå¹¿æ’­"ä¸¤ä¸ªå­çª—å£
+	FlLog("[PHHook] å‰¯æœ¬å°±ç»ª: åŽŸé¡µPFN=%llX CodePagePFN=%llX va=%p è·³æ¿%uB hookLen=%u(é¡µå†…åç§»%u)",
 		(unsigned long long)((MmGetPhysicalAddress(pFun).QuadPart) >> 12),
 		(unsigned long long)((MmGetPhysicalAddress(CodePage).QuadPart) >> 12),
 		CodePage, (unsigned)sizeof(JMP_OPCODE64), realHookLen, (ULONG)page_offset);
 
-	PPAGE_HOOK_ENTRY pHookListEntry = ExAllocatePool(NonPagedPool, sizeof(PAGE_HOOK_ENTRY));
+	PPAGE_HOOK_ENTRY pHookListEntry = ExAllocatePool(NonPagedPool,sizeof(PAGE_HOOK_ENTRY));
 
-	if (pHookListEntry == NULL)
+	if (pHookListEntry==NULL)
 	{
 		return STATUS_UNSUCCESSFUL;
 	}
 	pHookListEntry->OriginalPtr = pFun;
 	pHookListEntry->OriginalPageVA = PAGE_ALIGN(pFun);
-	pHookListEntry->OriginalPagePFN = (MmGetPhysicalAddress(pFun).QuadPart) >> 12;
+	pHookListEntry->OriginalPagePFN = (MmGetPhysicalAddress(pFun).QuadPart)>>12;
 	pHookListEntry->CodePageVA = CodePage;
-	pHookListEntry->CodePagePFN = (MmGetPhysicalAddress(CodePage).QuadPart) >> 12;
-	//½²½á¹¹ÌåÌí¼Óµ½È«¾ÖÁ´±íÖÐ
-	if (g_PageList.Flink == NULL)
+	pHookListEntry->CodePagePFN= (MmGetPhysicalAddress(CodePage).QuadPart) >>12;
+	//è®²ç»“æž„ä½“æ·»åŠ åˆ°å…¨å±€é“¾è¡¨ä¸­
+	if (g_PageList.Flink==NULL)
 	{
 		InitializeListHead(&g_PageList);
 	}
-	InsertTailList(&g_PageList, &pHookListEntry->link);
+	InsertTailList(&g_PageList,&pHookListEntry->link);
 	if (isNewCodePage)
 	{
 		//
-		HOOK_CONTEXT hookContext = { 0 };
+		HOOK_CONTEXT hookContext = {0};
 		hookContext.CodePagePFN = pHookListEntry->CodePagePFN;
 		hookContext.OriginalPagePFN = pHookListEntry->OriginalPagePFN;
-		//¹ã²¥Ç°ºóË«Ãªµã¡ª¡ª¹ã²¥ÄÚ=È«ºË²¢ÐÐvmcall(2)¡úEptSetHook
-		//(VM-exitÉÏÏÂÎÄ: ²ð2MÒ³¡Á2+·ÖÅäpteÒ³+Çåexecute+invept)¡£
-		//À¶ÆÁ/¶³½á·¢ÉúÔÚÁ½ÃªµãÖ®¼ä=exitÉÏÏÂÎÄµÄEptSetHookÂ·¾¶
-		FlLog("[PHHook] DPC¹ã²¥¿ªÊ¼: 8ºËvmcall(2)¡úEptSetHook(²ðÒ³+Çåexecute), »·'S'rsn=21/22/23°´ºËÁôºÛ");
-		KeGenericCallDpc(PHHookCallBackDpc, &hookContext);
-		FlLog("[PHHook] DPC¹ã²¥·µ»Ø(È«ºËEptSetHookÒÑÖ´ÐÐ)");
+		//å¹¿æ’­å‰åŽåŒé”šç‚¹â€”â€”å¹¿æ’­å†…=å…¨æ ¸å¹¶è¡Œvmcall(2)â†’EptSetHook
+		//(VM-exitä¸Šä¸‹æ–‡: æ‹†2Mé¡µÃ—2+åˆ†é…pteé¡µ+æ¸…execute+invept)ã€‚
+		//è“å±/å†»ç»“å‘ç”Ÿåœ¨ä¸¤é”šç‚¹ä¹‹é—´=exitä¸Šä¸‹æ–‡çš„EptSetHookè·¯å¾„
+		FlLog("[PHHook] DPCå¹¿æ’­å¼€å§‹: 8æ ¸vmcall(2)â†’EptSetHook(æ‹†é¡µ+æ¸…execute), çŽ¯'S'rsn=21/22/23æŒ‰æ ¸ç•™ç—•");
+		KeGenericCallDpc(PHHookCallBackDpc,&hookContext);
+		FlLog("[PHHook] DPCå¹¿æ’­è¿”å›ž(å…¨æ ¸EptSetHookå·²æ‰§è¡Œ)");
 	}
 	return status;
 }
@@ -93,33 +93,29 @@ void PHInitJmpCode(PJMP_OPCODE64 pjmpCode, ULONG64 jmpTo)
 
 ULONG PHGetHookLen(ULONG64 codeAddr, ULONG codeSize, BOOLEAN is64)
 {
-	//×¢Òâ: ±ØÐëË³ÐòÍÆ½øsrcÖðÌõ½âÂëµ½ÀÛ¼Æ³¤¶È¡ÝcodeSize¡ª¡ª¾ÉÊµÏÖ
-	//"ÓÀÔ¶ÖØ¸´½âÂëµÚÒ»ÌõÖ¸Áî"·µ»ØÖµ=ceil(codeSize/Ê×Ö¸Áî³¤)¡ÁÊ×Ö¸Áî³¤,
-	//Ö»ÓÐµ±Ä¿±êÇ°¼¸ÌõÖ¸ÁîÇ¡ºÃµÈ³¤Ê±²ÅÅöÇÉÕýÈ·; Ê×ÌõÖ¸Áî³¤ÓëºóÐø
-	//²»µÈµÄÄ¿±ê(Èçpush rbx 2B¿ªÍ·)»áµÃµ½´íÎóµÄÕûÖ¸Áî±ß½ç¡úÌø°å
-	//ÖØ·Å³¤¶ÈÓëÌø»Øµã´íÎ»¡úÌø½øÖ¸ÁîÖÐ¼ä=È¡Ö¸#PFÀ¶ÆÁ
+	//é¡ºåºé€æ¡è§£ç åˆ°ç´¯è®¡é•¿åº¦â‰¥codeSize(è¿”å›žæ•´æŒ‡ä»¤è¾¹ç•Œ, è·³å›žç‚¹ä¸é”™ä½)
 	ULONG64 src = codeAddr;
 	ULONG all_len = 0;
-	ldasm_data ldData = { 0 };
+	ldasm_data ldData = {0};
 	do
 	{
 		ULONG len = ldasm(src, &ldData, is64);
 		src += len;
 		all_len += len;
-	} while (all_len < codeSize);
+	} while (all_len< codeSize);
 	return all_len;
 }
 
 PPAGE_HOOK_ENTRY PHGetHookEntryPage(PVOID funPageAddr)
 {
-	if (g_PageList.Flink == NULL || IsListEmpty(&g_PageList))
+	if (g_PageList.Flink==NULL || IsListEmpty(&g_PageList))
 	{
 		return NULL;
 	}
-	for (PLIST_ENTRY pListEntry = g_PageList.Flink; pListEntry != &g_PageList; pListEntry = pListEntry->Flink)
+	for (PLIST_ENTRY pListEntry=g_PageList.Flink;pListEntry!=&g_PageList;pListEntry=pListEntry->Flink)
 	{
 		PPAGE_HOOK_ENTRY phookEntr = CONTAINING_RECORD(pListEntry, PAGE_HOOK_ENTRY, link);
-		if (phookEntr->OriginalPageVA == funPageAddr)
+		if (phookEntr->OriginalPageVA== funPageAddr)
 		{
 			return phookEntr;
 		}
@@ -147,17 +143,15 @@ PPAGE_HOOK_ENTRY PHGetHookEntryPageBy(ULONG64 gpa)
 VOID PHHookCallBackDpc(_In_ struct _KDPC* Dpc, _In_opt_ PVOID DeferredContext, _In_opt_ PVOID SystemArgument1, _In_opt_ PVOID SystemArgument2)
 {
 	PHOOK_CONTEXT hookContext = (PHOOK_CONTEXT)DeferredContext;
-	if (hookContext != NULL)
+	if (hookContext!=NULL)
 	{
-		//ÊØÎÀ: ½öÒÑ½øÈëguest(KEEP)µÄºË²ÅÄÜvmcall¡ª¡ªÕæ»úÉÏÖ´ÐÐvmcall
-		//=·Ç·¨Ö¸Áî#UD=À¶ÆÁ¡£KeGenericCallDpc¹ã²¥µ½**ËùÓÐ**ºË,
-		//ÈôÈÎÒ»ºËlaunchÊ§°Ü/ÌÓÉúºóÁôÔÚÕæ»ú, ÎÞÌõ¼þvmcall»á°Ñ
-		//"µ¥ºËÆô¶¯Ê§°Ü(±¾¿É°²È«½µ¼¶)"Éý¼¶³É"Õû»úÀ¶ÆÁ"
+		//å®ˆå«: ä»…in-guestæ ¸æ‰èƒ½vmcall(çœŸæœºvmcall=#UDè“å±;
+		//KeGenericCallDpcå¹¿æ’­åˆ°æ‰€æœ‰æ ¸)
 		ULONG hc = KeGetCurrentProcessorNumber();
 		if (g_vcpu[hc].bInGuest)
 		{
-			//²ÎÊý1:exitCode;²ÎÊý2:´«Ô­º¯ÊýµÄÎïÀíµØÖ·;²ÎÊý3:CodePageÎïÀíµØÖ·
-			CmVmCall(2, hookContext->OriginalPagePFN, hookContext->CodePagePFN, 0);
+			//å‚æ•°1:exitCode;å‚æ•°2:ä¼ åŽŸå‡½æ•°çš„ç‰©ç†åœ°å€;å‚æ•°3:CodePageç‰©ç†åœ°å€
+			CmVmCall(2, hookContext->OriginalPagePFN, hookContext->CodePagePFN,0);
 		}
 		else
 		{
@@ -165,7 +159,7 @@ VOID PHHookCallBackDpc(_In_ struct _KDPC* Dpc, _In_opt_ PVOID DeferredContext, _
 				hookContext->CodePagePFN, 0);
 		}
 	}
-	//KeGenericCallDpcÔ¼¶¨ÕâÁ½¸ö²ÎÊý·Ç¿Õ, ÅÐ¿Õ½öÎªÂú×ãSAL¾²Ì¬·ÖÎö
+	//KeGenericCallDpcçº¦å®šè¿™ä¸¤ä¸ªå‚æ•°éžç©º, åˆ¤ç©ºä»…ä¸ºæ»¡è¶³SALé™æ€åˆ†æž
 	if (SystemArgument1)
 	{
 		KeSignalCallDpcDone(SystemArgument1);
@@ -176,31 +170,23 @@ VOID PHHookCallBackDpc(_In_ struct _KDPC* Dpc, _In_opt_ PVOID DeferredContext, _
 	}
 }
 
-//LDEÖØ¶¨Î»Éú³ÉÆ÷ÊµÏÖ(½Ó¿ÚÆõÔ¼¼ûPageHook.hÍ·×¢ÊÍ)¡£
-//±£ÊØ²ßÂÔÖðÌõ:
-//  ¢ÙldasmÖðÖ¸Áî½âÂë, F_INVALID/³¬³¤=¾Ü
-//  ¢ÚÏà¶Ô·ÖÖ§(F_IMM+F_RELATIVE: E8/E9/EB/jcc/loop)=¾Ü¡ª¡ªprologue°´±àÒëÆ÷
-//    ¹ßÀý²»¸ÃÓÐ·ÖÖ§; rel8ÎïÀíÉÏÎÞ·¨¿çÒ³ÖØ¶¨Î»(¡À127B×°²»ÏÂÒ³¼ä¾à),
-//    rel8/rel32Í³Ò»¾Ü¾ø(ÐèÇó³öÏÖÔÙÀ©Õ¹rel32µ÷Õû)
-//  ¢ÛRIP-relativeÊý¾ÝÑ°Ö·(F_DISP+F_RELATIVE: lea/mov/call[rsp+X]µÈ):
-//    °´¾ø¶ÔÓÐÐ§µØÖ·ÖØËãdisp32(¹«Ê½: ÐÂdisp=ÓÐÐ§µØÖ·-ÐÂRIP_after);
-//    ÐÂ¾ÉÖ¸ÁîÎ»ÖÃ²îÊ¹disp³¬¡À2GB=¾Ü(disp32×°²»ÏÂ)
-//  ¢ÜÎ²½Ó FF 25 00000000 + <Target+Len>(Î»ÖÃÎÞ¹Ø¾ø¶ÔÌø×ª; Ö¸Õë±ØÐë
-//    ÂäÔÚÖ¸ÁîRIP_after´¦, ¼ûGeptAllocTrampolineÍ¬¿î×¢ÊÍ)
-//  ¢Ý»ØÉ¨×Ô¼ì: Éú³Éºó**°´CPUÊÓ½Ç**ÖØÐÂ½âÂë¡ª¡ªÖðÖ¸Áî³¤¶ÈÓëÔ­Ê¼ÐòÁÐÒ»ÖÂ+
-//    ×Ö½Ú±È¶Ô(dispÇø4×Ö½Ú³ýÍâ)+±ß½ç¾«È·==Len+Î²Ìø×ª6×Ö½ÚÂëºË¶Ô¡ª¡ª
-//    Éú³ÉÆ÷×ÔÉí»Ø¹éµ±³¡À¹½Ø(ÌúÂÉ: ÔËÐÐÊ±Éú³ÉµÄ»úÆ÷Âë±ØÐë»Ø¶Á×Ô¼ì)
+//LDEé‡å®šä½è·³æ¿ç”Ÿæˆå™¨(æŽ¥å£è§PageHook.h):
+//  â‘ é€æŒ‡ä»¤è§£ç , æ— æ•ˆ/è¶…é•¿=æ‹’
+//  â‘¡ç›¸å¯¹åˆ†æ”¯(E8/E9/EB/jcc/loop)=æ‹’(rel8æ— æ³•è·¨é¡µé‡å®šä½)
+//  â‘¢RIP-relativeå¯»å€: é‡ç®—disp32=ç»å¯¹æœ‰æ•ˆåœ°å€-æ–°RIP_after, è¶…Â±2GB=æ‹’
+//  â‘£å°¾æŽ¥ FF 25 00000000 + <Target+Len> ä½ç½®æ— å…³ç»å¯¹è·³è½¬
+//  â‘¤å›žæ‰«è‡ªæ£€: é‡æ–°è§£ç é€æ¡æ¯”å¯¹é•¿åº¦+å­—èŠ‚(dispåŒºé™¤å¤–)+å°¾è·³æ ¸å¯¹
 PVOID PHBuildRelocTrampoline(ULONG64 Target, ULONG MinLen, PULONG OutLen)
 {
 	if (OutLen != NULL)
 	{
 		*OutLen = 0;
 	}
-	//»º³å: ×î»µprologue=MinLen+14(µ¥Ìõ15B¿ç½ç)+Î²Ìø14B=42B; 96BÁô×ãÓàÁ¿
+	//ç¼“å†²: æœ€åprologue=MinLen+14(å•æ¡15Bè·¨ç•Œ)+å°¾è·³14B=42B; 96Bç•™è¶³ä½™é‡
 	PUCHAR buf = (PUCHAR)ExAllocatePoolWithTag(NonPagedPool, 96, 'tpeG');
 	if (buf == NULL)
 	{
-		FlLog("[Reloc] ¾Ü¾ø: Ìø°å»º³å·ÖÅäÊ§°Ü");
+		FlLog("[Reloc] æ‹’ç»: è·³æ¿ç¼“å†²åˆ†é…å¤±è´¥");
 		return NULL;
 	}
 	RtlZeroMemory(buf, 96);
@@ -213,31 +199,31 @@ PVOID PHBuildRelocTrampoline(ULONG64 Target, ULONG MinLen, PULONG OutLen)
 		ULONG len = ldasm((PVOID)src, &ld, TRUE);
 		if (len == 0 || (ld.flags & F_INVALID) || total + len > 80)
 		{
-			FlLog("[Reloc] ¾Ü¾ø: Æ«ÒÆ+%u´¦Ö¸Áî½âÂëÊ§°Ü/³¬³¤(len=%u flags=%02X)",
+			FlLog("[Reloc] æ‹’ç»: åç§»+%uå¤„æŒ‡ä»¤è§£ç å¤±è´¥/è¶…é•¿(len=%u flags=%02X)",
 				total, len, (ULONG)ld.flags);
 			bad = TRUE;
 			break;
 		}
-		//¢ÚÏà¶Ô·ÖÖ§=¾Ü(F_IMM+F_RELATIVE: LDasm¶ÔE8/E9/EB/jcc/loopÖÃÎ»)
+		//ç›¸å¯¹åˆ†æ”¯=æ‹’
 		if ((ld.flags & F_IMM) && (ld.flags & F_RELATIVE))
 		{
-			FlLog("[Reloc] ¾Ü¾ø: Æ«ÒÆ+%u´¦Ïà¶Ô·ÖÖ§Ö¸Áî(%02X %02X...)¡ª¡ªprologue²»¿ÉÖØ¶¨Î»",
+			FlLog("[Reloc] æ‹’ç»: åç§»+%uå¤„ç›¸å¯¹åˆ†æ”¯æŒ‡ä»¤(%02X %02X...)â€”â€”prologueä¸å¯é‡å®šä½",
 				total, *(PUCHAR)src, *((PUCHAR)src + 1));
 			bad = TRUE;
 			break;
 		}
 		RtlCopyMemory(buf + total, (PVOID)src, len);
-		//¢ÛRIP-relativeÊý¾ÝÑ°Ö·: ÖØËãdisp32
+		//â‘¢RIP-relativeæ•°æ®å¯»å€: é‡ç®—disp32
 		if ((ld.flags & F_DISP) && (ld.flags & F_RELATIVE) && ld.disp_size == 4)
 		{
 			LONG64 oldDisp = *(LONG*)(buf + total + ld.disp_offset);
-			//Ô­Ö¸ÁîµÄ¾ø¶ÔÓÐÐ§µØÖ·: Ô­RIP_after + Ô­disp
+			//åŽŸæŒ‡ä»¤çš„ç»å¯¹æœ‰æ•ˆåœ°å€: åŽŸRIP_after + åŽŸdisp
 			ULONG64 effective = src + len + (ULONG64)oldDisp;
-			//ÐÂdisp: ±£³ÖÍ¬Ò»¾ø¶ÔÓÐÐ§µØÖ·¡ª¡ªÓÐÐ§µØÖ· - Ìø°åÄÚRIP_after
+			//æ–°disp: ä¿æŒåŒä¸€ç»å¯¹æœ‰æ•ˆåœ°å€â€”â€”æœ‰æ•ˆåœ°å€ - è·³æ¿å†…RIP_after
 			LONG64 newDisp = (LONG64)effective - (LONG64)(buf + total + len);
 			if (newDisp < -0x80000000LL || newDisp > 0x7FFFFFFFLL)
 			{
-				FlLog("[Reloc] ¾Ü¾ø: Æ«ÒÆ+%u´¦RIP-relativeÄ¿±ê³¬¡À2GB(dispÐè%llX)",
+				FlLog("[Reloc] æ‹’ç»: åç§»+%uå¤„RIP-relativeç›®æ ‡è¶…Â±2GB(dispéœ€%llX)",
 					total, (long long)newDisp);
 				bad = TRUE;
 				break;
@@ -249,12 +235,12 @@ PVOID PHBuildRelocTrampoline(ULONG64 Target, ULONG MinLen, PULONG OutLen)
 	}
 	if (!bad)
 	{
-		//¢ÜÎ²½ÓÎ»ÖÃÎÞ¹Ø¾ø¶ÔÌø×ª ¡ú Target+total
+		//â‘£å°¾æŽ¥ä½ç½®æ— å…³ç»å¯¹è·³è½¬ â†’ Target+total
 		buf[total] = 0xFF;
 		buf[total + 1] = 0x25;
 		*(ULONG32*)(buf + total + 2) = 0;
 		*(ULONG64*)(buf + total + 6) = Target + total;
-		//¢Ý»ØÉ¨×Ô¼ì: °´CPUÊÓ½ÇÖØÐÂ½âÂëÉú³ÉÎï, ÓëÔ­Ê¼Ö¸ÁîÐòÁÐÖðÌõ±È¶Ô
+		//â‘¤å›žæ‰«è‡ªæ£€: æŒ‰CPUè§†è§’é‡æ–°è§£ç ç”Ÿæˆç‰©, ä¸ŽåŽŸå§‹æŒ‡ä»¤åºåˆ—é€æ¡æ¯”å¯¹
 		ULONG chk = 0;
 		ULONG64 ori = Target;
 		while (chk < total && !bad)
@@ -265,20 +251,20 @@ PVOID PHBuildRelocTrampoline(ULONG64 Target, ULONG MinLen, PULONG OutLen)
 			ULONG lOld = ldasm((PVOID)ori, &ldOld, TRUE);
 			if (lNew == 0 || lNew != lOld || (ldNew.flags & F_INVALID))
 			{
-				FlLog("[Reloc] »ØÉ¨×Ô¼ìFAIL: Éú³ÉÎïÆ«ÒÆ+%u½âÂëÒì³£(ÐÂlen=%u ¾Élen=%u)",
+				FlLog("[Reloc] å›žæ‰«è‡ªæ£€FAIL: ç”Ÿæˆç‰©åç§»+%uè§£ç å¼‚å¸¸(æ–°len=%u æ—§len=%u)",
 					chk, lNew, lOld);
 				bad = TRUE;
 				break;
 			}
-			//×Ö½Ú±È¶Ô: ³ý±»µ÷ÕûµÄdisp32Çø(4×Ö½Ú)ÍâÖð×Ö½Ú±ØÐëÒ»ÖÂ
+			//å­—èŠ‚æ¯”å¯¹: é™¤è¢«è°ƒæ•´çš„disp32åŒº(4å­—èŠ‚)å¤–é€å­—èŠ‚å¿…é¡»ä¸€è‡´
 			for (ULONG k = 0; k < lNew; k++)
 			{
-				BOOLEAN skip = ((ldOld.flags & F_DISP) && (ldOld.flags & F_RELATIVE) &&
+			 BOOLEAN skip = ((ldOld.flags & F_DISP) && (ldOld.flags & F_RELATIVE) &&
 					ldOld.disp_size == 4 &&
 					k >= ldOld.disp_offset && k < ldOld.disp_offset + 4);
 				if (!skip && buf[chk + k] != ((PUCHAR)ori)[k])
 				{
-					FlLog("[Reloc] »ØÉ¨×Ô¼ìFAIL: Éú³ÉÎïÆ«ÒÆ+%uµÚ%u×Ö½Ú²»·û(%02X¡Ù%02X)",
+					FlLog("[Reloc] å›žæ‰«è‡ªæ£€FAIL: ç”Ÿæˆç‰©åç§»+%uç¬¬%uå­—èŠ‚ä¸ç¬¦(%02Xâ‰ %02X)",
 						chk, k, buf[chk + k], ((PUCHAR)ori)[k]);
 					bad = TRUE;
 					break;
@@ -290,7 +276,7 @@ PVOID PHBuildRelocTrampoline(ULONG64 Target, ULONG MinLen, PULONG OutLen)
 		if (!bad && (buf[total] != 0xFF || buf[total + 1] != 0x25 ||
 			*(ULONG64*)(buf + total + 6) != Target + total))
 		{
-			FlLog("[Reloc] »ØÉ¨×Ô¼ìFAIL: Î²Ìø×ªÂë/Ä¿±ê²»·û");
+			FlLog("[Reloc] å›žæ‰«è‡ªæ£€FAIL: å°¾è·³è½¬ç /ç›®æ ‡ä¸ç¬¦");
 			bad = TRUE;
 		}
 	}
@@ -303,7 +289,7 @@ PVOID PHBuildRelocTrampoline(ULONG64 Target, ULONG MinLen, PULONG OutLen)
 	{
 		*OutLen = total;
 	}
-	FlLog("[Reloc] Ìø°å¾ÍÐ÷: Ä¿±ê=%llX len=%uB(»ØÉ¨×Ô¼ìÖðÌõÍ¨¹ý, Î²Ìø¡ú%llX)",
+	FlLog("[Reloc] è·³æ¿å°±ç»ª: ç›®æ ‡=%llX len=%uB(å›žæ‰«è‡ªæ£€é€æ¡é€šè¿‡, å°¾è·³â†’%llX)",
 		(unsigned long long)Target, total, (unsigned long long)(Target + total));
 	return buf;
 }

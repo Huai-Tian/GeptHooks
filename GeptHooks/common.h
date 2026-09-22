@@ -64,6 +64,7 @@ extern "C" {
 	void CmGuestProbe();
 	ULONG64 CmVmCall(ULONG opcode, ULONG64 arg2, ULONG64 arg3, ULONG64 arg4);   //rax=返回值(功能码自定义, 不写的功能码=功能码本身)
 	void CmTripleFaultPark();    //三重故障park本体(asm, sti+hlt自旋, 永不返回)
+	void CmRepMovsbDemo(PUCHAR dst, const PUCHAR src, ULONG64 cnt);   //demo自检: rep movsb串(触发EptRepEmulate)
 	void CmVmfuncSwitch(ULONG eptpIndex);   //guest内单次VMFUNC(0, idx)EPTP切换(0=clean/1=hooked, 零VM-Exit); 仅bVmfuncOn核可调, 否则#UD蓝屏
 
 	//三重故障park核位掩码(bit i=cpu i已park)。park核的VMM栈/代码页仍被
@@ -82,8 +83,10 @@ extern "C" {
 #define GEPT_VMCALL_SIG1 0xBF58476D1CE4E5B9ULL
 
 //内部vmcall功能码: 8=MSR位图原语(GeptMsr安装/移除, root直写真位图
-//——自我隐蔽配套, 详见GeptMsr.c)
+//——自我隐蔽配套, 详见GeptMsr.c); 10=TSC校准探针(空handler, guest
+//侧rdtsc夹逼测泄漏, 见VmxTscCalibrateAll)
 #define GEPT_VMCALL_MSRBIT 8
+#define GEPT_VMCALL_TSCCAL 10
 
 //当前虚拟化目标核(-1=未启动), 启动循环置位, 日志心跳读它
 	extern volatile LONG g_geptVcpuCpu;
@@ -129,6 +132,8 @@ extern "C" {
 	//  b=MSR位图root直写原语(vmcall8: a=MSR b=操作 c=核掩码)
 	//  O=自我隐蔽异常(rsn=0: 拆分pte登记溢出, a=idx; rsn=48: 隐蔽页被
 	//    guest访问权限兜底放开, a=gpa b=PTE帧——框架路径误写隐蔽页暴露口)
+	//  q=REP串root仿真命中(rsn=48, a=rip b=剩余元素数, 采样)
+	//  j=TSC校准完成(a=K b=rdtsc对开销 c=vmcall往返均值)
 	typedef struct _GEPT_LINE_ENTRY
 	{
 		ULONG  seq;       //提交标记(=入环序号, 即最终行号-1)
@@ -215,7 +220,7 @@ extern "C" {
 	extern volatile LONG64 g_flExitCounts[GEPT_EXIT_REASON_MAX];
 
 	//构建标签: 打进日志第一行核对二进制版本。代码改动必须同步修改
-#define GEPT_BUILD_TAG "v1.6"
+#define GEPT_BUILD_TAG "v1.7b"
 	extern CHAR g_geptBuildTag[24];      //common.c定义(=GEPT_BUILD_TAG)
 
 #ifdef __cplusplus

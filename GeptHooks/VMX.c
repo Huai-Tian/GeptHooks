@@ -502,9 +502,56 @@ NTSTATUS VmxStartAllCpus(PDRIVER_OBJECT DriverObject)
 		FlLog("框架内置0x6E0时间轴换算: %s(读+TSC_OFFSET/写-TSC_OFFSET, 0直通)",
 			NT_SUCCESS(dlSt) ? "安装OK" : "安装失败(不影响VT运行, 详见[MSR]行)");
 	}
+	//TSC校准(全核in-guest确认后, 0x6E0 hook安装前——校准vmcall是
+	//空exit, 定时器流量不干扰)
+	VmxTscCalibrateAll();
 	//放行Desktop镜像(加载窗口期结束)
 	FlMarkEntryDone();
 	return STATUS_SUCCESS;
+}
+
+//TSC校准: guest侧rdtsc(已含TSC_OFFSET)夹逼vmcall(10), 测得值=
+//真实往返-asm采样窗口(补偿已生效)=采样点外净泄漏K(硬件VM-exit/
+//VM-entry+rdtsc/vmcall指令开销)。K并入每次补偿后guest时延均值≈裸机。
+//K偏保守(含指令开销, 非exit场景不产生)——过补风险受控
+VOID VmxTscCalibrateAll(VOID)
+{
+	ULONG cpuCount = KeQueryActiveProcessorCount(NULL);
+	KAFFINITY allCpus = KeQueryActiveProcessors();
+	for (ULONG i = 0; i < cpuCount; i++)
+	{
+		if (!g_vcpu[i].bInGuest)
+		{
+			continue;
+		}
+		KeSetSystemAffinityThread((KAFFINITY)1 << i);
+		//rdtsc对自身开销R(校准循环的固定成本)
+		ULONG64 rAcc = 0;
+		for (ULONG n = 0; n < 256; n++)
+		{
+			ULONG64 a = __rdtsc();
+			ULONG64 b = __rdtsc();
+			rAcc += b - a;
+		}
+		ULONG64 r = rAcc / 256;
+		//vmcall往返均值(K初值0, 测得即纯泄漏)
+		ULONG64 acc = 0;
+		const ULONG N = 1024;
+		for (ULONG n = 0; n < N; n++)
+		{
+			ULONG64 t0 = __rdtsc();
+			CmVmCall(GEPT_VMCALL_TSCCAL, 0, 0, 0);
+			ULONG64 t1 = __rdtsc();
+			acc += t1 - t0;
+		}
+		ULONG64 avg = acc / N;
+		LONG64 k = (LONG64)(avg > r ? avg - r : 0);
+		g_vcpu[i].TscCalibK = k;
+		FlLog("cpu%u TSC校准: K=%lld cycles(每exit采样外泄漏, 已并入补偿)",
+			i, k);
+		FlRingPush('j', i, 0, (ULONG64)k, r, avg);
+	}
+	KeSetSystemAffinityThread(allCpus);
 }
 
 //全核关停(PASSIVE_LEVEL): 移除全部hook→全核IPI原子退出VT→释放全部资源
@@ -606,8 +653,7 @@ void VmxCpuidHandler(PGUEST_REGS GuestRegs)
 
 //TSC补偿: 每次exit的root驻留时间经TSC_OFFSET从guest可读TSC中扣除
 //(procCtl bit3开启后RDTSC/RDTSCP/RDMSR(0x10)硬件自动加offset;
-//IA32_TSC_DEADLINE不受影响)。测算两端各欠~百cycle=安全方向(TSC
-//绝不倒退)。仅VMX root上下文可调
+//IA32_TSC_DEADLINE不受影响)。仅VMX root上下文可调
 void VmxTscCompensate(ULONG64 entryTsc, ULONG64 exitTsc)
 {
 	if (exitTsc <= entryTsc)
@@ -616,7 +662,9 @@ void VmxTscCompensate(ULONG64 entryTsc, ULONG64 exitTsc)
 	}
 	ULONG64 offset = 0;
 	__vmx_vmread(TSC_OFFSET, &offset);
-	offset -= (exitTsc - entryTsc);
+	//+K: 采样点外的硬件exit/entry净泄漏(VmxTscCalibrateAll, 0=未校准)
+	offset -= (exitTsc - entryTsc) +
+		(ULONG64)g_vcpu[KeGetCurrentProcessorNumber()].TscCalibK;
 	__vmx_vmwrite(TSC_OFFSET, offset);
 }
 
@@ -865,6 +913,11 @@ void VmxExitHandler(PGUEST_REGS GuestRegs)
 		{
 			FlRingPush('W', KeGetCurrentProcessorNumber(), 18,
 				guestRip, exitQual, exitCodeLen);
+		}
+		//TSC校准探针(VmxTscCalibrateAll的往返样本): 空handler走通用
+	//RIP推进——asm层TSC补偿照常执行, guest侧夹逼差值即净泄漏
+		else if (GuestRegs->rcx == GEPT_VMCALL_TSCCAL)
+		{
 		}
 		//探针末段: KEEP(接管)放行, 通用RIP推进, 探针恢复栈回non-root
 		else if (GuestRegs->rcx == 3)

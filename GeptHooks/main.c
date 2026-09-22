@@ -63,6 +63,14 @@ static VOID DemoHookInstall(VOID)
 			FlLog("[Demo] 读自检: NtClose首8字节=%02X %02X %02X %02X %02X %02X %02X %02X(%s)",
 				b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
 				b[0] == 0x68 ? "FAIL:见跳转字节=读可见" : "OK:原始prologue=读透明");
+			//REP读自检: rep movsb整串读hook页——走root仿真('q'事件,
+			//单exit吸收整串, 不进MTF循环); 字节=原始prologue即通过
+			UCHAR repBuf[8];
+			CmRepMovsbDemo(repBuf, (PUCHAR)g_demoNtClose, 8);
+			FlLog("[Demo] REP读自检: rep movsb×8=%02X %02X %02X %02X %02X %02X %02X %02X(%s)",
+				repBuf[0], repBuf[1], repBuf[2], repBuf[3],
+				repBuf[4], repBuf[5], repBuf[6], repBuf[7],
+				repBuf[0] == 0x40 ? "OK:整串仿真命中" : "FAIL:见[Q]/[M]事件判路径");
 		}
 	}
 	//MSR hook: 读拦截

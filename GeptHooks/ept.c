@@ -914,6 +914,272 @@ PEPT_DATA EptGetActiveData(VOID)
 	return g_vcpu[cpu].PeptData;
 }
 
+//==== REP串指令root仿真(HideRead读/写violation的MTF风暴消解) ====
+//MTF路径下REP指令逐迭代violation(2N exit/串)。本仿真在root内一次
+//exit完成整串: MOVS/STOS/LODS(纯数据移动, 无flags副作用); SCAS/INS/
+//OUTS及0x67地址前缀回退MTF老路径。访问语义与clean视图单步一致:
+//hook页内地址读写原物理页(读=原始字节, 写=透传), 其余GVA走
+//GUEST_CR3四级页表翻译(EPT恒等区GPA=HPA)
+
+//物理地址有效位(bits 51:12): 从PTE/CR3提取PA须剥离NX(bit63)/软件位
+//(62:52)/标志位(11:0)——栈/数据页PTE恒NX=1, 不剥离→垃圾PA→
+//MmGetVirtualForPhysical野指针→root态#PF落在VMM栈(非线程栈)→
+//蓝屏0x139(4)
+#define GEPT_PA_MASK 0x000FFFFFFFFFF000ULL
+
+//四级页表walk: GVA→GPA(含1G/2M大页; 仅供框架自用, 权限位不校验)
+static BOOLEAN EptGvaToGpa(ULONG64 cr3, ULONG64 gva, ULONG64* gpaOut)
+{
+	//canonical检查(bits 63:47须同符号)
+	if ((((gva >> 47) ^ (gva >> 63)) & 1) != 0)
+	{
+		return FALSE;
+	}
+	ULONG64 pa = cr3 & GEPT_PA_MASK;
+	for (ULONG level = 4; level > 0; level--)
+	{
+		ULONG shift = 12 + 9 * (level - 1);
+		PHYSICAL_ADDRESS ptPa = { 0 };
+		ptPa.QuadPart = (LONGLONG)pa;
+		PULONG64 pt = (PULONG64)MmGetVirtualForPhysical(ptPa);
+		if ((ULONG64)pt < 0xFFFF800000000000ULL)
+		{
+			return FALSE;    //NULL/KSEG查表垃圾(非canonical内核VA)
+		}
+		ULONG64 entry = pt[(gva >> shift) & 0x1FF];
+		if ((entry & 1) == 0)
+		{
+			return FALSE;    //not present
+		}
+		//大页: PDPTE.PS=1G(页内偏移30位)/PDE.PS=2M(21位);
+		//PML4E无PS位(bit7保留), 不判
+		if (level == 3 && (entry & 0x80) != 0)
+		{
+			*gpaOut = (entry & GEPT_PA_MASK & ~0x3FFFFFFFULL) |
+				(gva & 0x3FFFFFFFULL);
+			return TRUE;
+		}
+		if (level == 2 && (entry & 0x80) != 0)
+		{
+			*gpaOut = (entry & GEPT_PA_MASK & ~0x1FFFFFULL) |
+				(gva & 0x1FFFFFULL);
+			return TRUE;
+		}
+		pa = entry & GEPT_PA_MASK;
+	}
+	*gpaOut = pa | (gva & 0xFFFULL);
+	return TRUE;
+}
+
+//页指针缓存(串访问页内连续, 命中后零walk)
+typedef struct _EPT_REP_CACHE
+{
+	ULONG64 pageBase;
+	PUCHAR  ptrBase;
+} EPT_REP_CACHE;
+
+//GVA→内核可访问字节指针: hook页→原物理页VA(读原始字节/写透传);
+//其余→GUEST_CR3页表walk(EPT恒等区GPA=HPA, present位即换页门槛)。
+//walk别名必须canonical内核VA(MmGetVirtualForPhysical的KSEG查表对
+//非常规PA可返回非canonical垃圾)。NULL=不可翻译(回退MTF)
+static PUCHAR EptRepPtr(ULONG64 gva, ULONG64 cr3, PPAGE_HOOK_ENTRY entry,
+	EPT_REP_CACHE* cache)
+{
+	ULONG64 page = gva & ~0xFFFULL;
+	if (cache->ptrBase != NULL && page == cache->pageBase)
+	{
+		return cache->ptrBase + (gva & 0xFFFULL);
+	}
+	PUCHAR base = NULL;
+	if (page == (ULONG64)entry->OriginalPageVA)
+	{
+		base = (PUCHAR)entry->OriginalPageVA;
+	}
+	else
+	{
+		//walk结果须落512GB恒等区RAM内(位图覆盖范围), 否则视为
+		//不可翻译→回退MTF, 杜绝野指针直写
+		ULONG64 gpa = 0;
+		if (EptGvaToGpa(cr3, gva, &gpa) && gpa < 0x8000000000ULL &&
+			EptMemTypeFor2MFrame(gpa >> 21) == 6)
+		{
+			PHYSICAL_ADDRESS pa = { 0 };
+			pa.QuadPart = (LONGLONG)(gpa & GEPT_PA_MASK);
+			base = (PUCHAR)MmGetVirtualForPhysical(pa);
+			if ((ULONG64)base < 0xFFFF800000000000ULL)
+			{
+				base = NULL;    //KSEG查表垃圾防护(非canonical)
+			}
+		}
+	}
+	if (base == NULL)
+	{
+		return NULL;
+	}
+	cache->pageBase = page;
+	cache->ptrBase = base;
+	return base + (gva & 0xFFFULL);
+}
+
+//指令字节读取: root直读内核VA(host页表覆盖全内核空间; 取指页正在
+//执行=恒present), 不走walk/MmGetVirtualForPhysical。窗口以页边界为限,
+//页内未见opcode→返回短窗口由调用方回退MTF; 取指页=hook页时从CodePage
+//读(hooked视图取指语义)。返回读到的字节数, 0=失败
+static ULONG EptRepReadCode(ULONG64 rip, PPAGE_HOOK_ENTRY entry, UCHAR* buf)
+{
+	if ((rip >> 48) != 0xFFFF)
+	{
+		return 0;    //非canonical内核VA(防御)
+	}
+	ULONG64 rest = (rip | 0xFFFULL) + 1 - rip;
+	ULONG len = rest < 15 ? (ULONG)rest : 15;
+	PUCHAR src = (PUCHAR)rip;
+	if ((rip & ~0xFFFULL) == (ULONG64)entry->OriginalPageVA)
+	{
+		src = (PUCHAR)entry->CodePageVA + (rip & 0xFFFULL);
+	}
+	RtlCopyMemory(buf, src, len);
+	return len;
+}
+
+//REP串仿真: 成功=TRUE并完成全串(*OutLen=指令长度, 调用方推进RIP);
+//中途不可翻译=FALSE(已完成元素的GPR已更新, 剩余交MTF老路径重执行,
+//重复复制幂等无害)
+static BOOLEAN EptRepEmulate(PGUEST_REGS regs, ULONG64 rip, ULONG64 cr3,
+	PPAGE_HOOK_ENTRY entry, ULONG* OutLen)
+{
+	UCHAR code[15];
+	ULONG codeLen = EptRepReadCode(rip, entry, code);
+	if (codeLen == 0)
+	{
+		return FALSE;
+	}
+	//前缀解析: F2/F3=REP, 66=操作数宽, 67=地址宽(不支持→回退), REX
+	UCHAR* p = code;
+	UCHAR* end = code + codeLen;
+	BOOLEAN rep = FALSE, op66 = FALSE, ad67 = FALSE, rexw = FALSE;
+	while (p < end)
+	{
+		UCHAR c = *p;
+		if (c == 0xF3 || c == 0xF2) { rep = TRUE; }
+		else if (c == 0x66) { op66 = TRUE; }
+		else if (c == 0x67) { ad67 = TRUE; }
+		else if ((c & 0xF0) == 0x40) { rexw = (c & 0x08) != 0; }
+		else if (c == 0x2E || c == 0x36 || c == 0x3E || c == 0x26 ||
+			c == 0x64 || c == 0x65) {
+			;
+		}    //段前缀: 串指令忽略
+		else { break; }
+		p++;
+	}
+	*OutLen = (ULONG)(p - code) + 1;
+	if (!rep || ad67 || p >= end)
+	{
+		return FALSE;
+	}
+	UCHAR op = *p;
+	//仅MOVS/STOS/LODS(A4/A5/AA/AB/AC/AD); SCAS(flags语义)与INS/OUTS(IO)回退
+	if (op != 0xA4 && op != 0xA5 && op != 0xAA && op != 0xAB &&
+		op != 0xAC && op != 0xAD)
+	{
+		return FALSE;
+	}
+	ULONG esize = (op & 1) ? (rexw ? 8 : 4) : 1;
+	if ((op & 1) && op66)
+	{
+		esize = 2;
+	}
+	ULONG64 rflags = 0;
+	__vmx_vmread(GUEST_RFLAGS, &rflags);
+	LONG64 step = (rflags & 0x400) ? -(LONG64)esize : (LONG64)esize;
+	ULONG64 cnt = regs->rcx;
+	if (cnt == 0)
+	{
+		return TRUE;    //count=0: 串指令为空操作, 仅推进RIP
+	}
+	EPT_REP_CACHE sc = { 0, NULL }, dc = { 0, NULL };
+	for (ULONG64 i = 0; i < cnt; i++)
+	{
+		//元素内逐字节解析指针(元素可跨页)
+		UCHAR tmp[8];
+		for (ULONG o = 0; o < esize; o++)
+		{
+			BOOLEAN ok = TRUE;
+			switch (op & ~1)
+			{
+			case 0xA4:    //MOVS: [RDI]=[RSI]
+			{
+				PUCHAR ps = EptRepPtr(regs->rsi + o, cr3, entry, &sc);
+				PUCHAR pd = EptRepPtr(regs->rdi + o, cr3, entry, &dc);
+				if (ps != NULL && pd != NULL)
+				{
+					*pd = *ps;
+				}
+				else
+				{
+					ok = FALSE;
+				}
+				break;
+			}
+			case 0xAA:    //STOS: [RDI]=AL/AX/EAX/RAX
+			{
+				PUCHAR pd = EptRepPtr(regs->rdi + o, cr3, entry, &dc);
+				if (pd != NULL)
+				{
+					*pd = (UCHAR)(regs->rax >> (8 * o));
+				}
+				else
+				{
+					ok = FALSE;
+				}
+				break;
+			}
+			default:      //LODS: AL/AX/EAX/RAX=[RSI]
+			{
+				PUCHAR ps = EptRepPtr(regs->rsi + o, cr3, entry, &sc);
+				if (ps != NULL)
+				{
+					tmp[o] = *ps;
+				}
+				else
+				{
+					ok = FALSE;
+				}
+				break;
+			}
+			}
+			if (!ok)
+			{
+				//本元素不可翻译: 部分已复制字节与MTF重执行幂等
+				regs->rcx = cnt - i;
+				return FALSE;
+			}
+		}
+		if (op == 0xAC || op == 0xAD)
+		{
+			ULONG64 v = 0;
+			for (ULONG o = 0; o < esize; o++)
+			{
+				v |= (ULONG64)tmp[o] << (8 * o);
+			}
+			regs->rax = v;
+			regs->rsi += step;
+		}
+		else if (op == 0xA4 || op == 0xA5)
+		{
+			regs->rsi += step;
+			regs->rdi += step;
+		}
+		else
+		{
+			regs->rdi += step;
+		}
+	}
+	regs->rcx = 0;
+	return TRUE;
+}
+
+
 void EptExitHandler(PGUEST_REGS GuestRegs)
 {
 	EPT_EXITDATA eptExit = { 0 };
@@ -1014,13 +1280,32 @@ void EptExitHandler(PGUEST_REGS GuestRegs)
 		return;
 	}
 	//==== hooked视图hook页读/写violation(HideRead=1布防, VMFUNC核) ====
-	//MTF读透明: 切clean+开MTF→重执行该指令(读/写落原页)→MTF exit(37)
-	//切回hooked+关MTF。读方(PG/扫描器)只见原始字节; 中断注入最坏多走
-	//一轮本循环, 收敛
+	//REP串优先root仿真(单exit吸收整串, 消解MTF逐迭代风暴); 非串指令
+	//或不可翻译回退MTF读透明
 	if ((eptExit.fileds.read || eptExit.fileds.write) && pageEntry->HideRead &&
 		g_vcpu[KeGetCurrentProcessorNumber()].bVmfuncOn &&
 		g_vcpu[KeGetCurrentProcessorNumber()].PeptDataHooked != NULL)
 	{
+		ULONG repLen = 0;
+		ULONG64 guestCr3 = 0;
+		__vmx_vmread(GUEST_CR3, &guestCr3);
+		if (EptRepEmulate(GuestRegs, guestRip, guestCr3, pageEntry, &repLen))
+		{
+			//'q'留痕(采样: 首次+每4096次)
+			static volatile LONG s_qCnt[128] = { 0 };
+			ULONG cpuQ = KeGetCurrentProcessorNumber();
+			LONG qn = InterlockedIncrement(&s_qCnt[cpuQ & 127]);
+			if (qn == 1 || (qn & 0xFFF) == 0)
+			{
+				FlRingPush('q', cpuQ, 48, guestRip, GuestRegs->rcx, 0);
+			}
+			__vmx_vmwrite(GUEST_RIP, guestRip + repLen);
+			__vmx_vmwrite(GUEST_RSP, guestRsp);
+			return;
+		}
+		//MTF读透明: 切clean+开MTF→重执行该指令(读/写落原页)→MTF exit(37)
+		//切回hooked+关MTF。读方(PG/扫描器)只见原始字节; 中断注入最坏多走
+		//一轮本循环, 收敛
 		ULONG cpuM = KeGetCurrentProcessorNumber();
 		__vmx_vmwrite(EPT_POINTER, g_vcpu[cpuM].Eptp.ALL);
 		ULONG64 mtfCtl = 0;

@@ -66,7 +66,7 @@ void VmxResumeFailedEntry(void);
 //guestRegs: 非NULL=exit handler C上下文(跳回前恢复非易失GPR);
 //NULL=寄存器已被asm pop链恢复
 void VmxExitStormEscape(char tag, ULONG reason, ULONG64 a, ULONG64 b,
-	PVOID guestRegs);
+    PVOID guestRegs);
 //vmx_off跳回guest的出口: 从GuestRegs帧恢复非易失GPR后切RSP/JMP
 void VmxJumGuestRegs(PVOID guestRegs, ULONG64 targetRsp, ULONG64 targetRip);
 //lgdt/lidt——rcx=10字节描述符(WORD limit@+0, QWORD base@+2)
@@ -106,6 +106,8 @@ typedef struct _VCPU
     //已ack未投递的中断计数(直投模式下恒0, EOI清债路径用)
     volatile LONG PendingIntrCount;
     UCHAR PendingIntrVec[256];
+    //TSC校准值: 每exit采样点外净泄漏(VmxTscCalibrateAll测, 0=未校准)
+    volatile LONG64 TscCalibK;
 } VCPU, * PVCPU;
 extern VCPU g_vcpu[128];      //定义于VMX.c, 每CPU一个虚拟CPU实例
 typedef enum _INV_TYPE
@@ -139,11 +141,14 @@ int VmxSetupVmcs();
 void VmxFillSelectorData();
 //控制字段计算: (MSR低32|期望)&高32(低32=必须1位, 高32=允许1位)
 ULONG VmxMsrAdjuest(ULONG64 msrNum, ULONG controlValue);
-//TSC补偿(每exit调用): TSC_OFFSET -= exit驻留时长
+//TSC补偿(每exit调用): TSC_OFFSET -= exit驻留时长+采样点外泄漏K
 void VmxTscCompensate(ULONG64 entryTsc, ULONG64 exitTsc);
+//TSC校准(全核in-guest后调用, PASSIVE): 逐核guest态vmcall采样, 测出
+//每exit采样点外净泄漏K(硬件VM-exit/VM-entry+指令开销), K并入补偿
+VOID VmxTscCalibrateAll(VOID);
 void VmxVmexitHandler();
 void VmxExitHandler();
-void VmxJumGuest(ULONG64 targetRsp,ULONG64 targetRip);
+void VmxJumGuest(ULONG64 targetRsp, ULONG64 targetRip);
 void VmxFreeCpuResources(ULONG cpuNumber);  //PASSIVE_LEVEL: 释放指定CPU的全部VT资源
 void VmxInvd();
 BOOLEAN VmxInvept(INVEPT_TYPE type, PEPT_CTX ctx);  //返回TRUE=VMfail(失败)

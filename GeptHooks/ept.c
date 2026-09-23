@@ -17,7 +17,7 @@ BOOLEAN EptIsSupportEpt()
 	{
 		return FALSE;
 	}
-	if (((msrCtls2>>33)&1)==0)
+	if (((msrCtls2 >> 33) & 1) == 0)
 	{
 		return FALSE;
 	}
@@ -659,7 +659,7 @@ NTSTATUS EptInitEptData(ULONG cpuNumber)
 		return STATUS_UNSUCCESSFUL;
 	}
 	currentVcpu->PeptData = (PEPT_DATA)MmAllocateContiguousMemory(sizeof(EPT_DATA), phys);
-	if (currentVcpu->PeptData ==NULL)
+	if (currentVcpu->PeptData == NULL)
 	{
 		return STATUS_UNSUCCESSFUL;
 	}
@@ -677,7 +677,7 @@ NTSTATUS EptInitEptData(ULONG cpuNumber)
 		currentVcpu->PeptData->pdpte[i].fileds.present = 1;
 		currentVcpu->PeptData->pdpte[i].fileds.execute = 1;
 		currentVcpu->PeptData->pdpte[i].fileds.write = 1;
-		currentVcpu->PeptData->pdpte[i].fileds.physicalAddr = MmGetPhysicalAddress(&(currentVcpu->PeptData->pde[i][0])).QuadPart/ PAGE_SIZE;
+		currentVcpu->PeptData->pdpte[i].fileds.physicalAddr = MmGetPhysicalAddress(&(currentVcpu->PeptData->pde[i][0])).QuadPart / PAGE_SIZE;
 		for (size_t k = 0; k < EPT_PREALLOC_PAGES; k++)
 		{
 			currentVcpu->PeptData->pde[i][k].fileds.present = 1;
@@ -904,7 +904,7 @@ BOOLEAN EptBuildHighMapping(ULONG64 gpa)
 			//exit上下文不DbgPrint, 失败由调用方'A'留痕
 			return FALSE;
 		}
-	RtlZeroMemory(pdpt, PAGE_SIZE);
+		RtlZeroMemory(pdpt, PAGE_SIZE);
 		g_vcpu[cpuNumber].HighPdptVa[pml4Idx] = pdpt;
 		g_vcpu[cpuNumber].HighPdptRawVa[pml4Idx] = raw;
 		eptData->pml4[pml4Idx].ALL = 0;
@@ -1142,7 +1142,9 @@ static BOOLEAN EptRepEmulate(PGUEST_REGS regs, ULONG64 rip, ULONG64 cr3,
 		else if (c == 0x67) { ad67 = TRUE; }
 		else if ((c & 0xF0) == 0x40) { rexw = (c & 0x08) != 0; }
 		else if (c == 0x2E || c == 0x36 || c == 0x3E || c == 0x26 ||
-			c == 0x64 || c == 0x65) { ; }    //段前缀: 串指令忽略
+			c == 0x64 || c == 0x65) {
+			;
+		}    //段前缀: 串指令忽略
 		else { break; }
 		p++;
 	}
@@ -1256,15 +1258,15 @@ static BOOLEAN EptRepEmulate(PGUEST_REGS regs, ULONG64 rip, ULONG64 cr3,
 
 void EptExitHandler(PGUEST_REGS GuestRegs)
 {
-	EPT_EXITDATA eptExit = {0};
+	EPT_EXITDATA eptExit = { 0 };
 	ULONG64 gpa = 0;
 	ULONG64 guestRip = 0;
 	ULONG64 guestRsp = 0;
-	__vmx_vmread(GUEST_RIP,&guestRip);
+	__vmx_vmread(GUEST_RIP, &guestRip);
 	__vmx_vmread(GUEST_RSP, &guestRsp);
-	__vmx_vmread(EXIT_QUALIFICATION,&eptExit);
+	__vmx_vmread(EXIT_QUALIFICATION, &eptExit);
 	//获取哪个地址触发的exit事件
-	__vmx_vmread(GUEST_PHYSICAL_ADDRESS,&gpa);
+	__vmx_vmread(GUEST_PHYSICAL_ADDRESS, &gpa);
 	//violation四元组入环
 	FlRingPush('V', KeGetCurrentProcessorNumber(), 48, gpa, guestRip, eptExit.ALL);
 	//MMIO时钟页访存(HPET/PM_TMR): 计数器补偿仿真——优先于hook路径,
@@ -1276,9 +1278,9 @@ void EptExitHandler(PGUEST_REGS GuestRegs)
 	//violation发生在当前视图的表上(vmread EPT_POINTER裁决act指向哪套)
 	PEPT_DATA act = EptGetActiveData();
 	//判断这个地址所在页是否被我们hook过
-	ULONG64 pfn = gpa /PAGE_SIZE;
-	PPAGE_HOOK_ENTRY pageEntry= PHGetHookEntryPageBy(pfn);
-	if (pageEntry==NULL)
+	ULONG64 pfn = gpa / PAGE_SIZE;
+	PPAGE_HOOK_ENTRY pageEntry = PHGetHookEntryPageBy(pfn);
+	if (pageEntry == NULL)
 	{
 		//未被hook的页violation: 直接return=同指令无限重试; 修复须作用在
 		//ACTIVE视图的表上
@@ -1417,8 +1419,8 @@ void EptExitHandler(PGUEST_REGS GuestRegs)
 	//刷新EPT缓存(否则旧TLB条目=再次violation活锁)
 	EptInveptCurrent();
 
-	__vmx_vmwrite(GUEST_RIP,guestRip);
-	__vmx_vmwrite(GUEST_RSP,guestRsp);
+	__vmx_vmwrite(GUEST_RIP, guestRip);
+	__vmx_vmwrite(GUEST_RSP, guestRsp);
 }
 
 
@@ -1492,11 +1494,11 @@ void EptSetHook(ULONG64 orginalPagePFN, ULONG64 codePagePFN, ULONG64 hideRead)
 	//==== violation方案(fallback: 无hooked EPT/标记自测FAIL的核) ====
 	//相当于有了GPA 要获取HPA
 	ULONG64 oPFN = orginalPagePFN << 12;
-	ULONG64 cPFN = codePagePFN <<12;
+	ULONG64 cPFN = codePagePFN << 12;
 	//获取PDE/PTE
-	PEPT_PDE_2M oPde2M=EptGetPde2B(g_vcpu[cpuHook].PeptData, oPFN);
-	PEPT_PDE_2M cPed2M=EptGetPde2B(g_vcpu[cpuHook].PeptData, cPFN);
-	if (oPde2M==NULL || cPed2M==NULL)
+	PEPT_PDE_2M oPde2M = EptGetPde2B(g_vcpu[cpuHook].PeptData, oPFN);
+	PEPT_PDE_2M cPed2M = EptGetPde2B(g_vcpu[cpuHook].PeptData, cPFN);
+	if (oPde2M == NULL || cPed2M == NULL)
 	{
 		//中止留痕(>512GB或页表越界: hook静默未建立)
 		FlRingPush('n', cpuHook, 2,
@@ -1536,13 +1538,13 @@ void EptSetHook(ULONG64 orginalPagePFN, ULONG64 codePagePFN, ULONG64 hideRead)
 	//修改页属性，将执行权限去掉
 	PEPT_PTE pte = EptGetPte(g_vcpu[cpuHook].PeptData, oPFN);//
 
-	if (pte==NULL)
+	if (pte == NULL)
 	{
 		FlRingPush('n', cpuHook, 2,
 			orginalPagePFN, 0, 0);
 		return;
 	}
-	pte->fileds.execute =0;
+	pte->fileds.execute = 0;
 	//刷新EPT缓存(否则旧exec条目存活=hook延迟生效)
 	EptInveptCurrent();
 	//布防完成标记: rsn=23(21/22/23=拆原页/拆Code页/清execute三步)
@@ -1555,7 +1557,7 @@ PEPT_PDE_2M EptGetPde2B(PEPT_DATA ept, ULONG64 PFN)
 
 	//PML4 9 9 9 9 12
 	ULONG pml4Index = (ULONG)((PFN >> 39) & 0x1FF);
-	if (pml4Index>0)
+	if (pml4Index > 0)
 	{
 		return NULL;
 	}
@@ -1609,7 +1611,7 @@ BOOLEAN EptPdeToPte(PEPT_PDE_2M pde2M)
 			Cr3ProtectAuto(ppte, PAGE_SIZE);
 		}
 	}
-	if (ppte==NULL)
+	if (ppte == NULL)
 	{
 		return FALSE;
 	}
@@ -1634,22 +1636,22 @@ BOOLEAN EptPdeToPte(PEPT_PDE_2M pde2M)
 		ppte[i].fileds.execute = 1;
 		//继承源2M页内存类型(漏设UC=取指性能塌方)
 		ppte[i].fileds.memoryType = pde2M->fileds.memoryType;
-		ppte[i].fileds.physicalAddr = (pde2M->fileds.physicalAddr)*512+i;
+		ppte[i].fileds.physicalAddr = (pde2M->fileds.physicalAddr) * 512 + i;
 	}
 
-	EPT_PDE pde = {0};
+	EPT_PDE pde = { 0 };
 	pde.fileds.read = 1;
 	pde.fileds.write = 1;
 	pde.fileds.execute = 1;
-	pde.fileds.physicalAddr = (MmGetPhysicalAddress(ppte).QuadPart)/PAGE_SIZE;
+	pde.fileds.physicalAddr = (MmGetPhysicalAddress(ppte).QuadPart) / PAGE_SIZE;
 
-	memcpy(pde2M,&pde,sizeof(pde));
+	memcpy(pde2M, &pde, sizeof(pde));
 	return status;
 }
 
 PEPT_PTE EptGetPte(PEPT_DATA ept, ULONG64 PFN)
 {
-	PEPT_PDE_2M pde2M= EptGetPde2B(ept, PFN);
+	PEPT_PDE_2M pde2M = EptGetPde2B(ept, PFN);
 	if (pde2M->fileds.ps)
 	{
 		return NULL;
@@ -1660,9 +1662,9 @@ PEPT_PTE EptGetPte(PEPT_DATA ept, ULONG64 PFN)
 	//PFN = PFN << 12;
 	ULONG pteIndex = (ULONG)((PFN >> 12) & 0x1FF);
 	//ptt[pteIndex]----》pte
-	PHYSICAL_ADDRESS pttPhAddress = {0};
-	pttPhAddress.QuadPart=(pde->fileds.physicalAddr)*PAGE_SIZE;
-	PEPT_PTE ptt=(PEPT_PTE) MmGetVirtualForPhysical(pttPhAddress);
+	PHYSICAL_ADDRESS pttPhAddress = { 0 };
+	pttPhAddress.QuadPart = (pde->fileds.physicalAddr) * PAGE_SIZE;
+	PEPT_PTE ptt = (PEPT_PTE)MmGetVirtualForPhysical(pttPhAddress);
 	return &ptt[pteIndex];
 }
 
@@ -1753,6 +1755,14 @@ static VOID EptHideVaRange(PEPT_DATA clean, PEPT_DATA hooked, PVOID va, ULONG64 
 			EptHideOneGpa(hooked, pa + off);
 		}
 	}
+}
+
+//导出双视图隐蔽原语(v1.12a: Clock.c影子/基线页用——EptHideVaRange
+//的薄封装; 调用方负责invept)
+VOID EptHideVaBothViews(PEPT_DATA clean, PEPT_DATA hooked, PVOID va,
+	ULONG64 bytes)
+{
+	EptHideVaRange(clean, hooked, va, bytes);
 }
 
 //每核vmlaunch前调用: 此刻全部核资源已分配(串行启动), 本核两视图
@@ -1899,8 +1909,8 @@ VOID EptInveptBothViews(VOID)
 void EptUpdatePageAcess(PEPT_DATA ept, ULONG64 gpa, UCHAR acess, PPAGE_HOOK_ENTRY pageEntry)
 {
 	//获取pte
-	PEPT_PTE ppte= EptGetPte(ept, gpa);
-	if (ppte==NULL)
+	PEPT_PTE ppte = EptGetPte(ept, gpa);
+	if (ppte == NULL)
 	{
 		return;
 	}
@@ -1908,7 +1918,7 @@ void EptUpdatePageAcess(PEPT_DATA ept, ULONG64 gpa, UCHAR acess, PPAGE_HOOK_ENTR
 	FlRingPush('x', KeGetCurrentProcessorNumber(), acess, gpa,
 		pageEntry->CodePagePFN, pageEntry->OriginalPagePFN);
 	//读
-	if (acess==1)
+	if (acess == 1)
 	{
 		ppte->fileds.physicalAddr = pageEntry->OriginalPagePFN;
 		ppte->fileds.present = 1;
@@ -1916,7 +1926,7 @@ void EptUpdatePageAcess(PEPT_DATA ept, ULONG64 gpa, UCHAR acess, PPAGE_HOOK_ENTR
 		ppte->fileds.write = 1;
 	}
 	//写
-	else if (acess==2)
+	else if (acess == 2)
 	{
 		ppte->fileds.physicalAddr = pageEntry->OriginalPagePFN;
 		ppte->fileds.present = 1;

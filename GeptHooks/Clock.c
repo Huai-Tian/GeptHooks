@@ -23,6 +23,21 @@ static GEPT_CLK s_clk[GEPT_CLK_MAX];   //[0]=HPET [1]=PM_TMR
 //flicker回捕状态(每核一个, 0=无pending)
 static volatile ULONG64 s_clkFlicker[128];
 
+//==== 影子flicker(v1.12a: 慢路径统一补偿) ====
+//旧plain flicker放行=guest读真值(未补偿)→与rdtsc不同轴=驻留泄漏臂
+//(MOVSX/SSE读/错位读/AVX/x87等一切非GPR-MOV指令可达; 自然流量0,
+//纯主动检测面)。影子方案: 慢路径把时钟页PTE临时改译到影子页
+//(=真页4KB副本+计数器字节替换为补偿值)→指令原样重执行, 读到
+//补偿语义——**方向无关+指令无关**(无opcode枚举表, SSE/AVX/x87
+//天然全覆盖=枚举解码方案的严格超集)。写回: MTF后diff影子vs基线
+//(=指令前影子快照)得guest本条指令的store字节, 逐段ClkWrite回真
+//页(计数器窗除外=硬件只读)——store落真页, 封掉"影子写被吞后读回"
+//检测臂。每核独立影子+基线(两核并发flicker互不污染)。
+static PUCHAR s_clkShadow[128];      //每核影子页(flicker改译目标)
+static PUCHAR s_clkShadowBase[128];  //每核基线页(diff基准)
+static ULONG64 s_clkFlickerPte[128]; //flicker前PTE原值(MTF整体回写)
+static LONG s_clkFlickerClk[128];    //flicker时钟槽号(-1=plain降级)
+
 //==== 虚拟计数器单调钳制(v1.9b) ====
 //补偿量=TSC_OFFSET/Ratio, 而TSC_OFFSET随本核每次exit单调变负, 读
 //时钟本身又产生exit——快速连读时虚拟值可倒退(裸机计数器永不倒退)
@@ -600,6 +615,36 @@ VOID ClkInitAll(VOID)
 	{
 		FlLog("Clock: 无可封堵MMIO时钟(HPET/PM_TMR缺失或校验失败)");
 	}
+	//影子flicker页(v1.12a): 每核影子+基线(慢路径改译目标/diff基准;
+	//分配失败核自动降级plain flicker='g'环c=0可辨)
+	if (armed > 0)
+	{
+		ULONG shadowCpus = KeQueryActiveProcessorCount(NULL);
+		ULONG shadowOk = 0;
+		for (ULONG i = 0; i < shadowCpus && i < 128; i++)
+		{
+			s_clkShadow[i] = ExAllocatePoolWithTag(
+				NonPagedPool, PAGE_SIZE, 'Pool');
+			s_clkShadowBase[i] = ExAllocatePoolWithTag(
+				NonPagedPool, PAGE_SIZE, 'Pool');
+			if (s_clkShadow[i] != NULL && s_clkShadowBase[i] != NULL)
+			{
+				RtlZeroMemory(s_clkShadow[i], PAGE_SIZE);
+				RtlZeroMemory(s_clkShadowBase[i], PAGE_SIZE);
+				shadowOk++;
+				//v1.12: root写者(影子构建/写回均在exit上下文)→私有CR3树
+				Cr3ProtectAuto(s_clkShadow[i], PAGE_SIZE);
+				Cr3ProtectAuto(s_clkShadowBase[i], PAGE_SIZE);
+			}
+			else
+			{
+				if (s_clkShadow[i]) { ExFreePool(s_clkShadow[i]); s_clkShadow[i] = NULL; }
+				if (s_clkShadowBase[i]) { ExFreePool(s_clkShadowBase[i]); s_clkShadowBase[i] = NULL; }
+			}
+		}
+		FlLog("Clock: 影子flicker页就绪 %u/%u核(每核影子+基线, 慢路径统一补偿)",
+			shadowOk, shadowCpus);
+	}
 	//逐核布防: vmcall(11)→root在当前核两套视图拆页+清RWX+invept
 	ULONG cpuCount = KeQueryActiveProcessorCount(NULL);
 	KAFFINITY allCpus = KeQueryActiveProcessors();
@@ -635,6 +680,25 @@ VOID ClkShutdown(VOID)
 			s_clk[i].RootVA = NULL;
 		}
 		s_clk[i].Armed = FALSE;
+	}
+	//影子flicker页(v1.12a; VT已关=零exit上下文, 释放安全; 清零=
+	//取证反制——页含HPET寄存器副本+补偿计数器痕迹)
+	for (ULONG i = 0; i < 128; i++)
+	{
+		if (s_clkShadow[i] != NULL)
+		{
+			RtlZeroMemory(s_clkShadow[i], PAGE_SIZE);
+			ExFreePool(s_clkShadow[i]);
+			s_clkShadow[i] = NULL;
+		}
+		if (s_clkShadowBase[i] != NULL)
+		{
+			RtlZeroMemory(s_clkShadowBase[i], PAGE_SIZE);
+			ExFreePool(s_clkShadowBase[i]);
+			s_clkShadowBase[i] = NULL;
+		}
+		s_clkFlicker[i] = 0;
+		s_clkFlickerClk[i] = -1;
 	}
 }
 
@@ -687,6 +751,21 @@ VOID ClkArmCpu(VOID)
 	if (s_clkIoPort != 0)
 	{
 		ClkIoArmCpu(s_clkIoPort, TRUE);
+	}
+	//影子flicker页EPT隐蔽(v1.12a: 页含HPET寄存器副本+补偿计数器=
+	//框架痕迹, 物理扫描可见; 两视图改译零页, 同CodePage物理隐蔽
+	//语义——flicker改译的是时钟GPA的PTE, 与影子自身GPA的隐蔽PTE
+	//互不干扰)
+	if (s_clkShadow[cpu & 127] != NULL)
+	{
+		EptHideVaBothViews(g_vcpu[cpu].PeptData,
+			g_vcpu[cpu].PeptDataHooked, s_clkShadow[cpu & 127], PAGE_SIZE);
+	}
+	if (s_clkShadowBase[cpu & 127] != NULL)
+	{
+		EptHideVaBothViews(g_vcpu[cpu].PeptData,
+			g_vcpu[cpu].PeptDataHooked, s_clkShadowBase[cpu & 127],
+			PAGE_SIZE);
 	}
 	EptInveptCurrent();
 	FlRingPush('a', cpu, GEPT_VMCALL_CLKARM,
@@ -811,10 +890,9 @@ static BOOLEAN ClkDecode(ULONG64 rip, CLK_ACC* acc)
 	return TRUE;
 }
 
-//不可解码访存: 放行当前指令(恢复页权限)+MTF单步→MTF exit回捕
-//重封堵。值未补偿=安全降级(裸机语义一致); REP串=逐迭代2 exit
-//(MMIO串读病态场景, 正确性优先)。FALSE=PTE不可得(理论不可能,
-//调用方回落常规路径)
+//plain flicker降级(v1.12a起仅影子页不可得时走): 恢复真页权限放行
+//当前指令+MTF回捕重封堵。值未补偿=泄漏臂残留(分配失败核的降级
+//形态, 'g'环c=0可辨); REP串=逐迭代2 exit。FALSE=PTE不可得
 static BOOLEAN ClkFlicker(ULONG64 gpa)
 {
 	ULONG cpu = KeGetCurrentProcessorNumber();
@@ -823,6 +901,8 @@ static BOOLEAN ClkFlicker(ULONG64 gpa)
 	{
 		return FALSE;
 	}
+	s_clkFlickerPte[cpu & 127] = pte->ALL;    //MTF整体回写基准
+	s_clkFlickerClk[cpu & 127] = -1;          //plain降级(无写回)
 	pte->fileds.present = 1;
 	pte->fileds.write = 1;
 	pte->fileds.execute = 1;
@@ -831,6 +911,75 @@ static BOOLEAN ClkFlicker(ULONG64 gpa)
 	ULONG64 ctl = 0;
 	__vmx_vmread(CPU_BASED_VM_EXEC_CONTROL, &ctl);
 	__vmx_vmwrite(CPU_BASED_VM_EXEC_CONTROL, ctl | 0x08000000ULL);
+	return TRUE;
+}
+
+//影子flicker(v1.12a慢路径统一入口, 见块头注释): 基线=真页4KB快照
+//→影子=基线副本+计数器窗替换为补偿值(与快路径同公式同钳制)→时钟
+//GPA的PTE改译影子PFN|RWX|UC(UC绕缓存: WB读会把影子行缓存到该VA,
+//后续plain放行的UC真值读不失效陈旧行=读到旧补偿值)→MTF单步。
+//4KB MMIO快照≈百µs级=慢路径专属代价(自然流量0, 纯攻击面);
+//FALSE=影子页未分配/ PTE不可得(调用方走plain降级)
+static BOOLEAN ClkFlickerShadow(PGEPT_CLK c, ULONG clkIdx, ULONG64 gpa)
+{
+	ULONG cpu = KeGetCurrentProcessorNumber();
+	PUCHAR shadow = s_clkShadow[cpu & 127];
+	PUCHAR base = s_clkShadowBase[cpu & 127];
+	PEPT_PTE pte = EptGetPte(EptGetActiveData(), gpa);
+	if (shadow == NULL || base == NULL || pte == NULL)
+	{
+		return FALSE;
+	}
+	RtlCopyMemory(base, c->RootVA, PAGE_SIZE);
+	RtlCopyMemory(shadow, base, PAGE_SIZE);
+	ULONG64 real = ClkRead(c, c->CtrOff, c->CtrSize);
+	ULONG64 tscOff = 0;
+	__vmx_vmread(TSC_OFFSET, &tscOff);
+	LONG64 comp = (LONG64)tscOff / c->Ratio;
+	ULONG64 ctr = ClkClampMonotonic(&s_clkLastVirt[clkIdx],
+		(real + (ULONG64)comp) & c->CtrMask, c->CtrMask);
+	RtlCopyMemory(shadow + c->CtrOff, &ctr, c->CtrSize);
+	s_clkFlickerPte[cpu & 127] = pte->ALL;    //MTF整体回写(含原PFN/mt)
+	s_clkFlickerClk[cpu & 127] = (LONG)clkIdx;
+	pte->ALL = 0;
+	pte->fileds.present = 1;
+	pte->fileds.write = 1;
+	pte->fileds.execute = 1;
+	pte->fileds.memoryType = 0;               //UC
+	pte->fileds.physicalAddr
+		= MmGetPhysicalAddress(shadow).QuadPart >> 12;
+	EptInveptCurrent();
+	s_clkFlicker[cpu & 127] = gpa;
+	ULONG64 ctl = 0;
+	__vmx_vmread(CPU_BASED_VM_EXEC_CONTROL, &ctl);
+	__vmx_vmwrite(CPU_BASED_VM_EXEC_CONTROL, ctl | 0x08000000ULL);
+	return TRUE;
+}
+
+//慢路径统一入口(v1.12a): 影子优先, plain降级。返回FALSE=两者都
+//不可得(理论不可达, 调用方回落常规路径)
+static BOOLEAN ClkSlowPath(PGEPT_CLK c, ULONG clkIdx, ULONG64 gpa,
+	ULONG64 guestRip, ULONG64 guestRsp)
+{
+	ULONG cpu = KeGetCurrentProcessorNumber();
+	BOOLEAN ok = ClkFlickerShadow(c, clkIdx, gpa);
+	if (!ok)
+	{
+		ok = ClkFlicker(gpa);
+	}
+	if (!ok)
+	{
+		return FALSE;
+	}
+	static volatile LONG s_gCnt[128] = { 0 };
+	LONG gn = InterlockedIncrement(&s_gCnt[cpu & 127]);
+	if (gn == 1 || (gn & 0xFFF) == 0)
+	{
+		FlRingPush('g', cpu, 48, gpa, guestRip,
+			s_clkFlickerClk[cpu & 127] >= 0 ? 1 : 0);   //c=1影子/0降级
+	}
+	__vmx_vmwrite(GUEST_RIP, guestRip);
+	__vmx_vmwrite(GUEST_RSP, guestRsp);
 	return TRUE;
 }
 
@@ -857,29 +1006,25 @@ BOOLEAN ClkTryEmulate(PGUEST_REGS GuestRegs, ULONG64 guestRip,
 	if (!ClkDecode(guestRip, &acc) ||
 		(gpa & 0xFFF) + acc.size > 0x1000)
 	{
-		//不可解码/跨页错位: flicker放行
-		if (ClkFlicker(gpa))
-		{
-			static volatile LONG s_gCnt[128] = { 0 };
-			LONG gn = InterlockedIncrement(&s_gCnt[cpu & 127]);
-			if (gn == 1 || (gn & 0xFFF) == 0)
-			{
-				FlRingPush('g', cpu, 48, gpa, guestRip, 0);
-			}
-			__vmx_vmwrite(GUEST_RIP, guestRip);
-			__vmx_vmwrite(GUEST_RSP, guestRsp);
-			return TRUE;
-		}
-		return FALSE;
+		//不可解码/跨页错位: 慢路径统一影子flicker(v1.12a)
+		return ClkSlowPath(c, clkIdx, gpa, guestRip, guestRsp);
 	}
 	USHORT off = (USHORT)(gpa & 0xFFF);
 	ULONG ctrLo = c->CtrOff;    //ULONG统一比较类型(USHORT+UCHAR提升为int=符号警告)
 	ULONG ctrHi = (ULONG)c->CtrOff + c->CtrSize;
+	BOOLEAN overlap = off < ctrHi && off + acc.size > ctrLo;
+	BOOLEAN inWindow = off >= ctrLo && off + acc.size <= ctrHi;
+	if (overlap && !inWindow)
+	{
+		//错位(与计数器窗部分重叠, 读/写皆走): 读=影子页补偿语义;
+		//写=store经MTF diff写回落真页(替代旧的整写丢弃=写被吞臂)
+		return ClkSlowPath(c, clkIdx, gpa, guestRip, guestRsp);
+	}
 	if (acc.isRead)
 	{
 		ULONG64 val = 0;
 		BOOLEAN virt = FALSE;
-		if (off >= ctrLo && off + acc.size <= ctrHi)
+		if (inWindow)
 		{
 			//计数器窗: 真值+TSC_OFFSET/Ratio(与guest可见TSC同轴)
 			//+单调钳制(倒退向量封堵, 见ClkClampMonotonic)
@@ -892,20 +1037,9 @@ BOOLEAN ClkTryEmulate(PGUEST_REGS GuestRegs, ULONG64 guestRip,
 			val = ctr >> (8 * (off - c->CtrOff));
 			virt = TRUE;
 		}
-		else if (off + acc.size <= ctrLo || off >= ctrHi)
-		{
-			val = ClkRead(c, off, acc.size);    //其余寄存器直读真值
-		}
 		else
 		{
-			//跨计数器边界错位访问: flicker放行
-			if (ClkFlicker(gpa))
-			{
-				__vmx_vmwrite(GUEST_RIP, guestRip);
-				__vmx_vmwrite(GUEST_RSP, guestRsp);
-				return TRUE;
-			}
-			return FALSE;
+			val = ClkRead(c, off, acc.size);    //其余寄存器直读真值
 		}
 		if (acc.zx)
 		{
@@ -928,9 +1062,9 @@ BOOLEAN ClkTryEmulate(PGUEST_REGS GuestRegs, ULONG64 guestRip,
 	}
 	else
 	{
-		if (off < ctrHi && off + acc.size > ctrLo)
+		if (inWindow)
 		{
-			;    //计数器只读: 写丢弃(与真硬件一致)
+			;    //计数器窗内整写: 只读丢弃(与真硬件一致; 错位写已上行走影子)
 		}
 		else
 		{
@@ -981,13 +1115,54 @@ BOOLEAN ClkMtfFinish(VOID)
 		return FALSE;
 	}
 	s_clkFlicker[cpu & 127] = 0;
+	//PTE整体回写(v1.12a: 影子flicker的PTE指向影子PFN——逐位清
+	//P/W/X会残留影子PFN, 下次plain放行=泄漏陈旧影子; 原值整体
+	//回写含原PFN/mt, plain/影子两形态统一)
 	PEPT_PTE pte = EptGetPte(EptGetActiveData(), gpa);
 	if (pte != NULL)
 	{
-		pte->fileds.present = 0;
-		pte->fileds.write = 0;
-		pte->fileds.execute = 0;
+		pte->ALL = s_clkFlickerPte[cpu & 127];
 		EptInveptCurrent();
+	}
+	//写回(v1.12a影子专属): diff影子vs基线=guest本条指令的store
+	//字节, 逐段ClkWrite回落真页(计数器窗除外=硬件只读忽略);
+	//plain降级(s_clkFlickerClk=-1)无影子, 跳过
+	LONG fk = s_clkFlickerClk[cpu & 127];
+	s_clkFlickerClk[cpu & 127] = -1;
+	PUCHAR shadow = s_clkShadow[cpu & 127];
+	PUCHAR base = s_clkShadowBase[cpu & 127];
+	if (fk >= 0 && fk < GEPT_CLK_MAX && shadow != NULL && base != NULL)
+	{
+		PGEPT_CLK c = &s_clk[fk];
+		ULONG ctrLo = c->CtrOff;
+		ULONG ctrHi = (ULONG)c->CtrOff + c->CtrSize;
+		ULONG i = 0;
+		while (i < PAGE_SIZE)
+		{
+			if (shadow[i] == base[i] || (i >= ctrLo && i < ctrHi))
+			{
+				i++;
+				continue;
+			}
+			ULONG start = i;    //连续diff段(段内字节全异且均在窗外)
+			while (i < PAGE_SIZE && shadow[i] != base[i]
+				&& !(i >= ctrLo && i < ctrHi))
+			{
+				i++;
+			}
+			for (ULONG o = start; o < i; )   //≤8B分块MMIO写
+			{
+				ULONG n = i - o;
+				if (n > 8)
+				{
+					n = 8;
+				}
+				ULONG64 v = 0;
+				RtlCopyMemory(&v, shadow + o, n);
+				ClkWrite(c, (USHORT)o, n, v);
+				o += n;
+			}
+		}
 	}
 	ULONG64 ctl = 0;
 	__vmx_vmread(CPU_BASED_VM_EXEC_CONTROL, &ctl);

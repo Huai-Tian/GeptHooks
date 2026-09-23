@@ -3,6 +3,7 @@
 #include "common.h"
 #include "PageHook.h"
 #include "VMX.h"
+#include "Cr3.h"
 
 //====================================================================
 // API实现(双EPT detour)
@@ -156,6 +157,8 @@ static PVOID GeptAllocTrampoline(PGEPT_API_ENTRY entry)
 			return NULL;
 		}
 		RtlZeroMemory(s_trampPool[pageIdx], PAGE_SIZE);
+		//v1.12: 跳板池页深拷贝入私有CR3树(root读r10目标/统一防护面)
+		Cr3ProtectAuto(s_trampPool[pageIdx], PAGE_SIZE);
 	}
 	PUCHAR t = (PUCHAR)s_trampPool[pageIdx] +
 		(ULONG)(slotIdx % GEPT_TRAMP_PER_PAGE) * GEPT_TRAMP_SLOT;
@@ -254,6 +257,9 @@ NTSTATUS GeptHookInstall(const GEPT_HOOK* Hook)
 		return STATUS_UNSUCCESSFUL;
 	}
 	entry->ReplayLen = replayLen;
+	//v1.12: API条目+replay缓冲深拷贝入私有CR3树(guest执行面+统一防护)
+	Cr3ProtectAuto(entry, sizeof(GEPT_API_ENTRY));
+	Cr3ProtectAuto(entry->ReplayVA, (ULONG64)replayLen);
 	entry->Trampoline = GeptAllocTrampoline(entry);
 	if (entry->Trampoline == NULL)
 	{

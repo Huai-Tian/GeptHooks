@@ -3,6 +3,7 @@
 #include"CPU.h"
 #include"ept.h"
 #include"LDasm.h"
+#include"Cr3.h"
 
 //==== MMIO时钟域封堵(v1.8) ====
 //TSC offsetting隐藏exit驻留, 但guest可读的其他时钟计数器(HPET主
@@ -587,6 +588,9 @@ VOID ClkInitAll(VOID)
 		}
 		c->Armed = TRUE;
 		armed++;
+		//v1.12: 时钟页RootVA深拷贝入私有CR3树(root读者——ClkReadRoot
+		//经此VA读HPET计数器; guest PASSIVE→vmcall(13)提权执行)
+		Cr3ProtectAuto(c->RootVA, PAGE_SIZE);
 		FlLog("Clock: %s就绪 页=%llX 计数器@+%03X宽%u Ratio=%lld(ΔTSC/Δclk)",
 			names[i], c->Gpa, (ULONG)c->CtrOff, (ULONG)c->CtrSize, c->Ratio);
 		FlRingPush('l', KeGetCurrentProcessorNumber(), 0,

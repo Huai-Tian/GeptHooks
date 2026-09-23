@@ -5,6 +5,7 @@
 #include"VMX.h"
 #include"reg.h"
 #include"Clock.h"
+#include"Cr3.h"
 
 BOOLEAN EptIsSupportEpt()
 {
@@ -167,6 +168,54 @@ static BOOLEAN EptAllocMarkPages(VOID)
 	return TRUE;
 }
 
+//==== v1.12 boot快照集访问器(Cr3Init深拷贝用) ====
+ULONG EptArenaBlockCount(VOID)
+{
+	return GEPT_SPLIT_ARENA_BLOCKS;
+}
+PVOID EptArenaBlockVa(ULONG idx)
+{
+	if (idx >= GEPT_SPLIT_ARENA_BLOCKS)
+	{
+		return NULL;
+	}
+	return s_splitArenaBlock[idx];
+}
+PVOID EptHighPdptBlockVa(VOID)
+{
+	return g_eptHighPdptBlock;
+}
+PVOID EptMarkPageA(VOID)
+{
+	return g_geptMarkVA;
+}
+PVOID EptMarkPageB(VOID)
+{
+	return s_geptMarkVB;
+}
+PVOID EptHideZeroPageVa(VOID)
+{
+	return s_hideZeroPage;
+}
+
+//共享零页eager分配(v1.12: 原EptHideFrameworkPages懒分配移前——
+//Cr3Init的boot快照集要求成员先于树构建存在; 幂等)
+BOOLEAN EptEnsureHideZeroPage(VOID)
+{
+	if (s_hideZeroPage != NULL)
+	{
+		return TRUE;
+	}
+	s_hideZeroPage = ExAllocatePoolWithTag(NonPagedPool, PAGE_SIZE, 'Pool');
+	if (s_hideZeroPage == NULL)
+	{
+		return FALSE;
+	}
+	RtlZeroMemory(s_hideZeroPage, PAGE_SIZE);
+	s_hideZeroPFN = MmGetPhysicalAddress(s_hideZeroPage).QuadPart >> 12;
+	return TRUE;
+}
+
 //在hooked EPT里建立标记remap: 拆pageA所在2M页→PTE改指pageB物理帧。
 //launch前PASSIVE级调用(表未被硬件walk过)无需invept。返回FALSE=
 //pageA超512GB/拆分失败
@@ -319,8 +368,8 @@ ULONG EptVerifyTables(ULONG cpuNumber, ULONG64 guestRspVa)
 	}
 	//[5] 关键样本页: guest落地后头几条指令就会触碰的物理页
 	{
-		const char* names[9];
-		ULONG64 gpas[9];
+		const char* names[10];
+		ULONG64 gpas[10];
 		ULONG n = 0;
 		names[n] = "探针代码页";   gpas[n] = MmGetPhysicalAddress((PVOID)CmGuestProbe).QuadPart; n++;
 		names[n] = "落地标签页";   gpas[n] = MmGetPhysicalAddress((PVOID)CmGeustRip).QuadPart; n++;
@@ -335,6 +384,10 @@ ULONG EptVerifyTables(ULONG cpuNumber, ULONG64 guestRspVa)
 		if (g_vcpu[cpuNumber].RootIdt != NULL)
 		{
 			names[n] = "私有HostIDT页"; gpas[n] = MmGetPhysicalAddress(g_vcpu[cpuNumber].RootIdt).QuadPart; n++;
+		}
+		if (Cr3PoolVa() != NULL)
+		{
+			names[n] = "私有CR3 PML4页"; gpas[n] = MmGetPhysicalAddress(Cr3PoolVa()).QuadPart; n++;
 		}
 		for (ULONG s = 0; s < n; s++)
 		{
@@ -1548,6 +1601,13 @@ BOOLEAN EptPdeToPte(PEPT_PDE_2M pde2M)
 	if (ppte == NULL)
 	{
 		ppte = (PEPT_PTE)EptAllocAlignedPage(&raw);
+		if (ppte != NULL)
+		{
+			//v1.12: 散池兜底页深拷贝入私有CR3树(root写者——EPT拆分
+			//pte页由root读写; arena槽页已在boot快照集内, 仅兜底页需
+			//protect。Auto判上下文: root直接/guest经vmcall)
+			Cr3ProtectAuto(ppte, PAGE_SIZE);
+		}
 	}
 	if (ppte==NULL)
 	{
@@ -1705,16 +1765,11 @@ VOID EptHideFrameworkPages(ULONG cpuNumber)
 	{
 		return;
 	}
-	if (s_hideZeroPage == NULL)
+	//共享零页(v1.12改eager: Cr3Init已确保分配, 此处仅兜底重试)
+	if (!EptEnsureHideZeroPage())
 	{
-		s_hideZeroPage = ExAllocatePoolWithTag(NonPagedPool, PAGE_SIZE, 'Pool');
-		if (s_hideZeroPage == NULL)
-		{
-			FlLog("EPT自我隐蔽: 零页分配失败, 本核跳过(其余核重试)");
-			return;
-		}
-		RtlZeroMemory(s_hideZeroPage, PAGE_SIZE);
-		s_hideZeroPFN = MmGetPhysicalAddress(s_hideZeroPage).QuadPart >> 12;
+		FlLog("EPT自我隐蔽: 零页分配失败, 本核跳过(其余核重试)");
+		return;
 	}
 	ULONG cpuCount = KeQueryActiveProcessorCount(NULL);
 	for (ULONG c = 0; c < cpuCount; c++)
@@ -1729,6 +1784,10 @@ VOID EptHideFrameworkPages(ULONG cpuNumber)
 		//私有Host IDT页(v1.11a: 门含stub地址=框架内部指针, 同须隐蔽)
 		EptHideVaRange(clean, hooked, g_vcpu[c].RootIdt, PAGE_SIZE);
 	}
+	//私有CR3树池(v1.12: 页表含框架页PA拓扑=内部指针, 同须隐蔽;
+	//root与硬件walker按HPA直访不受影响)
+	EptHideVaRange(clean, hooked, Cr3PoolVa(),
+		(ULONG64)Cr3PoolPages() * PAGE_SIZE);
 	//共享高区pdpt([0]未用)+双EPT标记页(verify已过, 运行期无读者)
 	for (ULONG i = 1; i < 512; i++)
 	{

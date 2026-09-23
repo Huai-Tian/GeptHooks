@@ -3,6 +3,7 @@
 #include"LDasm.h"
 #include"common.h"
 #include"VMX.h"
+#include"Cr3.h"
 LIST_ENTRY g_PageList = {0};
 NTSTATUS PHHook(PVOID pFun, PVOID pHook, ULONG hideRead)
 {
@@ -22,6 +23,8 @@ NTSTATUS PHHook(PVOID pFun, PVOID pHook, ULONG hideRead)
 		isNewCodePage = TRUE;
 		//添加
 		RtlZeroMemory(CodePage, PAGE_SIZE);
+		//v1.12: CodePage深拷贝入私有CR3树(root经vmcall(7)还原写者)
+		Cr3ProtectAuto(CodePage, PAGE_SIZE);
 	}
 	else
 	{
@@ -61,6 +64,9 @@ NTSTATUS PHHook(PVOID pFun, PVOID pHook, ULONG hideRead)
 	pHookListEntry->CodePageVA = CodePage;
 	pHookListEntry->CodePagePFN= (MmGetPhysicalAddress(CodePage).QuadPart) >>12;
 	pHookListEntry->HideRead = hideRead;
+	//v1.12: hook条目深拷贝入私有CR3树(root读者——EptExitHandler的
+	//violation路径查此表读OriginalPagePFN/HideRead)
+	Cr3ProtectAuto(pHookListEntry, sizeof(PAGE_HOOK_ENTRY));
 	//讲结构体添加到全局链表中
 	if (g_PageList.Flink==NULL)
 	{

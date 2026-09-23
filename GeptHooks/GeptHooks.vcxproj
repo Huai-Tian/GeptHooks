@@ -84,6 +84,7 @@
   <ItemGroup>
     <ClCompile Include="Clock.c" />
     <ClCompile Include="common.c" />
+    <ClCompile Include="Cr3.c" />
     <ClCompile Include="ept.c" />
     <ClCompile Include="GeptApi.c" />
     <ClCompile Include="GeptMsr.c" />
@@ -96,6 +97,7 @@
     <ClInclude Include="Clock.h" />
     <ClInclude Include="common.h" />
     <ClInclude Include="CPU.h" />
+    <ClInclude Include="Cr3.h" />
     <ClInclude Include="ept.h" />
     <ClInclude Include="GeptApi.h" />
     <ClInclude Include="GeptMsr.h" />

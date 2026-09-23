@@ -188,6 +188,17 @@ extern BOOLEAN g_bEpt1GbPage;
 //EPT_VPID_CAP(0x48C) bit0: exec-only页(X=1,R=0)支持——HideRead的前提
 extern BOOLEAN g_bEptExecOnly;
 
+//==== v1.12 boot快照集访问器(Cr3Init深拷贝用) ====
+ULONG EptArenaBlockCount(VOID);    //拆分pte页arena块数
+PVOID EptArenaBlockVa(ULONG idx);  //arena块VA(未分配=NULL)
+PVOID EptHighPdptBlockVa(VOID);    //共享高区pdpt 2MB块
+PVOID EptMarkPageA(VOID);          //双EPT标记页A(g_geptMarkVA)
+PVOID EptMarkPageB(VOID);          //标记页B(s_geptMarkVB)
+PVOID EptHideZeroPageVa(VOID);     //共享零页(未分配=NULL)
+//共享零页eager分配(v1.12: 原EptHideFrameworkPages懒分配移前——快照集
+//成员须先于Cr3Init树构建存在; 幂等, 失败=隐蔽时重试)
+BOOLEAN EptEnsureHideZeroPage(VOID);
+
 //==== 双EPT标记页 ====
 //hooked EPT把pageA改译到pageB: guest读同一VA, clean=GEPT_MARK_A /
 //hooked=GEPT_MARK_B=双EPT独立翻译的软件验证。全核共用, 随高区释放

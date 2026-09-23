@@ -43,7 +43,7 @@
 //Arg1-4=原函数的rcx/rdx/r8/r9(x64前4个寄存器参数);
 //StackArgs=第5+参数数组(指向触发帧上实参, 可读**可写**——写后
 //GeptCallOriginal按改写值转发; NULL=安装时StackArgs=0未声明)
-typedef ULONG64 (*GEPT_CALLBACK)(
+typedef ULONG64(*GEPT_CALLBACK)(
 	PVOID Context, ULONG64 Arg1, ULONG64 Arg2, ULONG64 Arg3, ULONG64 Arg4,
 	ULONG64* StackArgs);
 
@@ -57,13 +57,13 @@ typedef struct _GEPT_HOOK
 	GEPT_CALLBACK Callback;   //detour回调
 	PVOID Context;            //用户上下文(原样传给回调)
 	ULONG StackArgs;          //目标函数第5+栈参数个数(0=不转发;
-	                          //>0时回调收StackArgs指针+CallOriginal自动
-	                          //转发; ≤GEPT_MAX_STACK_ARGS, 超限Install拒绝)
+	//>0时回调收StackArgs指针+CallOriginal自动
+	//转发; ≤GEPT_MAX_STACK_ARGS, 超限Install拒绝)
 	ULONG HideRead;           //hook页读透明(双EPT核生效): 1=读/写violation
-	                          //→MTF单步透出原页字节(PG/扫描器兼容); 代价=
-	                          //该页每次数据访问+2 exit; CPU不支持exec-only
-	                          //时自动回退。0=执行零exit, 读可见跳转字节
-} GEPT_HOOK, *PGEPT_HOOK;
+	//→MTF单步透出原页字节(PG/扫描器兼容); 代价=
+	//该页每次数据访问+2 exit; CPU不支持exec-only
+	//时自动回退。0=执行零exit, 读可见跳转字节
+} GEPT_HOOK, * PGEPT_HOOK;
 
 //安装hook(PASSIVE_LEVEL): CodePage构建+每核hooked EPT布防(PHHook复用)
 NTSTATUS GeptHookInstall(const GEPT_HOOK* Hook);
@@ -87,10 +87,5 @@ ULONG64 GeptCallOriginal(ULONG64 Arg1, ULONG64 Arg2, ULONG64 Arg3, ULONG64 Arg4)
 //安全完成); 关VT之后调用GeptApiFreeMemory释放内存
 VOID GeptApiRemoveAll(VOID);
 VOID GeptApiFreeMemory(VOID);
-
-//replay自测(仅调试/演示用)——直接调用指定hook的LDE重定位跳板,
-//执行副本prologue后进入原函数体并正常返回。上机验证重定位生成器:
-//传伪句柄NtCurrentProcess()给NtClose的replay→应返回STATUS_INVALID_HANDLE
-NTSTATUS GeptApiSelfTestReplay(PVOID Target, ULONG64 Arg1);
 
 #endif // GEPTAPI_H

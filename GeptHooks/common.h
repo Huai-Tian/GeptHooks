@@ -235,7 +235,7 @@ extern "C" {
 	extern volatile LONG64 g_flExitCounts[GEPT_EXIT_REASON_MAX];
 
 	//构建标签: 打进日志第一行核对二进制版本。代码改动必须同步修改
-#define GEPT_BUILD_TAG "v1.12a"
+#define GEPT_BUILD_TAG "v1.12b"
 	extern CHAR g_geptBuildTag[24];      //common.c定义(=GEPT_BUILD_TAG)
 
 #ifdef __cplusplus

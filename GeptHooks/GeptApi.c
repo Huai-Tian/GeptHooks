@@ -24,10 +24,10 @@ typedef struct _GEPT_API_ENTRY
 	LIST_ENTRY link;
 	GEPT_HOOK pub;        //Target/Callback/Context
 	PVOID Trampoline;     //本hook独享trampoline槽(可执行池页内)
-	PVOID ReplayVA;       //LDE重定位跳板(副本prologue+尾jmp回; fallback的GeptCallOriginal+replay自测共用)
+	PVOID ReplayVA;       //LDE重定位跳板(副本prologue+尾jmp回; GeptCallOriginal统一入口)
 	ULONG ReplayLen;      //重定位覆盖的字节数(=PHHook跳转覆盖长度, 两者同源同长)
 	volatile LONG Removed;//1=已移除(Enumerate跳过; 内存延迟到卸载)
-} GEPT_API_ENTRY, *PGEPT_API_ENTRY;
+} GEPT_API_ENTRY, * PGEPT_API_ENTRY;
 
 static LIST_ENTRY s_apiList = { 0 };       //live+removed条目(卸载统一释放)
 static KSPIN_LOCK s_apiLock = { 0 };       //Install/Remove/Enumerate互斥(均PASSIVE)
@@ -243,9 +243,9 @@ NTSTATUS GeptHookInstall(const GEPT_HOOK* Hook)
 	entry->Removed = 0;
 	entry->ReplayVA = NULL;
 	entry->ReplayLen = 0;
-	//LDE重定位跳板(所有路径的CallOriginal统一入口+replay自测用)。
+	//LDE重定位跳板(所有路径的CallOriginal统一入口)。
 	//MinLen=14=PHHook跳转覆盖长度, 两者同源(PHGetHookLen同款解码循环)
-	//→replay覆盖字节数≡CodePage跳转覆盖字节数, 重放/jmp回严格配套
+	//→跳板覆盖字节数≡CodePage跳转覆盖字节数, 跳板尾jmp回严格配套
 	ULONG replayLen = 0;
 	entry->ReplayVA = PHBuildRelocTrampoline((ULONG64)Hook->Target,
 		sizeof(JMP_OPCODE64), &replayLen);
@@ -284,7 +284,7 @@ NTSTATUS GeptHookInstall(const GEPT_HOOK* Hook)
 	GeptApiLock();
 	InsertTailList(&s_apiList, &entry->link);
 	GeptApiUnlock();
-	FlLog("[API] Install OK: 目标=%p 回调=%p 上下文=%p 跳板槽=%p replay=%p(%uB, 回扫自检过) 栈参=%u 读透明=%u(重放跳板, 视图无关)",
+	FlLog("[API] Install OK: 目标=%p 回调=%p 上下文=%p 跳板槽=%p 重定位跳板=%p(%uB, 回扫自检过) 栈参=%u 读透明=%u(重定位跳板, 视图无关)",
 		Hook->Target, Hook->Callback, Hook->Context, entry->Trampoline,
 		entry->ReplayVA, entry->ReplayLen, Hook->StackArgs, Hook->HideRead);
 	return STATUS_SUCCESS;
@@ -441,34 +441,6 @@ VOID GeptApiRemoveAll(VOID)
 	{
 		FlLog("[API] RemoveAll: 已移除%u个hook(在途回调将安全完成)", n);
 	}
-}
-
-//replay自测——直接调用指定hook的重定位跳板(执行副本prologue→尾jmp
-//进入原函数体→完整跑完原函数→正常返回)。用于上机验证LDE重定位生成器
-//(任何Windows版本的目标函数, 不依赖本机构建); 传入伪句柄
-//NtCurrentProcess()=安全且确定的判据(NtClose返回
-//STATUS_INVALID_HANDLE 0xC0000008)。仅PASSIVE_LEVEL调试/自测用,
-//**不进任何生产路径**
-NTSTATUS GeptApiSelfTestReplay(PVOID Target, ULONG64 Arg1)
-{
-	PGEPT_API_ENTRY found = NULL;
-	GeptApiLock();
-	for (PLIST_ENTRY p = s_apiList.Flink; p != &s_apiList; p = p->Flink)
-	{
-		PGEPT_API_ENTRY e = CONTAINING_RECORD(p, GEPT_API_ENTRY, link);
-		if (e->pub.Target == Target && !e->Removed)
-		{
-			found = e;
-			break;
-		}
-	}
-	GeptApiUnlock();
-	if (found == NULL || found->ReplayVA == NULL)
-	{
-		return STATUS_NOT_FOUND;
-	}
-	typedef NTSTATUS(*GEPT_REPLAY_FN)(ULONG64);
-	return ((GEPT_REPLAY_FN)found->ReplayVA)(Arg1);
 }
 
 //DriverUload在关VT**之后**调用(纯内存释放, 无VT依赖)

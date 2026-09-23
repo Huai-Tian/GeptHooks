@@ -1,71 +1,85 @@
 # GeptHooks
 
-简体中文 | [English](README.md)
+简体中文 | [English](README.md) | [AI 协作文档](README_AGENT.md)
 
 ## 📖 介绍
 
 **GeptHooks** 是一个隐藏式 Windows EPT 钩子框架（支持 Windows 10 - 11）。
 
-它通过 Intel VT-x 虚拟化正在运行的系统，利用 **VMFUNC 在双 EPT 视图（clean / hooked）间的零成本切换**来拦截函数执行——让你的驱动可以钩取任意内核函数，**不修改原始内存的任何一个字节，且每次钩子命中不产生任何 VM-Exit**。
+它通过 Intel VT-x 虚拟化正在运行的系统，利用**每核双 EPT 视图（clean / hooked）**拦截函数执行——让你的驱动可以钩取任意内核函数，**不修改原始内存的任何一个字节，且每次钩子命中不产生任何 VM-Exit**。
 
-这实现了隐藏性最高的虚拟层钩子设计：执行流的重定向完全由 EPT 页表翻译切换完成；原始页面在 clean 视图下逐字节完好（读内存与 CRC 校验看到的全是原始内容）；钩子的时间开销在构造上即为零。
+执行流的重定向完全由 EPT 页表翻译完成：clean 视图恒等映射（读内存与 CRC 校验看到的全是原始字节），hooked 视图把钩子页改译到影子副本（目标偏移处是一条绝对跳转）。视图切换在钩子安装/移除时由 VMM 一次性完成，运行期命中是纯客户机态 detour——钩子的时间开销在构造上即为零。框架同时对客户机隐藏自身的全部存在痕迹：CPUID、TSC 时间轴、交叉时钟域、VMX 指令面、物理内存扫描、页表攻击均有对策。
+
+> **使用 AI 助手（Copilot / Claude / GPT 等）参与本项目的二次开发？** 请先阅读 [README_AGENT.md](README_AGENT.md)——它专为 AI 编写，包含本项目大量**反直觉的安全设计与红线约束**，跳过它直接改代码极可能引入蓝屏级缺陷。
 
 ## ✨ 功能特性
 
-- **VMFUNC 双 EPT 钩子（零 VM-Exit detour）—— v3.48**
-每个核心持有两套 EPT 视图：*clean* 视图（恒等映射，原始字节）与 *hooked* 视图（钩子页改译到影子副本）。钩住执行 = 切换翻译，而不是陷入：**每次钩子命中零 VM-Exit**。实测：多轮累计 **144 万+次** NtClose 拦截期间 EPT violation 计数始终为 0。
+- **双 EPT 视图零 VM-Exit detour**
+  每个核心持有两套 EPT 视图：*clean* 视图（恒等映射，原始字节）与 *hooked* 视图（钩子页改译到影子副本）。命中 = 翻译直达，而不是陷入：**每次钩子命中零 VM-Exit**。实测：累计 **144 万+次** NtClose 拦截期间 EPT violation 计数始终为 0。
 
-- **detour 完整控制权 —— v3.50**
-回调收到原始参数，可以直接调用原函数（`GeptCallOriginal`）、修改参数或返回值、或整体吞掉这次调用。没有 prologue 重放，没有指令长度机器——clean 视图里就是完好如初的原始代码。
+- **detour 完整控制权**
+  回调收到原始参数，可以调用原函数（`GeptCallOriginal`）、修改参数或返回值、或整体吞掉这次调用。没有 prologue 重放，没有指令长度机器——clean 视图里就是完好如初的原始代码。
 
-- **第 5+ 栈参数转发 —— v1.1**
-安装时通过 `GEPT_HOOK.StackArgs` 声明目标函数栈参数个数（最多 32 个），回调即收到指向触发栈上实参的 `StackArgs` 指针（可读**可写**，改写后的值随 `GeptCallOriginal` 一并转发）——多参数内核函数的钩取不再有参数缺口。实测：六参加法靶自测读回 / 改写 / 转发 / 移除四证明全过。
+- **第 5+ 栈参数转发**
+  安装时通过 `GEPT_HOOK.StackArgs` 声明目标函数栈参数个数（最多 32 个），回调即收到指向触发栈上实参的 `StackArgs` 指针（可读**可写**，改写后的值随 `GeptCallOriginal` 一并转发）——多参数内核函数的钩取不再有参数缺口。
 
-- **版本无关的运行时跳板 —— v3.51**
-跳板由 LDE 重定位引擎在运行时生成——逐指令解码、RIP-relative 重定位、生成后按 CPU 视角回扫自检。没有绑定某个 Windows 构建的硬编码 prologue：钩子可跨 Windows 版本安装；不可重定位的 prologue 在安装时即被拒绝。
+- **版本无关的运行时跳板**
+  跳板由 LDE 重定位引擎在运行时生成——逐指令解码、RIP-relative 重定位、生成后按 CPU 视角回扫自检。没有绑定某个 Windows 构建的硬编码 prologue：钩子可跨 Windows 版本安装；不可重定位的 prologue 在安装时即被拒绝。
 
-- **Hypervisor 隐身 —— v3.49**
-CPUID 的 `0x40000000-0x4000000F` 叶子全部归零（不泄漏任何 hypervisor 签名），`CPUID.1:ECX[31]` 清零，并以 **TSC offsetting 补偿**把每次 VM-Exit 的 root 驻留时长从客户机可见的 TSC 中扣除——客户机时间线上"exit 从未发生过"。
+- **钩子页读透明（可选）**
+  `HideRead=1` 时钩子页在 hooked 视图仅可执行（exec-only）：任何读/写该页的访问被单步透出到原始字节——补丁防护（PG）与内存扫描器看到的就是原始页面。需要 CPU 支持 exec-only（`EPT_VPID_CAP` bit0），不支持时自动回退。
 
-- **老 CPU 自动降级 —— v3.51**
-无 VMFUNC 的核心上，钩子按核透明降级到经典 EPT violation 方案（拆 2M 页 + X 位切换），`GeptCallOriginal` 自动改走重定位跳板——API 语义完全一致、你的代码零改动；混合机器按核分派。
+- **Hypervisor 全面隐身**
+  - **CPUID**：透传真实硬件结果 + 定点修饰（清 hypervisor-present 位、归零 hypervisor 专用叶子、收敛 maxleaf）——不破坏特性位与缓存/拓扑信息；
+  - **TSC 时间轴**：每次 VM-Exit 的 root 驻留时长经 TSC offsetting 从客户机可见 TSC 中扣除，并按每核校准值补偿指令开销——客户机时间线上"exit 从未发生过"；
+  - **时钟域**：HPET / PM_TMR 计数器读取被仿真为与虚拟 TSC 同轴（含影子页 flicker：任意指令形态的慢路径读均得到补偿语义），交叉时钟对比无时间轴空洞；TSC-Deadline 定时器自动换算；
+  - **VMX 指令面**：VMXON/VMXOFF/VMREAD 等指令族执行结果与裸机完全一致（#UD / #GP 语义模拟），病毒与检测器无从探测；VMFUNC 已封堵（裸机语义 #UD）；
+  - **物理内存扫描免疫**：框架全部私有物理页（VMXON/VMCS/VMM 栈/位图/EPT 表/跳板页等）在两套视图统一改译零页——客户机物理内存扫描只见零。
+
+- **root 态加固（抗篡改）**
+  私有 Host IDT（256 门重定向）与私有 Host CR3（VMM 页表深拷贝隔离）：exit 窗口内的 NMI/异常投递与页表攻击面被隔离，客户机篡改 OS 的 IDT/共享页表无法触及 VMM。
+
+- **互斥仲裁**
+  同机第二实例在 `sc start` 时被原生机制干净拒绝（资源全释放后退出），不会与在位实例互相破坏。
 
 - **简洁的驱动友好 API**
-在你自己的内核驱动里用几个 C 调用即可完成钩子的安装、移除、枚举与原函数调用——无需任何 hypervisor 背景知识。
+  在你自己的内核驱动里用几个 C 调用即可完成钩子的安装、移除、枚举与原函数调用——无需任何 hypervisor 背景知识。
 
-- **MSR 拦截（读伪造 / 写监控）—— v3.52，v1.1 补枚举**
-通过每核 MSR 位图可钩取任意 MSR：读回调返回值即客户机可见值（可伪造），写回调可放行或静默丢弃。未钩取的 MSR 保持零开销直通。安装 / 移除 / 枚举（`GeptMsrHookEnumerate`）与函数钩子 API 完全对称。实测演示：保留 MSR 读回 `DEADBEEFCAFEBABE`；LSTAR canary 计数 syscall 入口探测并在写入时报警。
+- **MSR 拦截（读伪造 / 写监控）**
+  通过每核 MSR 位图可钩取任意 MSR：读回调返回值即客户机可见值（可伪造），写回调可放行或静默丢弃。未钩取的 MSR 保持零开销直通。安装 / 移除 / 枚举与函数钩子 API 完全对称。
 
-- **可选文件日志，默认关闭 —— v1.2**
-整套观测设施（双写盘线程、二进制事件环、蓝屏黑匣子看门狗）为调试而保留，但**默认关闭**：未开启前零后台线程、零文件 I/O、零观测面。启动驱动前按服务开启：`reg add HKLM\SYSTEM\CurrentControlSet\Services\GeptHooks /v LogEnable /t REG_DWORD /d 1 /f`——权威日志写入 `C:\Windows\Temp\gept_log.txt`（桌面尽力镜像一份）。注意：开启状态下若日志停滞 30 秒，看门狗会**主动蓝屏（0xDEADC0DE）**以抓取内存转储——这是调试手段而非交付行为。
+- **观测体系与交付形态构建统辖**
+  整套观测设施（双写盘线程、二进制事件环、蓝屏黑匣子看门狗）由构建配置统辖：**Debug 构建 = 完整观测**（权威日志写入 `C:\Windows\Temp\gept_log.txt`，桌面尽力镜像；日志停滞 30 秒看门狗主动蓝屏抓取内存转储——调试设施，不进交付产物）；**Release 构建 = 零日志代码进产物**（无后台线程、无文件 I/O、零观测面）。刻意不用运行期/注册表开关：注册表值既是可以被 AV/EDR 静态签名的特征，也会在目标机上留下配置痕迹。
 
-- **干净的交付形态 —— v1.2**
-驱动入口不再运行任何开发期自测或演示钩子：分配各核 VT 资源 → 逐核启动虚拟化 → 执行 VT-x 原生互斥仲裁（第二个实例 `sc start` 干净失败退出）→ 常驻。GeptHooks 以源码形态集成——把框架文件加入你自己的驱动工程，在 `DriverEntry` 完成全核接管后即可调用 API（启动 / 卸载标准序列见 `main.c`）。
+- **干净的交付形态**
+  驱动入口只执行框架生命周期（资源分配 → 逐核启动虚拟化 → 互斥仲裁 → 常驻）与演示钩子（`main.c` 可替换为你自己的逻辑）。框架以源码形态集成——把源文件加入你自己的驱动工程即可。
 
 ## 📐 零 VM-Exit 钩子的工作原理
 
 ```
-                EPTP-list[0]                 EPTP-list[1]
+                clean 视图                    hooked 视图
                 ┌────────────┐               ┌────────────┐
-                │ clean EPTP │               │ hooked EPTP│
+                │  恒等映射   │               │ 钩子页 PTE │
                 └─────┬──────┘               └─────┬──────┘
-                      │ 恒等映射                    │ 钩子页 PTE → 影子副本
-   guest(默认clean视图)                           │ (X=1, R=1, W=0)
+                      │ 原始字节完好                 │ → 影子副本(CodePage)
+   guest(运行视图由VMM按需切换)                    │ (X=1, R=1, W=0)
    ─────────────────┴──────────────────────────────┴─────────────────
-        vmfunc(0, 1)  ── 零VM-Exit切换(新EPTP写回VMCS, 即刻生效)
+        安装/移除: VMM 逐核切换 EPTP(一次性)——运行期命中零陷入
 ```
 
 钩子触发链（全程客户机态，零 VM-Exit）：
 
 ```
-调用者 → NtClose(hooked视图=影子页, 14字节绝对跳转)
-  → 本hook独享的trampoline槽
-  → GeptStubEntry:  vmfunc(0,0)切到clean → SAVE_ALL
-      → 你的回调  (可GeptCallOriginal: 直接调用原始入口——
-        clean视图里就是真实字节)
-      → vmfunc(0,1)切回hooked → ret
+调用者 → 目标函数(hooked视图=CodePage, 目标偏移处14字节绝对跳转)
+  → 本hook独享的trampoline槽(mov r10,条目; jmp GeptStubEntry)
+  → GeptStubEntry: SAVE_ALL → 分发你的回调
+      (可 GeptCallOriginal: 经LDE重定位跳板调用原函数——视图无关,
+        回调内调用的其他钩子目标正常触发=标准detour语义)
+    → RESTORE_ALL
   ← 调用者(RAX = 你回调的返回值)
 ```
+
+个别核心在罕见的资源条件下（hooked EPT 表深拷贝失败、布防自检不通过）会**自动降级**为经典 EPT violation 方案（取指陷入 → 视图切换 → 同一跳板链）——API 语义完全一致、你的代码零改动。
 
 ## 🚀 快速开始
 
@@ -83,11 +97,7 @@ sc stop GeptHooks
 sc delete GeptHooks
 ```
 
-可选：启动前开启调试文件日志（默认关闭；写入内容与看门狗注意事项见上方功能列表）：
-
-```
-reg add HKLM\SYSTEM\CurrentControlSet\Services\GeptHooks /v LogEnable /t REG_DWORD /d 1 /f
-```
+调试日志无需任何开关：直接用 **Debug 构建**即获得完整观测（文件日志 + 事件环 + 黑匣子看门狗）；**Release 构建**产物零日志代码。
 
 ## 🧩 API 使用
 
@@ -96,7 +106,7 @@ reg add HKLM\SYSTEM\CurrentControlSet\Services\GeptHooks /v LogEnable /t REG_DWO
 
 // 你的detour回调: 运行在原函数的线程与IRQL上下文,
 // 返回值即钩子函数的返回值。
-// StackArgs(v1.1): 第5+个参数(栈参数)数组, 可读可写——
+// StackArgs: 第5+个参数(栈参数)数组, 可读可写——
 // 改写后的值随GeptCallOriginal一并转发; 未声明StackArgs时为NULL。
 static ULONG64 OnNtClose(PVOID Context,
     ULONG64 Arg1, ULONG64 Arg2, ULONG64 Arg3, ULONG64 Arg4,
@@ -112,6 +122,7 @@ Hook.Target    = (PVOID)NtClose;
 Hook.Callback  = OnNtClose;
 Hook.Context   = NULL;
 Hook.StackArgs = 0;   // 目标函数第5+栈参数个数(0=不转发; 见下方示例)
+Hook.HideRead  = 1;   // 可选: 钩子页读透明(PG/扫描器只见原始字节)
 
 GeptHookInstall(&Hook);
 // ... 钩子已在全部核心生效 ...
@@ -167,40 +178,43 @@ GeptMsrHookEnumerate(NULL, &MsrCount);   // 枚举live的MSR钩子
 
 **回调上下文约定**：
 
-1. 回调运行在原函数的线程与 IRQL 上下文（可达 DISPATCH 级）——回调内只应执行 IRQL 安全的操作（原子操作、无锁日志、`GeptCallOriginal`）。
-2. 调用原函数必须经 `GeptCallOriginal`——它保证 clean 视图并在返回后恢复 hooked 视图（线程迁移安全）。
-3. 已知限制：回调执行期间本核处于 clean 视图——回调里调用的其他钩子目标**不会被拦截**。
+1. 回调运行在原函数的线程与 IRQL 上下文（可达 DISPATCH 级）——回调内只应执行 IRQL 安全的操作（原子操作、无锁日志、`GeptCallOriginal`、`GeptMsrReadReal`）。
+2. 调用本钩子的原函数**必须**经 `GeptCallOriginal`——它经版本无关的重定位跳板调用原函数并自动转发栈参数（直接调用原入口会在 hooked 视图下撞入跳转码）。
+3. 嵌套语义（标准 detour）：回调内调用的其他钩子目标**正常触发**。
+4. 读回调需要 MSR 真值时用 `GeptMsrReadReal`；对架构保留 MSR（真读即 #GP）绝不可调，直接返回伪造值。
 
-卸载时须在关闭 VT **之前**调用 `GeptApiRemoveAll()`，关闭 VT **之后**调用 `GeptApiFreeMemory()`——参考 `main.c` 的 `DriverUload` 标准序列。
+卸载时须在关闭 VT **之前**移除全部钩子（`GeptApiRemoveAll`），关闭 VT **之后**再释放内存（`GeptApiFreeMemory`）——参考 `main.c` 的 `DriverUload` 标准序列。
 
 ## ⚙️ 环境要求
 
-- **CPU**：支持 VT-x + EPT 的 Intel 处理器；**VMFUNC（Haswell 及以上）解锁零 VM-Exit 路径**——更老或混合 CPU 按核降级到 violation 路径（API 一致）
+- **CPU**：支持 VT-x + EPT 的 Intel 处理器（Haswell 及以上可获完整特性；个别核心资源不足时自动降级，API 一致）
 - **操作系统**：Windows 10 / 11 x64
 - **虚拟化冲突**：需关闭 Hyper-V、基于虚拟化的安全（VBS）、内存完整性（核心隔离）与 WHP——GeptHooks 必须作为根 hypervisor 运行
 - **测试签名**：执行 `bcdedit /set testsigning on` 开启测试签名，或对驱动进行正式签名
 - **构建**：Visual Studio 2022 + Windows Driver Kit（WDK）
 - **运行**：管理员权限
 
-## 🧪 已验证里程碑
+## 🧪 能力验证矩阵
 
-| 阶段 | 里程碑 | 实测证据 |
-|---|---|---|
-| STAGE 1 | 自测 EPT 钩子（violation 方案） | 钩子全链路打通，干净卸载 |
-| STAGE 2 | NtClose 全系统监控 | 多轮累计 **126 万+次**拦截，16–89 分钟稳定运行 |
-| Phase 1 | VMFUNC 基础设施，8/8 核 | 零 VM-Exit EPTP 往返自测通过 |
-| Phase 2 | 双 EPT 零 VM-Exit 钩子 | 标记页在两视图读出不同值；拦截增长而 Δr48 = 0 |
-| Phase 3 | 隐身（CPUID + TSC） | CPUID 签名全部抹除；每核 TSC 偏移 ≈ −0.6 ms 隐藏 exit 时长 |
-| Phase 4 | 简易 API 生命周期 | 装 +388/2s → 卸 +0/2s → 重装 +14/2s，干净卸载 |
-| Phase 6 | 运行时重定位（版本无关） | LDE 跳板回扫自检两次通过；replay 自测 NtClose(-1) = 0xC0000008；三窗口 +209/+0/+65 |
-| Phase 5 | MSR 数据面 API | 保留 MSR 读伪造为 `DEADBEEFCAFEBABE`；LSTAR canary 两次读相等、写 0 次 |
-| v1.1 | 栈参数转发 + MSR 枚举 | 六参自测四证明（读回 flags=7 / 栈参改写 / 寄存器改写 / 加法靶 25553→16665）；MSR 枚举 live=2 |
-| v1.1d | 全核 IPI 原子卸载 | 静置压力 3/3 全绿：每核原子"vmcall 退出+清 VMXE+双 TLB 冲刷"，卸载留痕 8×'v'+8×'r' 全齐 |
-| v1.2 | 交付清理：移除开发自测，日志默认关闭 | DriverEntry 收敛为框架生命周期（分配→逐核启动→仲裁→常驻）；加载期零演示钩子；`LogEnable` 注册表开关统辖全部观测设施 |
+全部核心路径已在真实硬件（8 核 Intel Skylake，Windows 10 x64）完成多轮实测：
+
+| 能力 | 实测证据 |
+|---|---|
+| 全核 VT 接管 | 8 核逐核 vmlaunch → 接管 → 干净卸载，多轮稳定（含长时间运行） |
+| 零 VM-Exit 拦截 | 累计 144 万+ 次 NtClose 拦截，EPT violation 计数恒为 0 |
+| detour 完整控制权 | 六参靶自测四证明（读回 / 栈参改写 / 寄存器改写 / 移除恢复） |
+| 版本无关跳板 | LDE 跳板回扫自检逐条通过；重放自测 NtClose(-1) = 0xC0000008 |
+| MSR 数据面 | 保留 MSR 读伪造为 `DEADBEEFCAFEBABE`；LSTAR canary 计数与写入监控 |
+| TSC 时间轴 | 每 exit 净驻留补偿至千 cycle 级（ppm 级一致），卸载驻留量化留痕 |
+| 时钟域同轴 | HPET / PM_TMR 读取与虚拟 TSC 同轴；自然流量零额外 exit（慢路径环事件 = 0） |
+| 物理扫描免疫 | 框架页双视图改译零页，EPT 布防自检逐项通过 |
+| root 态加固 | 私有 Host IDT / CR3 每核接线回读一致；页表深拷贝区数十个闭环 |
+| 全核原子卸载 | IPI 广播每核原子退出（零调度零窗口），静置压力多轮全绿 |
+| Release 交付形态 | 无日志构建长时间运行无异常 |
 
 ## ⚠️ 项目状态
 
-全部核心路径（虚拟化、双 EPT VMFUNC 钩子、隐身、detour API、运行时重定位、MSR 数据面）已在 i7-6700HQ（8 核，Windows 10 x64）上完成分阶段实测毕业。本框架为研究级质量：仍可能存在导致蓝屏的缺陷——请务必在可弃置的测试机上运行。
+全部核心路径（虚拟化、双 EPT 钩子、隐身、detour API、运行时重定位、MSR 数据面、时钟域封堵、root 态加固）已在真实硬件上完成分阶段实测毕业。本框架为研究级质量：hypervisor 层的缺陷仍可能导致蓝屏——**请务必在可弃置的测试机上运行**。
 
 ## 🚫 非商业声明
 
@@ -232,7 +246,7 @@ GeptMsrHookEnumerate(NULL, &MsrCount);   // 枚举live的MSR钩子
 使用前请自行评估风险。开发者与贡献者**对由此产生的任何账号封禁、法律责任或其他后果概不负责**。
 
 - **系统稳定性**：
-hypervisor 级驱动运行在机器的最高特权层。 **一个 bug 即可导致系统蓝屏或数据损坏。** 请务必在虚拟机或可弃置的机器上测试，并做好备份。
+hypervisor 级驱动运行在机器的最高特权层。**一个 bug 即可导致系统蓝屏或数据损坏。**请务必在虚拟机或可弃置的机器上测试，并做好备份。
 
 - **无担保**：
 本软件按其许可证条款提供，**不附带任何明示或默示的担保**，包括但不限于适销性、特定用途适用性与非侵权性。

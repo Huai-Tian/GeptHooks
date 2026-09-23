@@ -4,7 +4,6 @@
 #include"GeptApi.h"
 #include"GeptMsr.h"
 #include"CPU.h"
-#include"Clock.h"
 
 //本文件=框架使用示例(面向二次开发者):
 //  DriverEntry  → VmxStartAllCpus接管全核 → 安装自己的hook
@@ -30,12 +29,9 @@ static ULONG64 DemoNtCloseCallback(PVOID Context, ULONG64 Handle,
 }
 
 //demo2: MSR hook读回调(LSTAR=系统调用入口地址, 0xC0000082)
-static volatile LONG g_demoLstarFired = 0;   //自检: 回调真实触发计数
-
 static ULONG64 DemoLstarOnRead(PVOID Context, ULONG32 Msr)
 {
 	UNREFERENCED_PARAMETER(Context);
-	InterlockedIncrement(&g_demoLstarFired);
 	//示例=返回真值(零副作用监控)。
 	//伪造=直接return任意值(guest的rdmsr只能见到它)
 	return GeptMsrReadReal(Msr);
@@ -56,23 +52,6 @@ static VOID DemoHookInstall(VOID)
 		NTSTATUS st = GeptHookInstall(&hook);
 		FlLog("[Demo] EPT hook NtClose(%p): %s",
 			g_demoNtClose, NT_SUCCESS(st) ? "OK" : "FAIL(见[API]行)");
-		//读自检: 直接读hook目标首字节——HideRead生效=读到原始prologue
-		//(MTF路径透出原页); 68开头=CodePage跳转可见=读透明失效
-		if (NT_SUCCESS(st))
-		{
-			const UCHAR* b = (const UCHAR*)g_demoNtClose;
-			FlLog("[Demo] 读自检: NtClose首8字节=%02X %02X %02X %02X %02X %02X %02X %02X(%s)",
-				b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
-				b[0] == 0x68 ? "FAIL:见跳转字节=读可见" : "OK:原始prologue=读透明");
-			//REP读自检: rep movsb整串读hook页——走root仿真('q'事件,
-			//单exit吸收整串, 不进MTF循环); 字节=原始prologue即通过
-			UCHAR repBuf[8];
-			CmRepMovsbDemo(repBuf, (PUCHAR)g_demoNtClose, 8);
-			FlLog("[Demo] REP读自检: rep movsb×8=%02X %02X %02X %02X %02X %02X %02X %02X(%s)",
-				repBuf[0], repBuf[1], repBuf[2], repBuf[3],
-				repBuf[4], repBuf[5], repBuf[6], repBuf[7],
-				repBuf[0] == 0x40 ? "OK:整串仿真命中" : "FAIL:见[Q]/[M]事件判路径");
-		}
 	}
 	//MSR hook: 读拦截
 	{
@@ -82,37 +61,6 @@ static VOID DemoHookInstall(VOID)
 		NTSTATUS st = GeptMsrHookInstall(&msrHook);
 		FlLog("[Demo] MSR hook LSTAR(0x%X): %s",
 			(ULONG)MSR_LSTAR, NT_SUCCESS(st) ? "OK" : "FAIL(见[MSR]行)");
-		//正向自检: guest态真读一次被hook的MSR——位图→exit(31)→
-		//分发→回调全链路(v1.5c位图静默失效正是缺此环节而漏检;
-		//通过时心跳r31应+1)
-		if (NT_SUCCESS(st))
-		{
-			ULONG64 v = __readmsr(MSR_LSTAR);
-			FlLog("[Demo] MSR自检: guest态rdmsr LSTAR=%llX 回调触发=%u(%s)",
-				(unsigned long long)v, (ULONG)g_demoLstarFired,
-				g_demoLstarFired > 0 ? "OK:拦截生效" : "FAIL:位图未拦截");
-		}
-	}
-	//时钟封堵自检: guest读HPET/PM_TMR计数器(MMIO布防页→violation/
-	//端口型→exit(30)→root仿真补偿)。两次读值推进+'y'事件=补偿仿真
-	//生效(值与guest可见TSC同轴); 快读=单调钳制验证(连读不倒退)
-	for (ULONG ci = 0; ci < 2; ci++)
-	{
-		ULONG64 v0 = 0, v1 = 0, vq = 0;
-		if (ClkDemoRead(ci, &v0))
-		{
-			ClkDemoRead(ci, &vq);    //紧邻快读: 间隔仅自身exit
-			LARGE_INTEGER d;
-			d.QuadPart = -10000;    //1ms
-			KeDelayExecutionThread(KernelMode, FALSE, &d);
-			ClkDemoRead(ci, &v1);
-			FlLog("[Demo] %s自检: %llX → %llX(%s); 快读=%llX(%s)",
-				ci == 0 ? "HPET" : "PM_TMR",
-				(unsigned long long)v0, (unsigned long long)v1,
-				v1 != v0 ? "OK:推进+补偿仿真命中" : "FAIL:计数器未推进",
-				(unsigned long long)vq,
-				vq >= v0 ? "OK:非倒退(单调钳制)" : "FAIL:时间倒退");
-		}
 	}
 }
 

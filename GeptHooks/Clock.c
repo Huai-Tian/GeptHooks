@@ -655,7 +655,7 @@ VOID ClkArmCpu(VOID)
 		{
 			PEPT_DATA e = (v == 0) ? g_vcpu[cpu].PeptData
 				: g_vcpu[cpu].PeptDataHooked;
-			if (e == NULL || (v == 1 && !g_vcpu[cpu].bVmfuncOn))
+			if (e == NULL)
 			{
 				continue;
 			}
@@ -988,27 +988,5 @@ BOOLEAN ClkMtfFinish(VOID)
 	ULONG64 ctl = 0;
 	__vmx_vmread(CPU_BASED_VM_EXEC_CONTROL, &ctl);
 	__vmx_vmwrite(CPU_BASED_VM_EXEC_CONTROL, ctl & ~0x08000000ULL);
-	return TRUE;
-}
-
-BOOLEAN ClkDemoRead(ULONG idx, ULONG64* Val)
-{
-	if (idx >= GEPT_CLK_MAX || Val == NULL)
-	{
-		return FALSE;
-	}
-	//端口型PM_TMR(idx=1): guest态IN→exit(30)→补偿仿真, 'y'留痕
-	if (idx == 1 && s_clkIoPort != 0)
-	{
-		*Val = __indword(s_clkIoPort) & s_clkIoMask;
-		return TRUE;
-	}
-	if (!s_clk[idx].Armed)
-	{
-		return FALSE;
-	}
-	PGEPT_CLK c = &s_clk[idx];
-	//布防后本读即走仿真路径(virtual值), 'y'留痕
-	*Val = ClkRead(c, c->CtrOff, c->CtrSize) & c->CtrMask;
 	return TRUE;
 }

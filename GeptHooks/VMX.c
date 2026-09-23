@@ -34,17 +34,13 @@ int VMXInitCpuAlloc(ULONG cpuNumber)
 	PVMX_VMCS pvmcs = (PVMX_VMCS)MmAllocateContiguousMemory(sizeof(VMX_VMCS), phys);
 	PVOID MsrBitMap = MmAllocateContiguousMemory(PAGE_SIZE, phys);
 	PVOID pvmmStack = MmAllocateContiguousMemory(PAGE_SIZE * 6, phys);
-	//EPTP-list页(VMFUNC EPTP switching, 4KB对齐+物理连续)。
-	//VmxSetupVmcs里填: list[0]=clean/list[1]=hooked
-	PVOID pEptpList = MmAllocateContiguousMemory(PAGE_SIZE, phys);
 	//I/O位图8KB连续块(A@+0, B@+4K; 全零=全端口直通)
 	PVOID pIoBitmaps = MmAllocateContiguousMemory(PAGE_SIZE * 2, phys);
 	if (pvmmStack == NULL || MsrBitMap == NULL || pvmxon == NULL || pvmcs == NULL
-		|| pEptpList == NULL || pIoBitmaps == NULL)
+		|| pIoBitmaps == NULL)
 	{
 		//释放已成功的部分, 调用方负责清理
 		if (pIoBitmaps) MmFreeContiguousMemory(pIoBitmaps);
-		if (pEptpList) MmFreeContiguousMemory(pEptpList);
 		if (pvmmStack) MmFreeContiguousMemory(pvmmStack);
 		if (MsrBitMap) MmFreeContiguousMemory(MsrBitMap);
 		if (pvmxon) MmFreeContiguousMemory(pvmxon);
@@ -59,19 +55,15 @@ int VMXInitCpuAlloc(ULONG cpuNumber)
 	//MSR位图必须清零: 全零=不拦截任何MSR直通(垃圾位=随机exit+
 	//EOI被吞→APIC中断卡死)
 	RtlZeroMemory(MsrBitMap, PAGE_SIZE);
-	//EPTP-list清零: 未用项(2-511)全0, guest误切→VMFUNC失败exit(59)
-	RtlZeroMemory(pEptpList, PAGE_SIZE);
 	pvmxon->RevisionId = (ULONG)__readmsr(MSR_IA32_VMX_BASIC);
 	pvmcs->RevisionId = (ULONG)__readmsr(MSR_IA32_VMX_BASIC);
 	g_vcpu[cpuNumber].VMXON = pvmxon;
 	g_vcpu[cpuNumber].VMMStack = pvmmStack;
 	g_vcpu[cpuNumber].VMCS = pvmcs;
 	g_vcpu[cpuNumber].MsrBitMap = MsrBitMap;
-	g_vcpu[cpuNumber].VmfuncEptpList = pEptpList;
 	g_vcpu[cpuNumber].IoBitmaps = pIoBitmaps;
 	g_vcpu[cpuNumber].bInGuest = 0;
 	g_vcpu[cpuNumber].bLaunchFailed = 0;
-	g_vcpu[cpuNumber].bVmfuncOn = 0;
 	return 0;
 }
 
@@ -234,8 +226,20 @@ ULONG64 VmxStopAllIpi(ULONG_PTR Argument)
 ULONG VmxMsrAdjuest(ULONG64 msrNum, ULONG controlValue)
 {
 	LARGE_INTEGER msrValue;
-	msrValue.QuadPart = __readmsr(msrNum);
+	msrValue.QuadPart = __readmsr((ULONG)msrNum);
 	return (msrValue.LowPart | controlValue) & msrValue.HighPart;
+}
+
+//释放前清零(取证反制): 池释放不改写内容, VMCS revision id/VMXON
+//签名/位图布局/EPT表结构在物理内存长存=卸载后可被翻出"曾运行过
+//hypervisor"的证据。park守卫已保证无核再用; IPI退出后硬件walker
+//也不再访问
+static VOID VmxFreeZero(PVOID va, SIZE_T bytes)
+{
+	if (va != NULL)
+	{
+		RtlZeroMemory(va, bytes);
+	}
 }
 
 //PASSIVE_LEVEL释放指定CPU的全部VT资源(DriverUload调用)
@@ -243,44 +247,45 @@ void VmxFreeCpuResources(ULONG cpuNumber)
 {
 	if (g_vcpu[cpuNumber].VMCS)
 	{
+		VmxFreeZero(g_vcpu[cpuNumber].VMCS, sizeof(VMX_VMCS));
 		MmFreeContiguousMemory(g_vcpu[cpuNumber].VMCS);
 		g_vcpu[cpuNumber].VMCS = NULL;
 	}
 	if (g_vcpu[cpuNumber].VMXON)
 	{
+		VmxFreeZero(g_vcpu[cpuNumber].VMXON, sizeof(VMX_VMCS));
 		MmFreeContiguousMemory(g_vcpu[cpuNumber].VMXON);
 		g_vcpu[cpuNumber].VMXON = NULL;
 	}
 	if (g_vcpu[cpuNumber].VMMStack)
 	{
+		VmxFreeZero(g_vcpu[cpuNumber].VMMStack, PAGE_SIZE * 6);
 		MmFreeContiguousMemory(g_vcpu[cpuNumber].VMMStack);
 		g_vcpu[cpuNumber].VMMStack = NULL;
 	}
 	if (g_vcpu[cpuNumber].MsrBitMap)
 	{
+		VmxFreeZero(g_vcpu[cpuNumber].MsrBitMap, PAGE_SIZE);
 		MmFreeContiguousMemory(g_vcpu[cpuNumber].MsrBitMap);
 		g_vcpu[cpuNumber].MsrBitMap = NULL;
 	}
 	if (g_vcpu[cpuNumber].PeptData)
 	{
+		VmxFreeZero(g_vcpu[cpuNumber].PeptData, sizeof(EPT_DATA));
 		MmFreeContiguousMemory(g_vcpu[cpuNumber].PeptData);
 		g_vcpu[cpuNumber].PeptData = NULL;
 	}
 	//hooked视图EPT(内含的拆分pte页不单独跟踪, 随整机生命周期释放)
 	if (g_vcpu[cpuNumber].PeptDataHooked)
 	{
+		VmxFreeZero(g_vcpu[cpuNumber].PeptDataHooked, sizeof(EPT_DATA));
 		MmFreeContiguousMemory(g_vcpu[cpuNumber].PeptDataHooked);
 		g_vcpu[cpuNumber].PeptDataHooked = NULL;
-	}
-	//EPTP-list页(VMFUNC)
-	if (g_vcpu[cpuNumber].VmfuncEptpList)
-	{
-		MmFreeContiguousMemory(g_vcpu[cpuNumber].VmfuncEptpList);
-		g_vcpu[cpuNumber].VmfuncEptpList = NULL;
 	}
 	//I/O位图8KB块
 	if (g_vcpu[cpuNumber].IoBitmaps)
 	{
+		VmxFreeZero(g_vcpu[cpuNumber].IoBitmaps, PAGE_SIZE * 2);
 		MmFreeContiguousMemory(g_vcpu[cpuNumber].IoBitmaps);
 		g_vcpu[cpuNumber].IoBitmaps = NULL;
 	}
@@ -290,6 +295,7 @@ void VmxFreeCpuResources(ULONG cpuNumber)
 	{
 		if (g_vcpu[cpuNumber].HighPdptRawVa[i])
 		{
+			VmxFreeZero(g_vcpu[cpuNumber].HighPdptRawVa[i], PAGE_SIZE);
 			ExFreePool(g_vcpu[cpuNumber].HighPdptRawVa[i]);
 			g_vcpu[cpuNumber].HighPdptRawVa[i] = NULL;
 			g_vcpu[cpuNumber].HighPdptVa[i] = NULL;
@@ -341,38 +347,28 @@ static BOOLEAN VmxDeadlineOnWrite(PVOID Context, ULONG32 Msr, ULONG64 Value)
 	return FALSE;   //已代写, 静默(勿再写原值)
 }
 
-//DEBUGCTL透明自检(全核in-guest后, PASSIVE): guest写LBR位→vmcall
-//空探针(必经一次VM-exit)→回读保持=save/load debug controls生效。
-//未开两控制位时VM-exit无条件清IA32_DEBUGCTL(SDM 30.5.1)→回读0=
-//行为泄漏的正向证明。LBR位不可写的CPU(#GP)跳过
-static VOID VmxDebugCtlSelfCheck(VOID)
+//PERF_GLOBAL_CTRL guest写同步标志(1=sec-exit bit30缺, 需WRMSR拦截)
+static volatile LONG g_perfWrSync = 0;
+
+//hook读透明MTF窗口标记(每核): ept.c切clean+开MTF时置位, MTF exit
+//认领后才切回hooked——未被认领的MTF绝不碰EPT_POINTER(视图是核级
+//状态, 凭空切=其他上下文执行流错位)
+volatile LONG g_hookMtfPending[64] = { 0 };
+
+//0x38F写回调(sec-exit bit30不支持时的兜底): 代写真MSR+同步本核GUEST
+//字段(entry恢复的数据源)。PMU配置时才触发=冷路径
+static BOOLEAN VmxPerfCtrlOnWrite(PVOID Context, ULONG32 Msr, ULONG64 Value)
 {
-	ULONG64 orig = __readmsr(MSR_IA32_DEBUGCTL);
-	BOOLEAN armed = FALSE;
-	__try
-	{
-		__writemsr(MSR_IA32_DEBUGCTL, orig | 1);   //LBR位
-		armed = TRUE;
-	}
-	__except (EXCEPTION_EXECUTE_HANDLER)
-	{
-	}
-	if (!armed)
-	{
-		FlLog("DEBUGCTL透明自检: LBR位不可写(本机无LBR), 跳过");
-		return;
-	}
-	CmVmCall(GEPT_VMCALL_TSCCAL, 0, 0, 0);   //空探针=纯VM-exit往返
-	ULONG64 after = __readmsr(MSR_IA32_DEBUGCTL);
-	__writemsr(MSR_IA32_DEBUGCTL, orig);     //恢复(在途记录=guest自身分支)
-	FlLog("DEBUGCTL透明自检: LBR位经exit往返%s(%llX→%llX)",
-		(after & 1) ? "OK:保持=save/load生效" : "FAIL:被清零",
-		(unsigned long long)(orig | 1), (unsigned long long)after);
+	UNREFERENCED_PARAMETER(Context);
+	UNREFERENCED_PARAMETER(Msr);
+	__writemsr(MSR_IA32_PERF_GLOBAL_CTRL, Value);
+	__vmx_vmwrite(GUEST_IA32_PERF_GLOBAL_CTRL, Value);
+	return FALSE;   //已代写, 静默
 }
 
 //全核接管入口(PASSIVE_LEVEL): 资源分配→串行逐核启动VT→互斥仲裁→常驻。
 //失败路径已自清理资源, 调用方直接返回即可
-NTSTATUS VmxStartAllCpus(PDRIVER_OBJECT DriverObject)
+NTSTATUS VmxStartAllCpus(_In_ PDRIVER_OBJECT DriverObject)
 {
 	//文件日志最先初始化(此后任何一步卡死都有现场); Release构建为空操作
 	FlInit();
@@ -547,8 +543,16 @@ NTSTATUS VmxStartAllCpus(PDRIVER_OBJECT DriverObject)
 	//TSC校准(全核in-guest确认后, 0x6E0 hook安装前——校准vmcall是
 	//空exit, 定时器流量不干扰)
 	VmxTscCalibrateAll();
-	//DEBUGCTL透明自检(save/load debug controls的正向验证)
-	VmxDebugCtlSelfCheck();
+	//PERF_GLOBAL_CTRL写同步兜底(sec-exit bit30缺时): PMU配置是冷路径
+	if (g_perfWrSync)
+	{
+		GEPT_MSR_HOOK perfHook = { 0 };
+		perfHook.Msr = MSR_IA32_PERF_GLOBAL_CTRL;
+		perfHook.OnWrite = VmxPerfCtrlOnWrite;
+		NTSTATUS pfSt = GeptMsrHookInstall(&perfHook);
+		FlLog("框架内置0x38F写同步(sec bit30缺, 拦截同步GUEST字段): %s",
+			NT_SUCCESS(pfSt) ? "安装OK" : "安装失败(见[MSR]行)");
+	}
 	//MMIO时钟封堵(v1.8): ACPI发现→校准→逐核布防。TSC轴封堵的伴生
 	//自洽——交叉时钟(HPET/PM_TMR)不再泄漏时间轴空洞
 	ClkInitAll();
@@ -613,7 +617,8 @@ VOID VmxShutdownAllCpus(VOID)
 	}
 	FlLog("Unload: 开始关闭VT(全核IPI原子退出)");
 	//先移除全部hook再关VT: 在途回调此刻VT仍开=安全执行完毕;
-	//2s宽限让被抢占的回调跑完(GeptViewSwitch的bInGuest检查兜底)
+	//2s宽限让被抢占的回调跑完(CallOriginal不碰视图, 只剩replay
+	//执行=普通内存访问, 宽限纯为保守)
 	GeptApiRemoveAll();
 	{
 		LARGE_INTEGER tick;
@@ -761,7 +766,7 @@ void VmxMsrReadHandler(PGUEST_REGS GuestRegs)
 		GuestRegs->rdx = (forged >> 32) & 0xFFFFFFFF;
 		return;
 	}
-	ULONG64 msrValue = __readmsr(GuestRegs->rcx);
+	ULONG64 msrValue = __readmsr((ULONG)GuestRegs->rcx);
 	GuestRegs->rax = msrValue & 0xFFFFFFFF;
 	GuestRegs->rdx = (msrValue >> 32) & 0xFFFFFFFF;
 }
@@ -795,6 +800,107 @@ static VOID VmxInjectGp(ULONG cpu, ULONG reason, ULONG64 rip)
 	{
 		FlRingPush('B', cpu, reason, rip, (ULONG64)(ULONG)n, 0);
 	}
+}
+
+//==== RDRAND/RDSEED/INVPCID代执行(v1.10d防御case族) ====
+//三个exit在当前控制配置下不可达(RDRAND/RDSEED exiting=0,
+//INVPCID exit需INVLPG exiting=1), 此处是must-1位异变的保险:
+//落default='U'逃生=vmx_off"诱导后消失"向量。代执行=裸机语义
+//(root与guest共CR3共真实硬件, 直接执行等价)。FALSE=解码异常
+//(调用方走'U'逃生, 真机重执行=裸机)
+
+//RDRAND/RDSEED(0F C7 /6,/7; 寄存器操作数唯一形态): 解码目标GPR+
+//操作数宽, root代执行(asm助手)回填。RFLAGS: CF=成败, 清OF/SF/ZF/AF/PF
+static BOOLEAN VmxEmuRdRandFamily(PGUEST_REGS regs, ULONG64 rip,
+	ULONG len, BOOLEAN isRdseed)
+{
+	if (len < 3 || len > 15)
+	{
+		return FALSE;
+	}
+	UCHAR code[15];
+	RtlCopyMemory(code, (PVOID)rip, len);
+	UCHAR* p = code;
+	UCHAR* end = code + len;
+	BOOLEAN op66 = FALSE;
+	UCHAR rex = 0;
+	while (p + 3 <= end && (*p == 0x66 || (*p & 0xF0) == 0x40))
+	{
+		if (*p == 0x66) { op66 = TRUE; }
+		else { rex = *p; }
+		p++;
+	}
+	if (p + 3 > end || p[0] != 0x0F || p[1] != 0xC7 || (p[2] >> 6) != 3)
+	{
+		return FALSE;    //非0F C7 /6-/7寄存器形态
+	}
+	UCHAR rm = p[2] & 7;
+	if (rex & 1)
+	{
+		rm |= 8;         //REX.B(REX.0100WRXB的bit0)
+	}
+	ULONG64 val = 0;
+	unsigned char ok = isRdseed ? VmxRdSeed64Step(&val)
+		: VmxRdRand64Step(&val);
+	//回填: REX.W=8字节全宽/默认4字节清高32/66=2字节清高48
+	ULONG64 slot = *(PULONG64)((PUCHAR)regs + rm * 8);
+	if (rex & 8)          //REX.W(bit3)
+	{
+		slot = val;
+	}
+	else if (op66)
+	{
+		slot = (slot & ~0xFFFFULL) | (val & 0xFFFF);
+	}
+	else
+	{
+		slot = (slot & ~0xFFFFFFFFULL) | (val & 0xFFFFFFFF);
+	}
+	*(PULONG64)((PUCHAR)regs + rm * 8) = slot;
+	//RFLAGS: CF/PF/AF/ZF/SF/OF = 0x1|0x4|0x10|0x40|0x80|0x800
+	ULONG64 rflags = 0;
+	__vmx_vmread(GUEST_RFLAGS, &rflags);
+	rflags &= ~0x8D5ULL;
+	if (ok)
+	{
+		rflags |= 1;    //CF=1(熵就绪)
+	}
+	__vmx_vmwrite(GUEST_RFLAGS, rflags);
+	return TRUE;
+}
+
+//INVPCID(66 0F 38 82 /r): type=reg源, descriptor=内存操作数。仅支持
+//mod=00简单[r]形态(编译器标准输出); 复杂寻址FALSE走'U'逃生。
+//root代执行作用真实TLB(无PCID虚拟化)=裸机语义
+static BOOLEAN VmxEmuInvpcid(PGUEST_REGS regs, ULONG64 rip, ULONG len)
+{
+	if (len < 4 || len > 15)
+	{
+		return FALSE;
+	}
+	UCHAR code[15];
+	RtlCopyMemory(code, (PVOID)rip, len);
+	UCHAR* p = code;
+	UCHAR* end = code + len;
+	while (p + 4 <= end && (*p == 0x66 || (*p & 0xF0) == 0x40))
+	{
+		p++;
+	}
+	if (p + 4 > end || p[0] != 0x0F || p[1] != 0x38 || p[2] != 0x82)
+	{
+		return FALSE;
+	}
+	UCHAR modrm = p[3];
+	UCHAR mod = modrm >> 6;
+	UCHAR rm = modrm & 7;
+	if (mod != 0 || rm == 4 || rm == 5)
+	{
+		return FALSE;    //SIB/rip-relative/disp形态不支持(防御路径)
+	}
+	ULONG64 type = *(PULONG64)((PUCHAR)regs + ((modrm >> 3) & 7) * 8);
+	ULONG64 desc = *(PULONG64)((PUCHAR)regs + rm * 8);
+	VmxInvpcid(type, (PVOID)desc);
+	return TRUE;
 }
 
 void VmxExitHandler(PGUEST_REGS GuestRegs)
@@ -1012,14 +1118,13 @@ void VmxExitHandler(PGUEST_REGS GuestRegs)
 		}
 		//CodePage物理隐蔽(GeptHookInstall/Remove的DPC广播):
 		//rdx=CodePage GPA, r8=1隐蔽/0恢复。两套视图都改(扫描可能
-		//在任一视图下进行); 仅VMFUNC核(fallback取指走clean恒等
+		//在任一视图下进行); 仅双EPT核(fallback取指走clean恒等
 		//PTE); invept本核生效
 		else if (GuestRegs->rcx == GEPT_VMCALL_CPHIDE)
 		{
 			BOOLEAN cpOk = FALSE;
 			ULONG cpuC = KeGetCurrentProcessorNumber();
-			if (g_vcpu[cpuC].bVmfuncOn &&
-				g_vcpu[cpuC].PeptDataHooked != NULL)
+			if (g_vcpu[cpuC].PeptDataHooked != NULL)
 			{
 				ULONG64 gpa = GuestRegs->rdx;
 				BOOLEAN hide = (GuestRegs->r8 != 0);
@@ -1094,6 +1199,67 @@ void VmxExitHandler(PGUEST_REGS GuestRegs)
 			VmxInjectUd(KeGetCurrentProcessorNumber(), 27, guestRip);
 		}
 		//异常在本指令派发: RIP原样写回+早退
+		__vmx_vmwrite(GUEST_RIP, guestRip);
+		return;
+	}
+	//=============== 防御case族(56-81; v1.10d审计) ===============
+	//当前控制配置下不可达, 纯must-1位异变保险; 落default='U'逃生=
+	//vmx_off"诱导后消失"向量。语义按裸机(详见VMX.h逐条注释)
+	case EXIT_REASON_RDRAND:   //57
+	{
+		if (!VmxEmuRdRandFamily(GuestRegs, guestRip, (ULONG)exitCodeLen, FALSE))
+		{
+			VmxExitStormEscape('U', vmexitReason, guestRip, exitQual, GuestRegs);
+		}
+	}
+	break;
+	case EXIT_REASON_RDSEED:   //61
+	{
+		if (!VmxEmuRdRandFamily(GuestRegs, guestRip, (ULONG)exitCodeLen, TRUE))
+		{
+			VmxExitStormEscape('U', vmexitReason, guestRip, exitQual, GuestRegs);
+		}
+	}
+	break;
+	case EXIT_REASON_INVPCID:   //58
+	{
+		if (!VmxEmuInvpcid(GuestRegs, guestRip, (ULONG)exitCodeLen))
+		{
+			VmxExitStormEscape('U', vmexitReason, guestRip, exitQual, GuestRegs);
+		}
+	}
+	break;
+	case EXIT_REASON_UMWAIT:   //67
+	case EXIT_REASON_TPAUSE:   //68
+	{
+		//"已到deadline立即返回"形态: CF=1, 清AF/PF/SF/ZF/OF(bit26
+		//修复后不可达, 纯防御; root代等待会占核, 不做)
+		ULONG64 wflags = 0;
+		__vmx_vmread(GUEST_RFLAGS, &wflags);
+		wflags &= ~0x8D4ULL;
+		wflags |= 1;              //CF=1
+		__vmx_vmwrite(GUEST_RFLAGS, wflags);
+	}
+	break;
+	case EXIT_REASON_RDMSRLIST:   //78
+	case EXIT_REASON_WRMSRLIST:   //79
+	{
+		//跳过整条(SDM: 单MSR exit时对应RCX位不清=该项未读——跳过=
+		//全list未处理的保守忠实形态; 纯防御路径)
+	}
+	break;
+	case EXIT_REASON_ENCLS:   //60: ENCLS exiting=0+bitmap全0双保险不可达
+	case EXIT_REASON_SEAMCALL:   //76: 非TDX平台裸机语义
+	case EXIT_REASON_TDCALL:   //77: 同上
+	{
+		VmxInjectUd(KeGetCurrentProcessorNumber(), vmexitReason, guestRip);
+		__vmx_vmwrite(GUEST_RIP, guestRip);
+		return;
+	}
+	case EXIT_REASON_URDMSR:   //80: OS默认禁user-MSR的裸机形态
+	case EXIT_REASON_UWRMSR:   //81: 同上
+	{
+		VmxInjectGp(KeGetCurrentProcessorNumber(), vmexitReason, guestRip);
 		__vmx_vmwrite(GUEST_RIP, guestRip);
 		return;
 	}
@@ -1263,7 +1429,7 @@ void VmxExitHandler(PGUEST_REGS GuestRegs)
 			| (GuestRegs->rax & 0xFFFFFFFF);
 		if (GeptMsrDispatchWrite((ULONG32)GuestRegs->rcx, msrVal))
 		{
-			__writemsr(GuestRegs->rcx, msrVal);
+			__writemsr((ULONG)GuestRegs->rcx, msrVal);
 		}
 	}
 	break;
@@ -1276,17 +1442,14 @@ void VmxExitHandler(PGUEST_REGS GuestRegs)
 	break;
 	case EXIT_REASON_VMFUNC:   //59
 	{
-		//VMFUNC失败exit(EPTP-list项非法/ECX>=512): 视图未切换,
-		//推RIP跳过后guest继续旧视图(绝不走'U'逃生——真机重执行
-		//vmfunc=#UD蓝屏)。length异常时按定长3跳过(0F01D4)
-		if (exitCodeLen == 0 || exitCodeLen > 15)
-		{
-			exitCodeLen = 3;
-		}
+		//ctls2 bit13=0下guest执行vmfunc按SDM应#UD(硬件), 本case为
+		//兜底(若CPU语义为exit则注入#UD)——与裸机逐位一致。异常在
+		//本指令派发, 不推RIP(return早退绕过尾部通用推进)
+		VmxInjectUd(KeGetCurrentProcessorNumber(), 59, guestRip);
 		FlRingPush('u', KeGetCurrentProcessorNumber(), 59,
 			guestRip, exitQual, exitCodeLen);
+		return;
 	}
-	break;
 	case EXIT_REASON_TRIPLE_FAULT:
 	{
 		//三重故障不可恢复(重执行=真机重启): park(vmx_off+sti/hlt
@@ -1366,14 +1529,18 @@ void VmxExitHandler(PGUEST_REGS GuestRegs)
 			__vmx_vmwrite(GUEST_RIP, guestRip);
 			return;
 		}
-		//MTF单步完成(读/写指令已在clean视图执行): 关MTF+切回hooked。
-		//RIP已是下一条指令; MTF exit的指令长字段无效, 显式重写绕过
-		//尾部通用推进(exitCodeLen残留值=执行流错位)
+		//hook读透明回捕(认领制): ept.c置位方才切回hooked。非本路径
+		//的MTF只关标志不动视图——凭空切EPT_POINTER=视图错乱源
 		ULONG cpuM = KeGetCurrentProcessorNumber();
-		if (g_vcpu[cpuM].bVmfuncOn && g_vcpu[cpuM].PeptDataHooked != NULL)
+		if (InterlockedExchange(&g_hookMtfPending[cpuM & 63], 0))
 		{
-			__vmx_vmwrite(EPT_POINTER, g_vcpu[cpuM].EptpHooked.ALL);
+			if (g_vcpu[cpuM].PeptDataHooked != NULL)
+			{
+				__vmx_vmwrite(EPT_POINTER, g_vcpu[cpuM].EptpHooked.ALL);
+			}
 		}
+		//关MTF。RIP已是下一条指令; MTF exit的指令长字段无效, 显式
+		//重写绕过尾部通用推进(exitCodeLen残留值=执行流错位)
 		ULONG64 mtfCtl = 0;
 		__vmx_vmread(CPU_BASED_VM_EXEC_CONTROL, &mtfCtl);
 		__vmx_vmwrite(CPU_BASED_VM_EXEC_CONTROL, mtfCtl & ~0x08000000ULL);
@@ -1622,10 +1789,10 @@ int VmxSetupVmcs(PVOID GuestRsp)
 		if (InterlockedCompareExchange(&s_msrLogged, 1, 0) == 0)
 		{
 			FlLog("MSR原值: PIN=%llX PROC=%llX EXIT=%llX ENTRY=%llX (实际读取的%s)",
-				(unsigned long long)__readmsr(pinMsr),
-				(unsigned long long)__readmsr(procMsr),
-				(unsigned long long)__readmsr(exitMsrNum),
-				(unsigned long long)__readmsr(entryMsrNum),
+				(unsigned long long)__readmsr((ULONG)pinMsr),
+				(unsigned long long)__readmsr((ULONG)procMsr),
+				(unsigned long long)__readmsr((ULONG)exitMsrNum),
+				(unsigned long long)__readmsr((ULONG)entryMsrNum),
 				useTrueCtl ? "TRUE MSR" : "旧式MSR");
 			FlLog("MSR原值: SEC(48Bh)=%llX EPT_VPID_CAP(48Ch)=%llX",
 				(unsigned long long)__readmsr(MSR_IA32_VMX_PROCBASED_CTLS2),
@@ -1639,23 +1806,68 @@ int VmxSetupVmcs(PVOID GuestRsp)
 	//全端口直通, 零行为差; 时钟端口位由ClkArmCpu(vmcall 11 root侧)置位
 	ULONG procCtl = VmxMsrAdjuest(procMsr,
 		0X8 | 0X10000000 | 0X80000000 | 0X02000000);
-	//exitCtl: bit9(host address-space size)+bit2(save debug controls,
-	//SDM 30.3.1: VM-exit把DR7/IA32_DEBUGCTL存入VMCS); 绝不开bit15
-	//(ack-on-exit, 直投纪律)。不开bit2=VM-exit后guest的DR7/DEBUGCTL
-	//被无条件清零(DR7←0x400, DEBUGCTL←0, SDM 30.5.1)且entry不重载
-	//——guest的LBR/硬件断点在首个exit后静默失效=行为泄漏
-	ULONG exitCtl = VmxMsrAdjuest(exitMsrNum, 0x200 | 0x4);
-	//entryCtl: bit9(IA-32e)+bit2(load debug controls, SDM 29.3.2.1:
-	//VM-entry从VMCS重载DR7/IA32_DEBUGCTL)——与save配对=guest写读
-	//一致(裸机语义)。root执行期DEBUGCTL恒0(root分支不进LBR栈)
-	ULONG entryCtl = VmxMsrAdjuest(entryMsrNum, 0x200 | 0x4);
+	//entryCtl: bit9(IA-32e)+bit2(load debug: DR7/DEBUGCTL重载=写读一致)
+	//+bit13(load PERF_GLOBAL_CTRL: exit停表后guest恢复)+bit17/18(conceal
+	//PT/load RTIT: 与sec-exit配对)。老CPU不允许的位被能力MSR自动清
+	ULONG entryCtl = VmxMsrAdjuest(entryMsrNum,
+		0x200 | 0x4 | 0x2000 | 0x20000 | 0x40000);
+	//exitCtl: bit9+bit2(save debug)+bit12(load PERF_GLOBAL_CTRL: HOST
+	//字段=0→root期间全局停表, guest的PMC不再计入root指令)+bit31
+	//(activate secondary exit)。bit12与entry bit13成对(只开exit侧=
+	//guest的PMU被exit吃掉=更强暴露)
+	ULONG exitCtl = VmxMsrAdjuest(exitMsrNum, 0x200 | 0x4 | 0x1000
+		| ((entryCtl & 0x2000) ? 0x80000000 : 0));
+	if (!(entryCtl & 0x2000))
+	{
+		exitCtl &= ~0x1000;    //entry恢复不支持=停表侧一并退(成对原则)
+	}
+	//secondary exit(0x493能力, 老CPU无此MSR→bit31被清→全退化):
+	//bit25 clear IA32_RTIT_CTL(root分支不进PT数据流)+bit24 conceal
+	//VMX from PT(exit不产PIP包)+bit30 save PERF_GLOBAL_CTL(exit自动
+	//存guest值→免WRMSR拦截同步)
+	ULONG secExitCtl = 0;
+	if (exitCtl & 0x80000000)
+	{
+		secExitCtl = VmxMsrAdjuest(MSR_IA32_VMX_EXIT_CTLS2,
+			0x40000000 | 0x2000000 | 0x1000000);
+		//sec bit30缺=PERF guest字段需WRMSR拦截同步(冷路径, 见
+		//VmxPerfCtrlOnWrite); 任一核缺即全局装(标志)
+		if ((entryCtl & 0x2000) && !(secExitCtl & 0x40000000))
+		{
+			g_perfWrSync = 1;
+		}
+	}
 	//控制字段留痕(proc的bit3=0=极老CPU, TSC补偿自动降级)
-	FlLog("cpu%u 控制字段(直投+TSCoff+调试透明): pin=%08X proc=%08X exit=%08X entry=%08X",
-		cpuNumber, pinCtl, procCtl, exitCtl, entryCtl);
+	FlLog("cpu%u 控制字段(直投+TSCoff+调试/PMU透明): pin=%08X proc=%08X exit=%08X entry=%08X secExit=%08X",
+		cpuNumber, pinCtl, procCtl, exitCtl, entryCtl, secExitCtl);
 	__vmx_vmwrite(VM_ENTRY_CONTROLS, entryCtl);
 	__vmx_vmwrite(VM_EXIT_CONTROLS, exitCtl);
+	if (exitCtl & 0x80000000)
+	{
+		__vmx_vmwrite(SECONDARY_VM_EXIT_CONTROLS, secExitCtl);
+	}
 	__vmx_vmwrite(PIN_BASED_VM_EXEC_CONTROL, pinCtl);
 	__vmx_vmwrite(CPU_BASED_VM_EXEC_CONTROL, procCtl);
+	//PMU/PT封堵字段(存在性按控制位动态判, 不存在而写=VMfail):
+	//HOST PERF=0(root停表)/GUEST PERF=真值(entry恢复)/GUEST RTIT=真值
+	if (exitCtl & 0x1000)
+	{
+		__vmx_vmwrite(HOST_IA32_PERF_GLOBAL_CTRL, 0);
+	}
+	if (entryCtl & 0x2000)
+	{
+		ULONG64 perfInit = 0;
+		__try { perfInit = __readmsr(MSR_IA32_PERF_GLOBAL_CTRL); }
+		__except (EXCEPTION_EXECUTE_HANDLER) {}
+		__vmx_vmwrite(GUEST_IA32_PERF_GLOBAL_CTRL, perfInit);
+	}
+	if ((entryCtl & 0x40000) || (secExitCtl & 0x2000000))
+	{
+		ULONG64 rtitInit = 0;
+		__try { rtitInit = __readmsr(MSR_IA32_RTIT_CTL); }
+		__except (EXCEPTION_EXECUTE_HANDLER) {}
+		__vmx_vmwrite(GUEST_IA32_RTIT_CTL, rtitInit);
+	}
 	//TSC_OFFSET初始0, 此后VmxTscCompensate单调向负推
 	__vmx_vmwrite(TSC_OFFSET, 0);
 	PHYSICAL_ADDRESS msrPhyAddr = MmGetPhysicalAddress(currentCpu->MsrBitMap);
@@ -1679,45 +1891,29 @@ int VmxSetupVmcs(PVOID GuestRsp)
 	{
 		//不用VPID: 恒等虚拟化无需(它是vcpu切换优化), invept即可完整冲刷
 		//ctls2: bit1(secondary) bit3(rdtscp) bit12(invpcid) bit20(xsaves)
-		//bit13(VMFUNC)。位布局须与SDM核对(公式无法拦截允许域内的错误期望)
+		//bit26(user wait and pause) bit27(PCONFIG)——后两个是"=0则#UD"型
+		//(SDM Table 27-7): 不开则WAITPKG CPU(12代+)上guest的UMWAIT/
+		//UMONITOR/TPAUSE/PCONFIG被硬件#UD(CPUID透传真值→OS真用)——内核
+		//意外#UD蓝屏+裸机行为差双重暴露; 开=原生执行零exit(裸机一致)。
+		//老CPU能力MSR自动清位零影响。VMFUNC(bit13)不开——guest执行
+		//vmfunc=#UD与裸机一致(探测面封堵: 裸机必#UD的指令成功零exit=
+		//hypervisor铁证+可篡改双视图)。视图切换全走root侧vmwrite
+		//EPT_POINTER, 双EPT引擎不依赖VMFUNC
 		ULONG64 ctls2Value = VmxMsrAdjuest(MSR_IA32_VMX_PROCBASED_CTLS2,
-			0x2 | 0x8 | 0x2000 | 0x1000 | 0x100000);
+			0x2 | 0x8 | 0x1000 | 0x100000 | 0x4000000 | 0x8000000);
 		__vmx_vmwrite(SECONDARY_VM_EXEC_CONTROL, ctls2Value);
 		__vmx_vmwrite(EPT_POINTER, g_vcpu[cpuNumber].Eptp.ALL);
-		FlLog("cpu%u ctls2=%llX (期望0010300A=EPT+rdtscp+invpcid+xsaves+VMFUNC, 无VPID)",
+		FlLog("cpu%u ctls2=%llX (期望0C10100A=EPT+rdtscp+invpcid+xsaves+userwait+pconfig, 无VPID/VMFUNC)",
 			cpuNumber, (unsigned long long)ctls2Value);
-		//VMFUNC EPTP switching(零VM-Exit hook基石)。VMFUNC无CPUID
-		//枚举位, 判据=ctls2 bit13实际置位+EPTP-list页就绪; 不满足=
-		//bVmfuncOn=0, hook走violation方案(fallback)
-		if ((ctls2Value & 0x2000) && g_vcpu[cpuNumber].VmfuncEptpList != NULL)
+		if (g_vcpu[cpuNumber].PeptDataHooked != NULL)
 		{
-			//EPTP-list: [0]=clean, [1]=hooked(guest内vmfunc(0,idx)零
-			//VM-Exit切换, SDM §28.5.7.3)。无hooked EPT时双项同值(no-op)。
-			//未用项(2-511)全0: 误切→exit 59(非#UD)
-			PULONG64 eptpList = (PULONG64)g_vcpu[cpuNumber].VmfuncEptpList;
-			eptpList[0] = g_vcpu[cpuNumber].Eptp.ALL;
-			eptpList[1] = (g_vcpu[cpuNumber].PeptDataHooked != NULL)
-				? g_vcpu[cpuNumber].EptpHooked.ALL
-				: g_vcpu[cpuNumber].Eptp.ALL;
-			PHYSICAL_ADDRESS eptpListPhys =
-				MmGetPhysicalAddress(g_vcpu[cpuNumber].VmfuncEptpList);
-			//bit0=EPTP switching; EPTP-list须4KB对齐
-			__vmx_vmwrite(VMFUNC_CONTROL, 1);
-			__vmx_vmwrite(EPTP_LIST_ADDRESS, eptpListPhys.QuadPart);
-			g_vcpu[cpuNumber].bVmfuncOn = 1;
-			FlLog("cpu%u VMFUNC已启用: EPTP-list=%p(phys=%llX) [0]=%llX(clean) [1]=%llX(%s)",
-				cpuNumber, g_vcpu[cpuNumber].VmfuncEptpList,
-				(unsigned long long)eptpListPhys.QuadPart,
-				(unsigned long long)eptpList[0], (unsigned long long)eptpList[1],
-				(g_vcpu[cpuNumber].PeptDataHooked != NULL)
-				? "hooked双EPT" : "同值no-op(hooked分配失败)");
+			FlLog("cpu%u 双EPT引擎: hooked EPTP=%llX(切换=root vmwrite, VMFUNC指令已禁用)",
+				cpuNumber, (unsigned long long)g_vcpu[cpuNumber].EptpHooked.ALL);
 		}
 		else
 		{
-			g_vcpu[cpuNumber].bVmfuncOn = 0;
-			FlLog("cpu%u VMFUNC未启用(ctls2.bit13=%d list=%p, MSR 0x48B无VMFUNC控制=CPU不支持)——hook走violation方案",
-				cpuNumber, (int)((ctls2Value >> 13) & 1),
-				g_vcpu[cpuNumber].VmfuncEptpList);
+			FlLog("cpu%u hooked EPT未就绪(深拷贝失败)——hook走violation方案",
+				cpuNumber);
 		}
 	}
 	else

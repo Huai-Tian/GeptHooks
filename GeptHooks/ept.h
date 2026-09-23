@@ -180,7 +180,7 @@ BOOLEAN EptBuildHighMapping(ULONG64 gpa);
 //不受影响, guest物理扫描只见零
 VOID EptHideFrameworkPages(ULONG cpuNumber);
 //CodePage物理隐蔽(vmcall(12)root侧, 每核调用): hide=1改译零页/
-//0恢复恒等。仅VMFUNC核; Remove释放CodePage前必须恢复(PFN复用)
+//0恢复恒等。仅双EPT核; Remove释放CodePage前必须恢复(PFN复用)
 BOOLEAN EptHideCodePageGpa(ULONG64 gpa, BOOLEAN hide);
 //释放全部拆分pte页(vmx_off后/回滚, EptShutdownHighMappings内调用)
 VOID EptFreeSplitPtes(VOID);

@@ -35,15 +35,16 @@ HVM_RESTORE_ALL_NOSEGREGS MACRO
         pop r15
 ENDM
 EXTERN	 GeptCallbackDispatch:PROC   ;API detour分发器(GeptApi.c)
-EXTERN	 GeptViewSwitch:PROC         ;带VT开关检查的视图切换(GeptApi.c)
 .CODE
-;==== API detour stub(VMFUNC核+fallback核共用) ====
+;==== API detour stub(双EPT核+fallback核共用) ====
 ;进入链: hooked视图hook页(=CodePage)目标偏移14B跳转 → trampoline槽
 ;  (mov r10,entry; jmp GeptStubEntry) → 此处。r10=API条目; 栈顶=原
 ;  调用者返回地址(push+ret净值0=纯jmp); rcx/rdx/r8/r9原封未动
-;流程: GeptViewSwitch(0)切clean(fallback核自动no-op) → SAVE_ALL
-;  → GeptCallbackDispatch(调用户回调, 返回值=新函数返回值)
-;  → GeptViewSwitch(1)归位 → RESTORE_ALL → ret回调用者。
+;流程: SAVE_ALL → GeptCallbackDispatch(调用户回调, 返回值=新函数
+;  返回值) → RESTORE_ALL → ret回调用者。
+;回调恒在当前视图执行(视图是核级状态, stub级切换=线程迁移后旧核
+;视图错乱的竞态源——v1.10b移除): 回调调用的其他hook目标正常触发
+;  (嵌套detour语义); GeptCallOriginal走重定位跳板(视图无关)。
 ;retval/API条目必须立即落帧(volatile跨C调用不保证保存)
 ;帧布局(push序, rax最低): rax@0 rcx@8 rdx@10h rbx@18h rbp@20h
 ;rsi@30h rdi@38h r8@40h r9@48h r10@50h r11@58h; sub 28h后帧基=
@@ -57,22 +58,18 @@ GeptStubEntry PROC
                               ;RESTORE时被pop rbp覆盖; C侧栈参数=regs->rsp+28h)
     sub rsp, 28h              ;入口%16==8+16push(128B)不变, sub 28h后
                               ;call点%16==0(须28h非20h, 否则栈错位#GP)
-    xor ecx, ecx              ;arg1=0(clean视图)
-    call GeptViewSwitch       ;VMFUNC核vmfunc切clean; fallback核no-op
     mov rcx, [rsp+78h]        ;arg1=API条目(从帧r10槽重取)
     lea rdx, [rsp+28h]        ;arg2=GUEST_REGS帧基(回调取原始rcx/rdx/r8/r9)
     call GeptCallbackDispatch ;rax=用户回调返回值
     mov [rsp+28h], rax        ;retval落帧rax槽(RESTORE的pop rax=新返回值)
-    mov ecx, 1                ;arg1=1(hooked视图)
-    call GeptViewSwitch       ;VMFUNC核vmfunc归位; fallback核no-op
     add rsp, 28h
     HVM_RESTORE_ALL_NOSEGREGS ;rax=回调返回值, 其余全部=原始值(detour语义)
     ret                       ;回原调用者(栈顶=其返回地址, jmp进入未压新帧)
 GeptStubEntry ENDP
 
 ;==== CallOriginal第5+栈参数转发桩(GeptApi.c GeptCallOriginal调用) ====
-;rcx=GEPT_ORIG_CALL*(参数块偏移契约): +00h Target(VMFUNC核=原入口/
-;fallback核=重定位跳板) +08h StackArgs源(触发帧第5+实参, 可被回调改写)
+;rcx=GEPT_ORIG_CALL*(参数块偏移契约): +00h Target(重定位跳板, 视图无关)
+;+08h StackArgs源(触发帧第5+实参, 可被回调改写)
 ;+10h Count(N) +18h Arg1 +20h Arg2 +28h Arg3 +30h Arg4
 ;职责: 按x64 ABI重建对Target的调用帧——32B影子空间+N个栈参数复制到
 ;[rsp+20h..]+寄存器参数装载+call点16对齐。

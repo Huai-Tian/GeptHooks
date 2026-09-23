@@ -5,14 +5,14 @@
 #include "VMX.h"
 
 //====================================================================
-// API实现(VMFUNC双EPT detour)
+// API实现(双EPT detour)
 //
 //触发链: hooked视图hook页(=CodePage)目标偏移14B跳转 → trampoline槽
 //  (mov r10,entry; jmp GeptStubEntry) → GeptStubEntry(hook.asm):
-//  vmfunc(0,0)切clean → SAVE_ALL → GeptCallbackDispatch → 用户回调
-//  → vmfunc(0,1)切回hooked → ret回调用者(rax=回调返回值)
+//  SAVE_ALL → GeptCallbackDispatch → 用户回调 → ret回调用者
+//  (rax=回调返回值; 回调恒当前视图, 嵌套hook正常触发)
 //
-//clean视图下原函数字节完好→GeptCallOriginal直接call Target(无需重放)。
+//GeptCallOriginal经LDE重定位跳板(视图无关)。
 //Remove: 还原CodePage被覆盖字节+全核invept→hooked≡clean=hook失效;
 //在途回调安全完成(槽/条目延迟到卸载释放)
 //====================================================================
@@ -79,17 +79,6 @@ static VOID GeptApiUnlock(VOID)
 	KeReleaseSpinLock(&s_apiLock, s_apiOldIrql);
 }
 
-//手动视图切换: VT已关/无VMFUNC核=no-op(vmx_off后vmfunc=#UD蓝屏)
-VOID GeptViewSwitch(ULONG eptpIndex)
-{
-	ULONG cpu = KeGetCurrentProcessorNumber();
-	if (!g_vcpu[cpu].bInGuest || !g_vcpu[cpu].bVmfuncOn)
-	{
-		return;
-	}
-	CmVmfuncSwitch(eptpIndex);
-}
-
 //asm stub调用(rcx=API条目, rdx=GUEST_REGS帧): 设置每核当前hook+触发帧
 //后进用户回调。StackArgs>0时回调收第5+参数指针(=触发帧上实参
 //regs->rsp+28h, 可读可写, 写后按改写值转发)
@@ -124,38 +113,24 @@ ULONG64 GeptCallOriginal(ULONG64 Arg1, ULONG64 Arg2, ULONG64 Arg3, ULONG64 Arg4)
 		}
 		return 0;
 	}
-	//双路径按当前核能力分派:
-	//  VMFUNC核: 切clean→直接call原始入口→归位hooked
-	//  fallback核: 直接call Target=撞跳转无限递归→经重定位跳板
-	//StackArgs>0时走GeptCallOrigAsm桩重建完整x64调用帧, 栈参源=
-	//触发帧上实参(回调可能已改写)
+	//统一经重定位跳板调原函数(Install必建): 跳板尾跳Target+Len在
+	//clean=恒等/hooked=CodePage副本, 两视图均为原始字节=视图无关。
+	//v1.10b前VMFUNC核切clean直call原入口——clean窗口是核级状态,
+	//窗口内线程阻塞/迁移后原入口序言落hooked视图=取指进CodePage
+	//跳转码中段解码成野指令(实测0x50: RIP=目标+9读[rdi+disp32])
 	if (e->pub.StackArgs != 0 && s_currentRegs[cpu] != NULL)
 	{
+		//StackArgs>0: GeptCallOrigAsm桩重建完整x64调用帧, 栈参源=
+		//触发帧上实参(回调可能已改写)
 		GEPT_ORIG_CALL oc;
-		oc.Target = g_vcpu[cpu].bVmfuncOn
-			? (ULONG64)e->pub.Target : (ULONG64)e->ReplayVA;
-		oc.StackArgs = s_currentRegs[cpu]->rsp + 0x28;   //栈参源(影子之上)
+		oc.Target = (ULONG64)e->ReplayVA;
+		oc.StackArgs = s_currentRegs[cpu]->rsp + 0x28;
 		oc.Count = e->pub.StackArgs;
 		oc.Arg1 = Arg1;
 		oc.Arg2 = Arg2;
 		oc.Arg3 = Arg3;
 		oc.Arg4 = Arg4;
-		if (g_vcpu[cpu].bVmfuncOn)
-		{
-			GeptViewSwitch(0);
-			ULONG64 ret = GeptCallOrigAsm(&oc);
-			GeptViewSwitch(1);
-			return ret;
-		}
-		return GeptCallOrigAsm(&oc);   //fallback核: 跳板未被hook, 无需切视图
-	}
-	if (g_vcpu[cpu].bVmfuncOn)
-	{
-		GeptViewSwitch(0);
-		typedef ULONG64(*GEPT_ORIG_FN)(ULONG64, ULONG64, ULONG64, ULONG64);
-		ULONG64 ret = ((GEPT_ORIG_FN)e->pub.Target)(Arg1, Arg2, Arg3, Arg4);
-		GeptViewSwitch(1);
-		return ret;
+		return GeptCallOrigAsm(&oc);
 	}
 	typedef ULONG64(*GEPT_REPLAY_FN)(ULONG64, ULONG64, ULONG64, ULONG64);
 	return ((GEPT_REPLAY_FN)e->ReplayVA)(Arg1, Arg2, Arg3, Arg4);
@@ -213,21 +188,20 @@ NTSTATUS GeptHookInstall(const GEPT_HOOK* Hook)
 		return STATUS_INVALID_PARAMETER;
 	}
 	//安装gate="至少一核in-guest"(零核=VT启动全败, PHHook无处布防, 拒绝):
-	//  VMFUNC核: 双EPT零VM-Exit detour
-	//  无VMFUNC核(老CPU/降级核): violation降级——EptSetHook按核分派,
-	//    detour stub统一(GeptViewSwitch按核no-op), GeptCallOriginal
-	//    按核走重定位跳板(见其注释)
+	//  双EPT核: hooked视图remap=执行零VM-Exit detour
+	//  无hooked EPT核(深拷贝失败降级): violation降级——EptSetHook按核分派。
+	//  CallOriginal不分核统一走重定位跳板(视图无关, 见其注释)
 	{
 		ULONG cpuCount = KeQueryActiveProcessorCount(NULL);
-		ULONG inGuest = 0, vmfuncCores = 0;
+		ULONG inGuest = 0, dualEptCores = 0;
 		for (ULONG i = 0; i < cpuCount; i++)
 		{
 			if (g_vcpu[i].bInGuest)
 			{
 				inGuest++;
-				if (g_vcpu[i].bVmfuncOn)
+				if (g_vcpu[i].PeptDataHooked != NULL)
 				{
-					vmfuncCores++;
+					dualEptCores++;
 				}
 			}
 		}
@@ -236,11 +210,11 @@ NTSTATUS GeptHookInstall(const GEPT_HOOK* Hook)
 			FlLog("[API] Install拒绝: 零核in-guest(VT未启动), 无处布防");
 			return STATUS_NOT_SUPPORTED;
 		}
-		if (vmfuncCores < inGuest)
+		if (dualEptCores < inGuest)
 		{
-			FlLog("[API] Install: %u/%u核无VMFUNC——这些核走violation降级"
+			FlLog("[API] Install: %u/%u核无hooked EPT——这些核走violation降级"
 				"(每次触发1+次VM-Exit, 功能/API语义等价, 只是隐藏性降级)",
-				inGuest - vmfuncCores, inGuest);
+				inGuest - dualEptCores, inGuest);
 		}
 	}
 	//重复安装检查(同Target)
@@ -266,8 +240,7 @@ NTSTATUS GeptHookInstall(const GEPT_HOOK* Hook)
 	entry->Removed = 0;
 	entry->ReplayVA = NULL;
 	entry->ReplayLen = 0;
-	//LDE重定位跳板(所有路径无条件构建——fallback的CallOriginal必需
-	//+replay自测用; VMFUNC纯核上仅自测用到, 96B成本可忽略)。
+	//LDE重定位跳板(所有路径的CallOriginal统一入口+replay自测用)。
 	//MinLen=14=PHHook跳转覆盖长度, 两者同源(PHGetHookLen同款解码循环)
 	//→replay覆盖字节数≡CodePage跳转覆盖字节数, 重放/jmp回严格配套
 	ULONG replayLen = 0;
@@ -289,7 +262,7 @@ NTSTATUS GeptHookInstall(const GEPT_HOOK* Hook)
 		return STATUS_INSUFFICIENT_RESOURCES;
 	}
 	//PHHook: CodePage整页复制+目标偏移14B绝对跳转→我们的trampoline槽
-	//+DPC逐核EptSetHook(VMFUNC核: hooked表PTE→CodePage+切hooked视图;
+	//+DPC逐核EptSetHook(双EPT核: hooked表PTE→CodePage+切hooked视图;
 	//fallback核: 拆页+清execute的violation布防——按核自动分派)
 	NTSTATUS st = PHHook(Hook->Target, entry->Trampoline, Hook->HideRead);
 	if (!NT_SUCCESS(st))
@@ -305,7 +278,7 @@ NTSTATUS GeptHookInstall(const GEPT_HOOK* Hook)
 	GeptApiLock();
 	InsertTailList(&s_apiList, &entry->link);
 	GeptApiUnlock();
-	FlLog("[API] Install OK: 目标=%p 回调=%p 上下文=%p 跳板槽=%p replay=%p(%uB, 回扫自检过) 栈参=%u 读透明=%u(detour式, 零重放机器)",
+	FlLog("[API] Install OK: 目标=%p 回调=%p 上下文=%p 跳板槽=%p replay=%p(%uB, 回扫自检过) 栈参=%u 读透明=%u(重放跳板, 视图无关)",
 		Hook->Target, Hook->Callback, Hook->Context, entry->Trampoline,
 		entry->ReplayVA, entry->ReplayLen, Hook->StackArgs, Hook->HideRead);
 	return STATUS_SUCCESS;
@@ -438,7 +411,7 @@ NTSTATUS GeptHookEnumerate(GEPT_HOOK* Buffer, ULONG* InOutCount)
 }
 
 //DriverUload在关VT**之前**调用: 移除全部live hook(新触发停止;
-//在途回调随后的vmfunc(0,1)此刻VT仍开着=安全), 宽限期由调用方安排
+//在途回调此刻VT仍开着=安全), 宽限期由调用方安排
 VOID GeptApiRemoveAll(VOID)
 {
 	//快照目标列表(Remove内部会再拿锁)
@@ -495,6 +468,9 @@ NTSTATUS GeptApiSelfTestReplay(PVOID Target, ULONG64 Arg1)
 //DriverUload在关VT**之后**调用(纯内存释放, 无VT依赖)
 VOID GeptApiFreeMemory(VOID)
 {
+	//PageHook层(CodePage+hook条目)独立于API链表, 先清(取证反制:
+	//跳转码/原页副本/指针清零后释放)
+	PHFreeAllMemory();
 	//未安装过任何hook(链表头未初始化)=直接返回
 	if (s_apiList.Flink == NULL)
 	{
@@ -508,9 +484,11 @@ VOID GeptApiFreeMemory(VOID)
 		PGEPT_API_ENTRY e = CONTAINING_RECORD(p, GEPT_API_ENTRY, link);
 		if (e->ReplayVA != NULL)
 		{
+			RtlZeroMemory(e->ReplayVA, 96);   //与PHBuildRelocTrampoline分配同长
 			ExFreePool(e->ReplayVA);
 			replays++;
 		}
+		RtlZeroMemory(e, sizeof(GEPT_API_ENTRY));
 		ExFreePool(e);
 		entries++;
 	}
@@ -520,6 +498,7 @@ VOID GeptApiFreeMemory(VOID)
 	{
 		if (s_trampPool[i] != NULL)
 		{
+			RtlZeroMemory(s_trampPool[i], PAGE_SIZE);
 			ExFreePool(s_trampPool[i]);
 			s_trampPool[i] = NULL;
 			pages++;
@@ -528,7 +507,7 @@ VOID GeptApiFreeMemory(VOID)
 	s_trampUsed = 0;
 	if (entries != 0 || pages != 0)
 	{
-		FlLog("[API] FreeMemory: 条目%u个(含replay跳板%u个)+跳板池%u页已释放",
+		FlLog("[API] FreeMemory: 条目%u个(含replay跳板%u个)+跳板池%u页已释放(清零后释放)",
 			entries, replays, pages);
 	}
 }

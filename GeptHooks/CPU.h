@@ -19,7 +19,6 @@
 #define MSR_IA32_VMX_TRUE_PROCBASED_CTLS    0x48E
 #define MSR_IA32_VMX_TRUE_EXIT_CTLS         0x48F
 #define MSR_IA32_VMX_TRUE_ENTRY_CTLS        0x490
-#define MSR_IA32_VMX_VMFUNC                 0x491
 
 #define MSR_IA32_SYSENTER_CS                0x174
 #define MSR_IA32_SYSENTER_ESP               0x175
@@ -27,8 +26,16 @@
 #define MSR_IA32_DEBUGCTL                   0x1D9
 #define MSR_IA32_TSC_DEADLINE               0x6E0
 #define MSR_IA32_TSC_AUX                    0x840
+//全局PMU使能(0x38E=PERF_GLOBAL_STATUS只读, 勿混)
+#define MSR_IA32_PERF_GLOBAL_CTRL           0x38F
+//Intel PT控制(存在性=CPUID.7.EBX[25])
+#define MSR_IA32_RTIT_CTL                   0x570
+//secondary VM-exit controls能力MSR(A.4.2; 存在=EXIT_CTLS[63]允许bit31)
+#define MSR_IA32_VMX_EXIT_CTLS2             0x493
 #define HOST_IA32_PAT						0x00002c00
 #define HOST_IA32_EFER						0x00002c02
+//存在条件: primary exit bit12允许
+#define HOST_IA32_PERF_GLOBAL_CTRL			0x00002c04
 #define MSR_LSTAR                           0xC0000082
 
 #define MSR_FS_BASE                         0xC0000100
@@ -71,9 +78,11 @@ enum
 	VIRTUAL_APIC_PAGE_ADDR = 0x00002012,
 	VIRTUAL_APIC_PAGE_ADDR_HIGH = 0x00002013,
 	//VMCS 64-bit control字段(编码对照SDM附录/Linux vmx.h vmcs_field)
-	VMFUNC_CONTROL = 0x00002018,          //VM-function control(bit0=EPTP switching)
-	EPTP_LIST_ADDRESS = 0x00002024,        //EPTP-list(4KB对齐, 512项×8B)
+	VMFUNC_CONTROL = 0x00002018,          //VM-function control(bit0=EPTP switching; VMFUNC已禁用, 保留字段号)
+	EPTP_LIST_ADDRESS = 0x00002024,        //EPTP-list(4KB对齐, 512项×8B; 随VMFUNC禁用闲置)
 	EPT_POINTER = 0x0000201a,
+	//secondary VM-exit controls(B.2.1; 存在=primary exit bit31允许)
+	SECONDARY_VM_EXIT_CONTROLS = 0x00002044,
 	GUEST_PHYSICAL_ADDRESS = 0x00002400,
 	GUEST_PHYSICAL_ADDRESS_HIGH = 0x00002401,
 	VMCS_LINK_POINTER = 0x00002800,
@@ -84,6 +93,13 @@ enum
 	GUEST_IA32_PAT_HIGH = 0x00002805,
 	GUEST_IA32_EFER = 0x00002806,
 	GUEST_IA32_EFER_HIGH = 0x00002807,
+	//以下三组存在性按控制位允许动态判(Appendix B注, 不存在而写=VMfail):
+	//GUEST_IA32_PERF_GLOBAL_CTRL: entry bit13允许
+	GUEST_IA32_PERF_GLOBAL_CTRL = 0x00002808,
+	GUEST_IA32_PERF_GLOBAL_CTRL_HIGH = 0x00002809,
+	//GUEST_IA32_RTIT_CTL: entry bit18或secondary exit bit25允许
+	GUEST_IA32_RTIT_CTL = 0x00002814,
+	GUEST_IA32_RTIT_CTL_HIGH = 0x00002815,
 	PIN_BASED_VM_EXEC_CONTROL = 0x00004000,
 	CPU_BASED_VM_EXEC_CONTROL = 0x00004002,
 	EXCEPTION_BITMAP = 0x00004004,

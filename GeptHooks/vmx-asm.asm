@@ -124,4 +124,36 @@ VmxInvept PROC
     sete al
     ret
 VmxInvept ENDP
+
+;RDRAND/RDSEED root代执行(v1.10d防御case 57/61): rcx=PULONG64落值,
+;返回1=成功。等价intrinsic _rdrand64_step/_rdseed64_step(单下划线为
+;MSVC命名; WDK头文件未提供且x64无内联汇编, 故落本文件)
+VmxRdRand64Step PROC
+    rdrand rax
+    jnc short rdrand_fail
+    mov [rcx], rax
+    mov eax, 1
+    ret
+rdrand_fail:
+    xor eax, eax
+    ret
+VmxRdRand64Step ENDP
+
+VmxRdSeed64Step PROC
+    rdseed rax
+    jnc short rdseed_fail
+    mov [rcx], rax
+    mov eax, 1
+    ret
+rdseed_fail:
+    xor eax, eax
+    ret
+VmxRdSeed64Step ENDP
+
+;INVPCID root代执行(v1.10d防御case 58): rcx=type(0-3), rdx=16字节
+;descriptor内存(与VmxInvept的invept rcx,oword同形式)
+VmxInvpcid PROC
+    invpcid rcx, OWORD PTR [rdx]
+    ret
+VmxInvpcid ENDP
 END

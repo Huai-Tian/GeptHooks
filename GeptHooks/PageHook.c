@@ -3,18 +3,18 @@
 #include"LDasm.h"
 #include"common.h"
 #include"VMX.h"
-LIST_ENTRY g_PageList = {0};
+LIST_ENTRY g_PageList = { 0 };
 NTSTATUS PHHook(PVOID pFun, PVOID pHook, ULONG hideRead)
 {
 	NTSTATUS status = STATUS_SUCCESS;
-	PHYSICAL_ADDRESS phys = {0};
+	PHYSICAL_ADDRESS phys = { 0 };
 	phys.QuadPart = MAXULONG64;
 	PUCHAR CodePage = NULL;
 	BOOLEAN isNewCodePage = FALSE;
 	//判断是否被hook过
-	PPAGE_HOOK_ENTRY pEntry=PHGetHookEntryPage(pFun);
+	PPAGE_HOOK_ENTRY pEntry = PHGetHookEntryPage(pFun);
 	//如果改页没有被HOOK过,那我们就申请一个新的页
-	if (pEntry==NULL)
+	if (pEntry == NULL)
 	{
 		//新申请一个页用来存放原函数的页数据
 		CodePage = MmAllocateContiguousMemory(PAGE_SIZE, phys);
@@ -27,7 +27,7 @@ NTSTATUS PHHook(PVOID pFun, PVOID pHook, ULONG hideRead)
 		CodePage = pEntry->CodePageVA;
 	}
 	//复制原函数所在页到新申请的页
-	
+
 	memcpy(CodePage, PAGE_ALIGN(pFun), PAGE_SIZE);
 	//构建跳转代码
 	JMP_OPCODE64 jmpCode64 = { 0 };
@@ -48,28 +48,28 @@ NTSTATUS PHHook(PVOID pFun, PVOID pHook, ULONG hideRead)
 		(unsigned long long)((MmGetPhysicalAddress(CodePage).QuadPart) >> 12),
 		CodePage, (unsigned)sizeof(JMP_OPCODE64), realHookLen, (ULONG)page_offset);
 
-	PPAGE_HOOK_ENTRY pHookListEntry = ExAllocatePool(NonPagedPool,sizeof(PAGE_HOOK_ENTRY));
+	PPAGE_HOOK_ENTRY pHookListEntry = ExAllocatePool(NonPagedPool, sizeof(PAGE_HOOK_ENTRY));
 
-	if (pHookListEntry==NULL)
+	if (pHookListEntry == NULL)
 	{
 		return STATUS_UNSUCCESSFUL;
 	}
 	pHookListEntry->OriginalPtr = pFun;
 	pHookListEntry->OriginalPageVA = PAGE_ALIGN(pFun);
-	pHookListEntry->OriginalPagePFN = (MmGetPhysicalAddress(pFun).QuadPart)>>12;
+	pHookListEntry->OriginalPagePFN = (MmGetPhysicalAddress(pFun).QuadPart) >> 12;
 	pHookListEntry->CodePageVA = CodePage;
-	pHookListEntry->CodePagePFN= (MmGetPhysicalAddress(CodePage).QuadPart) >>12;
+	pHookListEntry->CodePagePFN = (MmGetPhysicalAddress(CodePage).QuadPart) >> 12;
 	pHookListEntry->HideRead = hideRead;
 	//讲结构体添加到全局链表中
-	if (g_PageList.Flink==NULL)
+	if (g_PageList.Flink == NULL)
 	{
 		InitializeListHead(&g_PageList);
 	}
-	InsertTailList(&g_PageList,&pHookListEntry->link);
+	InsertTailList(&g_PageList, &pHookListEntry->link);
 	if (isNewCodePage)
 	{
 		//
-		HOOK_CONTEXT hookContext = {0};
+		HOOK_CONTEXT hookContext = { 0 };
 		hookContext.CodePagePFN = pHookListEntry->CodePagePFN;
 		hookContext.OriginalPagePFN = pHookListEntry->OriginalPagePFN;
 		hookContext.HideRead = hideRead;
@@ -77,7 +77,7 @@ NTSTATUS PHHook(PVOID pFun, PVOID pHook, ULONG hideRead)
 		//(VM-exit上下文: 拆2M页×2+分配pte页+清execute+invept)。
 		//蓝屏/冻结发生在两锚点之间=exit上下文的EptSetHook路径
 		FlLog("[PHHook] DPC广播开始: 8核vmcall(2)→EptSetHook(拆页+清execute), 环'S'rsn=21/22/23按核留痕");
-		KeGenericCallDpc(PHHookCallBackDpc,&hookContext);
+		KeGenericCallDpc(PHHookCallBackDpc, &hookContext);
 		FlLog("[PHHook] DPC广播返回(全核EptSetHook已执行)");
 	}
 	return status;
@@ -98,26 +98,26 @@ ULONG PHGetHookLen(ULONG64 codeAddr, ULONG codeSize, BOOLEAN is64)
 	//顺序逐条解码到累计长度≥codeSize(返回整指令边界, 跳回点不错位)
 	ULONG64 src = codeAddr;
 	ULONG all_len = 0;
-	ldasm_data ldData = {0};
+	ldasm_data ldData = { 0 };
 	do
 	{
 		ULONG len = ldasm(src, &ldData, is64);
 		src += len;
 		all_len += len;
-	} while (all_len< codeSize);
+	} while (all_len < codeSize);
 	return all_len;
 }
 
 PPAGE_HOOK_ENTRY PHGetHookEntryPage(PVOID funPageAddr)
 {
-	if (g_PageList.Flink==NULL || IsListEmpty(&g_PageList))
+	if (g_PageList.Flink == NULL || IsListEmpty(&g_PageList))
 	{
 		return NULL;
 	}
-	for (PLIST_ENTRY pListEntry=g_PageList.Flink;pListEntry!=&g_PageList;pListEntry=pListEntry->Flink)
+	for (PLIST_ENTRY pListEntry = g_PageList.Flink; pListEntry != &g_PageList; pListEntry = pListEntry->Flink)
 	{
 		PPAGE_HOOK_ENTRY phookEntr = CONTAINING_RECORD(pListEntry, PAGE_HOOK_ENTRY, link);
-		if (phookEntr->OriginalPageVA== funPageAddr)
+		if (phookEntr->OriginalPageVA == funPageAddr)
 		{
 			return phookEntr;
 		}
@@ -145,7 +145,7 @@ PPAGE_HOOK_ENTRY PHGetHookEntryPageBy(ULONG64 gpa)
 VOID PHHookCallBackDpc(_In_ struct _KDPC* Dpc, _In_opt_ PVOID DeferredContext, _In_opt_ PVOID SystemArgument1, _In_opt_ PVOID SystemArgument2)
 {
 	PHOOK_CONTEXT hookContext = (PHOOK_CONTEXT)DeferredContext;
-	if (hookContext!=NULL)
+	if (hookContext != NULL)
 	{
 		//守卫: 仅in-guest核才能vmcall(真机vmcall=#UD蓝屏;
 		//KeGenericCallDpc广播到所有核)
@@ -262,9 +262,9 @@ PVOID PHBuildRelocTrampoline(ULONG64 Target, ULONG MinLen, PULONG OutLen)
 			//字节比对: 除被调整的disp32区(4字节)外逐字节必须一致
 			for (ULONG k = 0; k < lNew; k++)
 			{
-			 BOOLEAN skip = ((ldOld.flags & F_DISP) && (ldOld.flags & F_RELATIVE) &&
+				BOOLEAN skip = ((ldOld.flags & F_DISP) && (ldOld.flags & F_RELATIVE) &&
 					ldOld.disp_size == 4 &&
-					k >= ldOld.disp_offset && k < ldOld.disp_offset + 4);
+					k >= (ULONG)ldOld.disp_offset && k < (ULONG)ldOld.disp_offset + 4);
 				if (!skip && buf[chk + k] != ((PUCHAR)ori)[k])
 				{
 					FlLog("[Reloc] 回扫自检FAIL: 生成物偏移+%u第%u字节不符(%02X≠%02X)",
@@ -295,4 +295,42 @@ PVOID PHBuildRelocTrampoline(ULONG64 Target, ULONG MinLen, PULONG OutLen)
 	FlLog("[Reloc] 跳板就绪: 目标=%llX len=%uB(回扫自检逐条通过, 尾跳→%llX)",
 		(unsigned long long)Target, total, (unsigned long long)(Target + total));
 	return buf;
+}
+
+//卸载终清理(VT已关/hook已移除后调用, 幂等): CodePage含跳转码+原页
+//副本, 条目含全部指针——清零后释放(取证反制)。同页多hook共享
+//CodePage, 按VA去重防double free(API上限32, 64槽封顶)
+VOID PHFreeAllMemory(VOID)
+{
+	if (g_PageList.Flink == NULL)
+	{
+		return;
+	}
+	PVOID freed[64];
+	ULONG nFreed = 0, pages = 0, entries = 0;
+	while (!IsListEmpty(&g_PageList))
+	{
+		PLIST_ENTRY p = RemoveHeadList(&g_PageList);
+		PPAGE_HOOK_ENTRY e = CONTAINING_RECORD(p, PAGE_HOOK_ENTRY, link);
+		BOOLEAN seen = FALSE;
+		for (ULONG i = 0; i < nFreed; i++)
+		{
+			if (freed[i] == e->CodePageVA)
+			{
+				seen = TRUE;
+				break;
+			}
+		}
+		if (!seen && nFreed < 64)
+		{
+			freed[nFreed++] = e->CodePageVA;
+			RtlZeroMemory(e->CodePageVA, PAGE_SIZE);
+			MmFreeContiguousMemory(e->CodePageVA);
+			pages++;
+		}
+		RtlZeroMemory(e, sizeof(PAGE_HOOK_ENTRY));
+		ExFreePool(e);
+		entries++;
+	}
+	FlLog("[PH] 终清理: CodePage %u页+条目%u个(清零后释放)", pages, entries);
 }

@@ -81,28 +81,4 @@ CmTripleFaultPark PROC
     hlt
     jmp CmTripleFaultPark
 CmTripleFaultPark ENDP
-
-;demo自检用REP串: rcx=dst, rdx=src, r8=字节计数。读hook页触发
-;EptRepEmulate('q'路径)。rsi/rdi非易失, 保存恢复
-CmRepMovsbDemo PROC
-    push rsi
-    push rdi
-    mov rsi, rdx
-    mov rdi, rcx
-    mov rcx, r8
-    rep movsb
-    pop rdi
-    pop rsi
-    ret
-CmRepMovsbDemo ENDP
-
-;单次VMFUNC EPTP切换(guest内调用, 零VM-Exit)。rcx=EPTP-list索引
-;(0=clean/1=hooked)。成功(SDM §28.5.7.3)=切换EPTP+VPID0组合映射
-;自动失效; 失败(项非法/ECX>=512)=VM-exit reason 59。不改任何
-;寄存器/标志。VMFUNC机器码=0F 01 D4(SDM指令表)
-CmVmfuncSwitch PROC
-    xor eax, eax        ;EAX=0: function 0 = EPTP switching
-    db 0Fh, 01h, 0D4h   ;vmfunc (0F 01 D4, SDM)
-    ret
-CmVmfuncSwitch ENDP
 END

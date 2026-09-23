@@ -64,8 +64,6 @@ extern "C" {
 	void CmGuestProbe();
 	ULONG64 CmVmCall(ULONG opcode, ULONG64 arg2, ULONG64 arg3, ULONG64 arg4);   //rax=返回值(功能码自定义, 不写的功能码=功能码本身)
 	void CmTripleFaultPark();    //三重故障park本体(asm, sti+hlt自旋, 永不返回)
-	void CmRepMovsbDemo(PUCHAR dst, const PUCHAR src, ULONG64 cnt);   //demo自检: rep movsb串(触发EptRepEmulate)
-	void CmVmfuncSwitch(ULONG eptpIndex);   //guest内单次VMFUNC(0, idx)EPTP切换(0=clean/1=hooked, 零VM-Exit); 仅bVmfuncOn核可调, 否则#UD蓝屏
 
 	//三重故障park核位掩码(bit i=cpu i已park)。park核的VMM栈/代码页仍被
 	//占用, 卸载守卫据此拒绝卸载
@@ -104,7 +102,7 @@ extern "C" {
 #define GEPT_RING_SIZE       1024   //二进制事件环条目数(须为2的幂)
 #define GEPT_LINE_RING_SIZE  512    //格式化行环条目数(须为2的幂)
 #define GEPT_LINE_TEXT       496    //单行最大长度
-#define GEPT_EXIT_REASON_MAX 64
+#define GEPT_EXIT_REASON_MAX 82
 
 	typedef struct _GEPT_RING_ENTRY
 	{
@@ -129,7 +127,7 @@ extern "C" {
 	//  r=卸载CR3证据(a=GUEST_CR3 b=回读 c=HOST_CR3快照)
 	//  v=全核IPI原子退出留痕(a=本核曾in-guest, b=bVmxOn终值应0)
 	//  u=VMCALL签名门拒绝(rsn=18, b=病毒试探的功能码; 区分于case59
-	//    VMFUNC失败exit的'u'——按rsn分)  c=CR访问exit(28)留痕(采样)
+	//    VMFUNC兜底#UD注入的'u'——按rsn分)  c=CR访问exit(28)留痕(采样)
 	//  t=卸载时TSC_OFFSET终值 m=vmcall(7)还原字节
 	//  M=MTF读透明切换(HideRead页读/写violation, 采样推; 布防形态'S'rsn=25)
 	//  H=EPT自我隐蔽完成(每核launch前, a=零页PFN, b=拆分pte页数)
@@ -177,11 +175,11 @@ extern "C" {
 		ULONG64 vcpuCpu;        //+0x070 虚拟化目标核
 		ULONG64 pendCount;      //+0x078 目标核积压中断数
 		ULONG64 pollCnt;        //+0x080 看门狗DPC累计轮询数(活体证明)
-		ULONG64 exitCounts[GEPT_EXIT_REASON_MAX];  //+0x088 全部exit精确计数(512B)
-		GEPT_RING_ENTRY ring[48];   //+0x288 事件环尾48条快照(按seq升序)
-		CHAR    lines[20][256];     //+0xB88 行环尾20条快照(超256截断)
-		CHAR    magic2[8];          //+0x1F88 "GEPTBB02"(完整性尾标)
-	} GEPT_BLACKBOX, * PGEPT_BLACKBOX;   //sizeof=0x1F90
+		ULONG64 exitCounts[GEPT_EXIT_REASON_MAX];  //+0x088 全部exit精确计数(656B)
+		GEPT_RING_ENTRY ring[48];   //+0x320 事件环尾48条快照(按seq升序)
+		CHAR    lines[20][256];     //+0xC20 行环尾20条快照(超256截断)
+		CHAR    magic2[8];          //+0x2020 "GEPTBB02"(完整性尾标)
+	} GEPT_BLACKBOX, * PGEPT_BLACKBOX;   //sizeof=0x2028
 	//(g_flBlackBox/g_flWdTscPerSec的extern在下方#if DBG块内; 结构体
 	//定义无条件保留=解析器契约)
 
@@ -233,7 +231,7 @@ extern "C" {
 	extern volatile LONG64 g_flExitCounts[GEPT_EXIT_REASON_MAX];
 
 	//构建标签: 打进日志第一行核对二进制版本。代码改动必须同步修改
-#define GEPT_BUILD_TAG "v1.9b"
+#define GEPT_BUILD_TAG "v1.10e"
 	extern CHAR g_geptBuildTag[24];      //common.c定义(=GEPT_BUILD_TAG)
 
 #ifdef __cplusplus

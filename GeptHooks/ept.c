@@ -39,6 +39,9 @@ BOOLEAN EptIsSupportEpt()
 BOOLEAN g_bEpt1GbPage = FALSE;
 //bit0: exec-only页(X=1,R=0)支持——HideRead读透明的前提
 BOOLEAN g_bEptExecOnly = FALSE;
+//共享零页(自我隐蔽改译目标; EptShutdownHighMappings清零释放)
+static PVOID s_hideZeroPage = NULL;
+static ULONG64 s_hideZeroPFN = 0;
 
 //==================== EPT内存类型按真实RAM布局 ====================
 //MMIO洞(LAPIC/IOAPIC/HPET/低地址BAR)若标成WB会被错误缓存→中断
@@ -148,7 +151,7 @@ static BOOLEAN EptAllocMarkPages(VOID)
 	{
 		if (a) MmFreeContiguousMemory(a);
 		if (b) MmFreeContiguousMemory(b);
-		FlLog("EPT: 双EPT标记页分配失败——标记自测跳过(VMFUNC核将判FAIL降级)");
+		FlLog("EPT: 双EPT标记页分配失败——标记自测跳过(hooked EPT核将判FAIL降级)");
 		return FALSE;
 	}
 	*(volatile ULONG64*)a = GEPT_MARK_A;
@@ -468,7 +471,7 @@ ULONG EptVerifyTables(ULONG cpuNumber, ULONG64 guestRspVa)
 				g_vcpu[cpuNumber].EptpHooked.fileds.dirty !=
 				g_vcpu[cpuNumber].Eptp.fileds.dirty)
 			{
-				FlLog("EPT自检[7] FAIL: hooked EPTP的mt/A-D位与clean不一致(vmfunc切换会rsn59拒绝)");
+				FlLog("EPT自检[7] FAIL: hooked EPTP的mt/A-D位与clean不一致(视图切换一致性)");
 				fails++;
 			}
 		}
@@ -781,11 +784,13 @@ static BOOLEAN EptPrebuildHighMappings(VOID)
 	return TRUE;
 }
 
-//释放共享高区页表+双EPT标记页(DriverUload/回滚调用, 幂等)
+//释放共享高区页表+双EPT标记页+共享零页(DriverUload/回滚调用, 幂等)。
+//清零后释放=卸载后物理内存无EPT/标记残留(取证反制)
 VOID EptShutdownHighMappings(VOID)
 {
 	if (g_eptHighPdptBlock != NULL)
 	{
+		RtlZeroMemory(g_eptHighPdptBlock, PAGE_SIZE * 512);
 		MmFreeContiguousMemory(g_eptHighPdptBlock);
 		g_eptHighPdptBlock = NULL;
 		RtlZeroMemory(g_eptHighPdptVa, sizeof(g_eptHighPdptVa));
@@ -794,14 +799,23 @@ VOID EptShutdownHighMappings(VOID)
 	//标记页(全局一对)
 	if (s_geptMarkVB != NULL)
 	{
+		RtlZeroMemory(s_geptMarkVB, PAGE_SIZE);
 		MmFreeContiguousMemory(s_geptMarkVB);
 		s_geptMarkVB = NULL;
 		g_geptMarkPaB = 0;
 	}
 	if (g_geptMarkVA != NULL)
 	{
+		RtlZeroMemory(g_geptMarkVA, PAGE_SIZE);
 		MmFreeContiguousMemory(g_geptMarkVA);
 		g_geptMarkVA = NULL;
+	}
+	//共享零页(自我隐蔽的改译目标)
+	if (s_hideZeroPage != NULL)
+	{
+		ExFreePool(s_hideZeroPage);
+		s_hideZeroPage = NULL;
+		s_hideZeroPFN = 0;
 	}
 	//拆分pte页(标记remap/自我隐蔽/hook产生的; 此刻VT已关或未启, 幂等)
 	EptFreeSplitPtes();
@@ -898,8 +912,8 @@ BOOLEAN EptBuildHighMapping(ULONG64 gpa)
 	return TRUE;
 }
 
-//本核当前视图的EPT: vmread EPT_POINTER即真相(VMFUNC切换会写回该字段,
-//SDM §28.5.7.3)。仅VMX root上下文可调; 失败/无hooked=返回clean兜底
+//本核当前视图的EPT: vmread EPT_POINTER即真相(root vmwrite切换会写回
+//该字段)。仅VMX root上下文可调; 失败/无hooked=返回clean兜底
 PEPT_DATA EptGetActiveData(VOID)
 {
 	ULONG cpu = KeGetCurrentProcessorNumber();
@@ -1286,11 +1300,10 @@ void EptExitHandler(PGUEST_REGS GuestRegs)
 		}
 		return;
 	}
-	//==== hooked视图hook页读/写violation(HideRead=1布防, VMFUNC核) ====
+	//==== hooked视图hook页读/写violation(HideRead=1布防, 双EPT核) ====
 	//REP串优先root仿真(单exit吸收整串, 消解MTF逐迭代风暴); 非串指令
 	//或不可翻译回退MTF读透明
 	if ((eptExit.fileds.read || eptExit.fileds.write) && pageEntry->HideRead &&
-		g_vcpu[KeGetCurrentProcessorNumber()].bVmfuncOn &&
 		g_vcpu[KeGetCurrentProcessorNumber()].PeptDataHooked != NULL)
 	{
 		ULONG repLen = 0;
@@ -1314,6 +1327,7 @@ void EptExitHandler(PGUEST_REGS GuestRegs)
 		//切回hooked+关MTF。读方(PG/扫描器)只见原始字节; 中断注入最坏多走
 		//一轮本循环, 收敛
 		ULONG cpuM = KeGetCurrentProcessorNumber();
+		InterlockedExchange(&g_hookMtfPending[cpuM & 63], 1);
 		__vmx_vmwrite(EPT_POINTER, g_vcpu[cpuM].Eptp.ALL);
 		ULONG64 mtfCtl = 0;
 		__vmx_vmread(CPU_BASED_VM_EXEC_CONTROL, &mtfCtl);
@@ -1352,11 +1366,12 @@ void EptExitHandler(PGUEST_REGS GuestRegs)
 void EptSetHook(ULONG64 orginalPagePFN, ULONG64 codePagePFN, ULONG64 hideRead)
 {
 	ULONG cpuHook = KeGetCurrentProcessorNumber();
-	//==== VMFUNC主路径(零VM-Exit hook) ====
-	//hooked EPT里hook页PTE→CodePage(X=1,R=1,W=0)+切入hooked视图:
-	//执行零VM-Exit, clean视图下原页字节完好。写hook页(W=0)→violation
-	//→EptUpdatePageAcess在hooked表上互切(与violation方案同骨架)
-	if (g_vcpu[cpuHook].bVmfuncOn && g_vcpu[cpuHook].PeptDataHooked != NULL)
+	//==== 双EPT主路径(零VM-Exit hook) ====
+	//hooked EPT里hook页PTE→CodePage(X=1,R=1,W=0)+切入hooked视图
+	//(root vmwrite): 执行零VM-Exit, clean视图下原页字节完好。
+	//写hook页(W=0)→violation→EptUpdatePageAcess在hooked表上互切
+	//(与violation方案同骨架)
+	if (g_vcpu[cpuHook].PeptDataHooked != NULL)
 	{
 		//hideRead读透明: R=0(exec-only)——读/写violation走MTF路径
 		//(EptExitHandler切clean单步透出原始字节); CPU不支持exec-only
@@ -1408,14 +1423,14 @@ void EptSetHook(ULONG64 orginalPagePFN, ULONG64 codePagePFN, ULONG64 hideRead)
 			__vmx_vmwrite(EPT_POINTER, backEptp);
 			EptHideCodePageGpa(cpGpa, TRUE);
 		}
-		//刷新TLB(all-context覆盖两套EPT; VMFUNC自带的失效不覆盖root侧)
+		//刷新TLB(all-context覆盖两套EPT)
 		EptInveptCurrent();
 		//布防标记: rsn=24=R=1形态 / rsn=25=读透明形态(R=0+MTF)
 		FlRingPush('S', cpuHook, bHide ? 25 : 24, orginalPagePFN, codePagePFN,
 			g_vcpu[cpuHook].EptpHooked.ALL);
 		return;
 	}
-	//==== violation方案(fallback: 无VMFUNC/无hooked EPT/标记自测FAIL的核) ====
+	//==== violation方案(fallback: 无hooked EPT/标记自测FAIL的核) ====
 	//相当于有了GPA 要获取HPA
 	ULONG64 oPFN = orginalPagePFN << 12;
 	ULONG64 cPFN = codePagePFN << 12;
@@ -1480,15 +1495,15 @@ PEPT_PDE_2M EptGetPde2B(PEPT_DATA ept, ULONG64 PFN)
 {
 
 	//PML4 9 9 9 9 12
-	ULONG pml4Index = (PFN >> 39) & 0x1FF;
+	ULONG pml4Index = (ULONG)((PFN >> 39) & 0x1FF);
 	if (pml4Index > 0)
 	{
 		return NULL;
 	}
 	//pdpteINDEX
-	ULONG pdpteIndex = (PFN >> 30) & 0x1FF;
+	ULONG pdpteIndex = (ULONG)((PFN >> 30) & 0x1FF);
 	//PDE
-	ULONG pdeindex = (PFN >> 21) & 0x1FF;
+	ULONG pdeindex = (ULONG)((PFN >> 21) & 0x1FF);
 	//显式EPT_DATA(双EPT)——恒等区(pml4[0])内直接索引目标表的pde数组
 	return &(ept->pde[pdpteIndex][pdeindex]);
 }
@@ -1502,8 +1517,6 @@ PEPT_PDE_2M EptGetPde2B(PEPT_DATA ept, ULONG64 PFN)
 static PVOID s_splitRaw[GEPT_SPLIT_PTE_MAX];  //拆分pte页raw指针(释放用)
 static PVOID s_splitVa[GEPT_SPLIT_PTE_MAX];   //对齐后VA(隐蔽对象)
 static volatile LONG s_splitCount = 0;
-static PVOID s_hideZeroPage = NULL;   //共享零页(改译目标)
-static ULONG64 s_hideZeroPFN = 0;
 
 BOOLEAN EptPdeToPte(PEPT_PDE_2M pde2M)
 {
@@ -1579,7 +1592,7 @@ PEPT_PTE EptGetPte(PEPT_DATA ept, ULONG64 PFN)
 	//获取PTE 9 9 9 9 12
 	//ptt[index]
 	//PFN = PFN << 12;
-	ULONG pteIndex = ((PFN >> 12) & 0x1FF);
+	ULONG pteIndex = (ULONG)((PFN >> 12) & 0x1FF);
 	//ptt[pteIndex]----》pte
 	PHYSICAL_ADDRESS pttPhAddress = { 0 };
 	pttPhAddress.QuadPart = (pde->fileds.physicalAddr) * PAGE_SIZE;
@@ -1594,7 +1607,7 @@ PEPT_PTE EptGetPte(PEPT_DATA ept, ULONG64 PFN)
 //签名扫描只见零。DMA绕过EPT=残留
 
 //CodePage物理隐蔽(物理diff扫描消迹): 隐蔽CodePage自身GPA的恒等
-//PTE(扫描路径), hook执行走目标页GPA的remap PTE不受影响。仅VMFUNC
+//PTE(扫描路径), hook执行走目标页GPA的remap PTE不受影响。仅双EPT
 //核(fallback核取指走clean表恒等PTE, 隐蔽即崩)。恢复=Remove释放
 //前调用(PFN复用后残留隐蔽=新拥有者读零损坏)。所在2M页未拆分时
 //先拆(exit上下文arena切槽安全)
@@ -1704,7 +1717,6 @@ VOID EptHideFrameworkPages(ULONG cpuNumber)
 		EptHideVaRange(clean, hooked, g_vcpu[c].VMCS, PAGE_SIZE);
 		EptHideVaRange(clean, hooked, g_vcpu[c].VMMStack, PAGE_SIZE * 6);
 		EptHideVaRange(clean, hooked, g_vcpu[c].MsrBitMap, PAGE_SIZE);
-		EptHideVaRange(clean, hooked, g_vcpu[c].VmfuncEptpList, PAGE_SIZE);
 		EptHideVaRange(clean, hooked, g_vcpu[c].IoBitmaps, PAGE_SIZE * 2);
 		EptHideVaRange(clean, hooked, g_vcpu[c].PeptData, sizeof(EPT_DATA));
 		EptHideVaRange(clean, hooked, g_vcpu[c].PeptDataHooked, sizeof(EPT_DATA));
@@ -1732,7 +1744,7 @@ VOID EptHideFrameworkPages(ULONG cpuNumber)
 		cpuNumber, (ULONG)s_splitCount);
 }
 
-//释放全部拆分pte页(vmx_off后/回滚调用, 幂等)
+//释放全部拆分pte页(vmx_off后/回滚调用, 幂等; 清零后释放=取证反制)
 VOID EptFreeSplitPtes(VOID)
 {
 	LONG n = s_splitCount;
@@ -1744,6 +1756,7 @@ VOID EptFreeSplitPtes(VOID)
 	{
 		if (s_splitRaw[i] != NULL)
 		{
+			RtlZeroMemory(s_splitRaw[i], PAGE_SIZE);
 			ExFreePool(s_splitRaw[i]);
 			s_splitRaw[i] = NULL;
 		}
@@ -1754,6 +1767,7 @@ VOID EptFreeSplitPtes(VOID)
 	{
 		if (s_splitArenaBlock[b] != NULL)
 		{
+			RtlZeroMemory(s_splitArenaBlock[b], PAGE_SIZE * 512);
 			MmFreeContiguousMemory(s_splitArenaBlock[b]);
 			s_splitArenaBlock[b] = NULL;
 		}

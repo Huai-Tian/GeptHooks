@@ -32,7 +32,5 @@ BOOLEAN ClkTryEmulate(PGUEST_REGS GuestRegs, ULONG64 guestRip,
 BOOLEAN ClkIoTryEmulate(PGUEST_REGS GuestRegs, ULONG64 exitQual);
 //MTF(37)路径: flicker回捕(重封堵)。TRUE=已处置
 BOOLEAN ClkMtfFinish(VOID);
-//demo自检: guest态读计数器(布防后=仿真路径)。FALSE=该时钟未布防
-BOOLEAN ClkDemoRead(ULONG idx, ULONG64* Val);
 
 #endif // CLOCK_H

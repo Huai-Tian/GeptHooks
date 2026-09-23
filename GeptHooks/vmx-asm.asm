@@ -37,6 +37,7 @@ ENDM
 EXTERN	 VmxExitHandler:PROC
 EXTERN	 VmxResumeFailedEntry:PROC
 EXTERN	 VmxTscCompensate:PROC    ;TSC补偿(exit驻留时长扣除)
+EXTERN	 VmxRootFaultPark:PROC    ;root异常/NMI park(v1.11a私有Host IDT)
 .CODE
 VmxVmexitHandler PROC
 	HVM_SAVE_ALL_NOSEGREGS
@@ -110,6 +111,37 @@ VmxLoadIdtr PROC
     lidt fword ptr [rcx]
     ret
 VmxLoadIdtr ENDP
+
+;root异常/NMI统一入口(v1.11a私有Host IDT门目标): 256门全指向此stub。
+;到达即=劫持向量被触发(攻击或root bug), 保全上下文交C侧park。
+;寄存器保存序=HVM_SAVE_ALL_NOSEGREGS逆压(GUEST_REGS布局), 但帧顶
+;多一个errcode槽: [rsp]=rax...[rsp+78h]=r15, [rsp+80h]=errcode
+;(无errcode向量由stub预压0), [rsp+88h]=故障RIP
+VmxRootExceptStub PROC
+    push 0                  ;伪errcode占位(无errcode向量统一布局)
+    push r15
+    push r14
+    push r13
+    push r12
+    push r11
+    push r10
+    push r9
+    push r8
+    push rdi
+    push rsi
+    push rbp
+    push rbp
+    push rbx
+    push rdx
+    push rcx
+    push rax
+    mov rcx, 0FFFFF00000000000h  ;rsn=0x1000标记(root异常事件)
+    mov rdx, [rsp+80h]      ;errcode(或伪0)
+    mov r8, [rsp+88h]       ;故障RIP
+    mov r9, [rsp+90h]       ;故障CS|标志(取证)
+    call VmxRootFaultPark   ;noreturn
+    hlt                     ;不可达(park不返回)
+VmxRootExceptStub ENDP
 VmxInvd PROC
 invd
 ret

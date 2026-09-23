@@ -3,7 +3,7 @@
 #define PAGEHOOK_H
 #include<ntifs.h>
 
-NTSTATUS PHHook(PVOID pFun, PVOID pHook, ULONG hideRead);
+NTSTATUS PHHook(PVOID pFun,PVOID pHook,ULONG hideRead);
 
 #pragma pack(push,1)
 typedef struct _JMP_OPCODE64
@@ -13,7 +13,7 @@ typedef struct _JMP_OPCODE64
 	ULONG movOp;
 	ULONG jmpAddressHigh;
 	UCHAR retOp;
-}JMP_OPCODE64, * PJMP_OPCODE64;
+}JMP_OPCODE64,*PJMP_OPCODE64;
 #pragma pack(pop)
 
 typedef struct _PAGE_HOOK_ENTRY
@@ -25,17 +25,17 @@ typedef struct _PAGE_HOOK_ENTRY
 	LIST_ENTRY link;
 	PVOID CodePagePFN;//copy函数所在页的物理地址
 	ULONG HideRead;//1=该页按读透明布防(EptExitHandler的MTF路径判据)
-}PAGE_HOOK_ENTRY, * PPAGE_HOOK_ENTRY;
+}PAGE_HOOK_ENTRY,*PPAGE_HOOK_ENTRY;
 
 typedef struct _HOOK_CONTEXT
 {
 	ULONG64 OriginalPagePFN;
 	ULONG64 CodePagePFN;
 	ULONG64 HideRead;
-}HOOK_CONTEXT, * PHOOK_CONTEXT;
+}HOOK_CONTEXT,*PHOOK_CONTEXT;
 
-void PHInitJmpCode(PJMP_OPCODE64 jmpCode, ULONG64 jmpTo);
-ULONG PHGetHookLen(ULONG64 codeAddr, ULONG codeSize, BOOLEAN is64);
+void PHInitJmpCode(PJMP_OPCODE64 jmpCode,ULONG64 jmpTo);
+ULONG PHGetHookLen(ULONG64 codeAddr,ULONG codeSize,BOOLEAN is64);
 PPAGE_HOOK_ENTRY PHGetHookEntryPage(PVOID funAddr);
 PPAGE_HOOK_ENTRY PHGetHookEntryPageBy(ULONG64 gpa);
 VOID PHHookCallBackDpc(_In_ struct _KDPC* Dpc, _In_opt_ PVOID DeferredContext, _In_opt_ PVOID SystemArgument1, _In_opt_ PVOID SystemArgument2);

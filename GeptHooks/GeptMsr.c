@@ -33,7 +33,7 @@ typedef struct _GEPT_MSR_ENTRY
 	PVOID Context;
 	GEPT_MSR_READ_CB OnRead;    //NULL=读位不置(直通)
 	GEPT_MSR_WRITE_CB OnWrite;  //NULL=写位不置(直通)
-} GEPT_MSR_ENTRY, * PGEPT_MSR_ENTRY;
+} GEPT_MSR_ENTRY, *PGEPT_MSR_ENTRY;
 
 static GEPT_MSR_ENTRY s_msr[GEPT_MSR_MAX];
 static KSPIN_LOCK s_msrLock = { 0 };

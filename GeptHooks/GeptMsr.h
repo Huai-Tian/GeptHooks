@@ -29,9 +29,9 @@
 //====================================================================
 
 //读回调: 返回值=rdmsr可见值(伪造)。需要真值→GeptMsrReadReal
-typedef ULONG64(*GEPT_MSR_READ_CB)(PVOID Context, ULONG32 Msr);
+typedef ULONG64 (*GEPT_MSR_READ_CB)(PVOID Context, ULONG32 Msr);
 //写回调: 返回TRUE=放行代写(监控语义), FALSE=静默丢弃(拦截语义)
-typedef BOOLEAN(*GEPT_MSR_WRITE_CB)(PVOID Context, ULONG32 Msr, ULONG64 Value);
+typedef BOOLEAN (*GEPT_MSR_WRITE_CB)(PVOID Context, ULONG32 Msr, ULONG64 Value);
 
 typedef struct _GEPT_MSR_HOOK
 {
@@ -39,7 +39,7 @@ typedef struct _GEPT_MSR_HOOK
 	PVOID Context;             //用户上下文(原样传给回调)
 	GEPT_MSR_READ_CB OnRead;   //NULL=读不拦截(位图读位不置)
 	GEPT_MSR_WRITE_CB OnWrite; //NULL=写不拦截(位图写位不置)
-} GEPT_MSR_HOOK, * PGEPT_MSR_HOOK;
+} GEPT_MSR_HOOK, *PGEPT_MSR_HOOK;
 
 //安装(PASSIVE_LEVEL): 全核位图root直写(vmcall)+核掩码自检(任一
 //in-guest核未置位=当场撤销——位图失效=guest内rdmsr直接#GP蓝屏)。

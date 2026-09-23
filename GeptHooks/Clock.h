@@ -1,36 +1,36 @@
-#pragma once
+﻿#pragma once
 #ifndef CLOCK_H
 #define CLOCK_H
 #include<ntifs.h>
 #include"common.h"
 
-//guest�ɶ�MMIOʱ������(����/У׼���, ���������Ĺ���״̬)
+//guest可读MMIO时钟描述(发现/校准结果, 布防与仿真的共享状态)
 typedef struct _GEPT_CLK
 {
-	BOOLEAN Armed;       //����+У��+У׼ͨ��(����Ŀ��)
-	ULONG64 Gpa;         //ʱ��ҳ������ַ(4K����)
-	PUCHAR  RootVA;      //root��IoSpaceӳ��(ֱ����ֵ; guest̬����=����)
-	LONG64  Ratio;       //��TSC/��clk(rdtsc�бƱ궨, ��������ϵ��)
-	USHORT  CtrOff;      //������ҳ��ƫ��(HPET=0xF0, PM_TMR=0)
-	UCHAR   CtrSize;     //�����������ֽ�(HPET 8/4, PM_TMR 4)
-	ULONG64 CtrMask;     //������ģ��(32λHPET/24λPM_TMR)
-} GEPT_CLK, * PGEPT_CLK;
+	BOOLEAN Armed;       //发现+校验+校准通过(布防目标)
+	ULONG64 Gpa;         //时钟页物理地址(4K对齐)
+	PUCHAR  RootVA;      //root侧IoSpace映射(直读真值; guest态访问=陷阱)
+	LONG64  Ratio;       //ΔTSC/Δclk(rdtsc夹逼标定, 补偿换算系数)
+	USHORT  CtrOff;      //计数器页内偏移(HPET=0xF0, PM_TMR=0)
+	UCHAR   CtrSize;     //计数器宽度字节(HPET 8/4, PM_TMR 4)
+	ULONG64 CtrMask;     //计数器模掩(32位HPET/24位PM_TMR)
+} GEPT_CLK, *PGEPT_CLK;
 
-//����(RSDP����ɨ��)+У׼+��˲���(VmxStartAllCpusĩβ, PASSIVE)
+//发现(RSDP物理扫描)+校准+逐核布防(VmxStartAllCpus末尾, PASSIVE)
 VOID ClkInitAll(VOID);
-//���IoSpaceӳ��(VmxShutdownAllCpus, VT�ѹغ�)
+//解除IoSpace映射(VmxShutdownAllCpus, VT已关后)
 VOID ClkShutdown(VOID);
-//vmcall(GEPT_VMCALL_CLKARM)��root��: ��ǰ��������ͼʱ��ҳ
-//��2M+��RWX+invept+�˿�ʱ��I/Oλ��λ
+//vmcall(GEPT_VMCALL_CLKARM)的root侧: 当前核两套视图时钟页
+//拆2M+清RWX+invept+端口时钟I/O位置位
 VOID ClkArmCpu(VOID);
-//EPT violation·��: ʱ��ҳ�ô���档TRUE=�Ѵ���(RIP/RSP��д)
+//EPT violation路径: 时钟页访存仿真。TRUE=已处置(RIP/RSP已写)
 BOOLEAN ClkTryEmulate(PGUEST_REGS GuestRegs, ULONG64 guestRip,
 	ULONG64 guestRsp, ULONG64 gpa);
-//exit(30)·��(VmxExitHandler����): �˿�ʱ��(PM_TMR SystemIO��)
-//���档TRUE=�Ѵ���(��ͨ��RIP�ƽ�); FALSE=��ָ��flicker(���ƽ�
-//RIP��ִ��, MTF�ز�����λ)
+//exit(30)路径(VmxExitHandler调用): 端口时钟(PM_TMR SystemIO型)
+//仿真。TRUE=已处置(走通用RIP推进); FALSE=串指令flicker(不推进
+//RIP重执行, MTF回捕重置位)
 BOOLEAN ClkIoTryEmulate(PGUEST_REGS GuestRegs, ULONG64 exitQual);
-//MTF(37)·��: flicker�ز�(�ط��)��TRUE=�Ѵ���
+//MTF(37)路径: flicker回捕(重封堵)。TRUE=已处置
 BOOLEAN ClkMtfFinish(VOID);
 
 #endif // CLOCK_H

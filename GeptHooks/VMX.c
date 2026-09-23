@@ -29,17 +29,21 @@ PVCPU VmxGetCurrentVcpu(ULONG cpuNumber)
 int VMXInitCpuAlloc(ULONG cpuNumber)
 {
 	PHYSICAL_ADDRESS phys = { 0 };
-	phys.QuadPart = MAXULONG64;
+	//框架页恒限低区512GB内(EPT恒等区=WB快路径; 超限=自检[5]拒绝vmlaunch)
+	phys.QuadPart = 0x7FFFFFFFFF;
 	PVMX_VMCS pvmxon = (PVMX_VMCS)MmAllocateContiguousMemory(sizeof(VMX_VMCS), phys);
 	PVMX_VMCS pvmcs = (PVMX_VMCS)MmAllocateContiguousMemory(sizeof(VMX_VMCS), phys);
 	PVOID MsrBitMap = MmAllocateContiguousMemory(PAGE_SIZE, phys);
 	PVOID pvmmStack = MmAllocateContiguousMemory(PAGE_SIZE * 6, phys);
 	//I/O位图8KB连续块(A@+0, B@+4K; 全零=全端口直通)
 	PVOID pIoBitmaps = MmAllocateContiguousMemory(PAGE_SIZE * 2, phys);
+	//私有Host IDT页(v1.11a: 256门×16B, root异常/NMI劫持面封堵)
+	PVOID pRootIdt = MmAllocateContiguousMemory(PAGE_SIZE, phys);
 	if (pvmmStack == NULL || MsrBitMap == NULL || pvmxon == NULL || pvmcs == NULL
-		|| pIoBitmaps == NULL)
+		|| pIoBitmaps == NULL || pRootIdt == NULL)
 	{
 		//释放已成功的部分, 调用方负责清理
+		if (pRootIdt) MmFreeContiguousMemory(pRootIdt);
 		if (pIoBitmaps) MmFreeContiguousMemory(pIoBitmaps);
 		if (pvmmStack) MmFreeContiguousMemory(pvmmStack);
 		if (MsrBitMap) MmFreeContiguousMemory(MsrBitMap);
@@ -49,6 +53,7 @@ int VMXInitCpuAlloc(ULONG cpuNumber)
 	}
 	//I/O位图清零(全零=不拦截任何端口直通)
 	RtlZeroMemory(pIoBitmaps, PAGE_SIZE * 2);
+	RtlZeroMemory(pRootIdt, PAGE_SIZE);
 	RtlZeroMemory(pvmxon, sizeof(VMX_VMCS));
 	RtlZeroMemory(pvmcs, sizeof(VMX_VMCS));
 	RtlZeroMemory(pvmmStack, PAGE_SIZE * 6);
@@ -62,6 +67,7 @@ int VMXInitCpuAlloc(ULONG cpuNumber)
 	g_vcpu[cpuNumber].VMCS = pvmcs;
 	g_vcpu[cpuNumber].MsrBitMap = MsrBitMap;
 	g_vcpu[cpuNumber].IoBitmaps = pIoBitmaps;
+	g_vcpu[cpuNumber].RootIdt = pRootIdt;
 	g_vcpu[cpuNumber].bInGuest = 0;
 	g_vcpu[cpuNumber].bLaunchFailed = 0;
 	return 0;
@@ -288,6 +294,13 @@ void VmxFreeCpuResources(ULONG cpuNumber)
 		VmxFreeZero(g_vcpu[cpuNumber].IoBitmaps, PAGE_SIZE * 2);
 		MmFreeContiguousMemory(g_vcpu[cpuNumber].IoBitmaps);
 		g_vcpu[cpuNumber].IoBitmaps = NULL;
+	}
+	//私有Host IDT页(v1.11a; 清零后释放=取证反制)
+	if (g_vcpu[cpuNumber].RootIdt)
+	{
+		VmxFreeZero(g_vcpu[cpuNumber].RootIdt, PAGE_SIZE);
+		MmFreeContiguousMemory(g_vcpu[cpuNumber].RootIdt);
+		g_vcpu[cpuNumber].RootIdt = NULL;
 	}
 	//释放>512GB动态建立的pdpt页(必须用raw指针: HighPdptVa是4KB对齐后的
 	//地址, 不在pool块起始处, 直接ExFreePool会池损坏)
@@ -685,24 +698,37 @@ VOID VmxShutdownAllCpus(VOID)
 	FlShutdown();
 }
 
-//vmx_off回真机前还原GDTR/IDTR limit: VM-exit无条件把两limit压成
-//0xFFFF(host-state区只有base无limit), 残留=真机sgdt/sidt读到异常值。
-//必须在vmx_off之前调用(此后vmread非法)。描述符: WORD limit@+0,
-//QWORD base@+2(10字节)
+//park/vmx_off前恢复OS IDT(v1.11b判例修复): exit上下文当前IDTR=
+//HOST_IDTR_BASE(私有页)——sidt式GetIdtBase()读到的是私有页而非OS IDT
+//(v1.10前host==OS巧合成立, 私有化后broken)。OS基址/limit必须取GUEST_*
+//字段(guest=OS本身)。必须在vmx_off之前调用(此后vmread非法)
+static void VmxRestoreOsIdtr(void)
+{
+	UCHAR dtr[10];
+	ULONG64 lim = 0, base = 0;
+	__vmx_vmread(GUEST_IDTR_LIMIT, &lim);
+	__vmx_vmread(GUEST_IDTR_BASE, &base);
+	*(USHORT*)dtr = (USHORT)lim;
+	*(ULONG64*)(dtr + 2) = base;
+	VmxLoadIdtr(dtr);
+}
+
+//vmx_off回真机前还原GDTR/IDTR: VM-exit无条件把两limit压成0xFFFF
+//(host-state区只有base无limit), 残留=真机sgdt/sidt读到异常值+IDTR
+//指私有页。基址/limit全取GUEST_*字段(判例见VmxRestoreOsIdtr注释)。
+//必须在vmx_off之前调用(此后vmread非法)
 static void VmxRestoreDtrLimits(void)
 {
 	UCHAR dtr[10];
-	ULONG64 lim = 0;
+	ULONG64 lim = 0, base = 0;
 	//GDTR
 	__vmx_vmread(GUEST_GDTR_LIMIT, &lim);
+	__vmx_vmread(GUEST_GDTR_BASE, &base);
 	*(USHORT*)dtr = (USHORT)lim;
-	*(ULONG64*)(dtr + 2) = GetGdtBase();
+	*(ULONG64*)(dtr + 2) = base;
 	VmxLoadGdtr(dtr);
 	//IDTR
-	__vmx_vmread(GUEST_IDTR_LIMIT, &lim);
-	*(USHORT*)dtr = (USHORT)lim;
-	*(ULONG64*)(dtr + 2) = GetIdtBase();
-	VmxLoadIdtr(dtr);
+	VmxRestoreOsIdtr();
 }
 
 void VmxCpuidHandler(PGUEST_REGS GuestRegs)
@@ -1660,6 +1686,9 @@ void VmxTripleFaultPark(void)
 		}
 		g_vcpu[cpu].PendingIntrCount = 0;
 	}
+	//恢复OS IDT(v1.11b判例: exit上下文IDTR=私有页——vmx_off后的
+	//sti+hlt窗口要正常服务中断, 必须先指回OS IDT)
+	VmxRestoreOsIdtr();
 	//脱离VMX(exit上下文, host状态合法)
 	EptInveptBothViews();
 	__vmx_off();
@@ -1673,6 +1702,73 @@ void VmxTripleFaultPark(void)
 	InterlockedOr(&g_geptParkedMask, (LONG)(1UL << (cpu & 31)));
 	//park本体(asm, 永不返回): sti+hlt自旋持续服务中断, 切断级联冻结
 	CmTripleFaultPark();
+}
+
+//root异常/NMI park(v1.11a私有Host IDT, 永不返回): 256门全指VmxRootExceptStub
+//→此函数。语义=可用性换安全: root窗口内异常/NMI不再跑OS处理程序
+//(guest可改的门向量=root特权劫持向量, SDM 30.5.2: exit加载HOST_IDTR_
+//BASE且limit压0xFFFF), 改为park本核+黑匣子留痕——每次到达都是该修的
+//bug或一次攻击, 都该被看见。清债序复用VmxTripleFaultPark骨架
+//(rsn=0x1000=异常标记; b=GUEST_REGS帧首地址即r15, a=errcode, c=故障RIP)
+void VmxRootFaultPark(ULONG64 rsn, ULONG64 errcode, ULONG64 faultRip,
+	ULONG64 faultCs)
+{
+	ULONG cpu = KeGetCurrentProcessorNumber();
+	FlRingPush('I', cpu, 0x1000, errcode, faultRip, faultCs);
+	//恢复OS IDT(v1.11b判例: exit上下文GetIdtBase()=私有页, 须vmread
+	//GUEST_IDTR_BASE; vmx_off后的sti+hlt窗口要正常服务中断)
+	VmxRestoreOsIdtr();
+	//清in-service中断债(同VmxTripleFaultPark)
+	if (g_vcpu[cpu].PendingIntrCount > 0)
+	{
+		ULONG64 apicBase = __readmsr(0x1B);
+		if ((apicBase & 0xC00) == 0xC00)          //x2APIC
+		{
+			for (LONG pe = 0; pe < g_vcpu[cpu].PendingIntrCount; pe++)
+			{
+				__writemsr(0x80B, 0);             //EOI: 清一条in-service
+			}
+		}
+		g_vcpu[cpu].PendingIntrCount = 0;
+	}
+	//脱离VMX(exit上下文, host状态合法)
+	EptInveptBothViews();
+	__vmx_off();
+	ULONG64 cr4 = __readcr4();
+	cr4 &= ~0x2000;                               //清CR4.VMXE, 干净回真机
+	__writecr4(cr4);
+	g_vcpu[cpu].bVmxOn = 0;
+	g_vcpu[cpu].bInGuest = 0;
+	g_vcpu[cpu].bLaunchFailed = 1;                //卸载路径跳过本核vmcall
+	//park位掩码(卸载守卫): park核的VMM栈/park代码页/私有IDT页不能释放
+	InterlockedOr(&g_geptParkedMask, (LONG)(1UL << (cpu & 31)));
+	//park本体(asm, 永不返回)
+	CmTripleFaultPark();
+}
+
+//构建私有Host IDT(v1.11a): 256门×16B=4KB整页, 全指VmxRootExceptStub。
+//64位中断门格式: offLo16|sel16|IST5|type14(0x8E=中断门DPL0)|offHi32。
+//IST=0(不读TSS.IST=链B顺带封堵), DPL=0(root态CPL0可入)。门2=NMI
+//(pin bit3=0下root窗口内NMI经HOST IDT向量, Table 27-5)。页在
+//VMXInitCpuAlloc分配(连续物理, EPT隐蔽/自检[5]样本接入)
+static BOOLEAN VmxRootIdtBuild(ULONG cpuNumber)
+{
+	PVOID idt = g_vcpu[cpuNumber].RootIdt;
+	if (idt == NULL)
+	{
+		return FALSE;
+	}
+	USHORT cs = RegGetCs() & 0xFFF8;
+	for (ULONG v = 0; v < 256; v++)
+	{
+		PULONG64 gate = (PULONG64)((PUCHAR)idt + v * 16);
+		ULONG64 off = (ULONG64)(ULONG_PTR)VmxRootExceptStub;
+		gate[0] = (off & 0xFFFFULL)
+			| ((ULONG64)cs << 16)
+			| ((ULONG64)0x8E << 40);          //type=1110 DPL=0 P=1 IST=0
+		gate[1] = off >> 16;
+	}
+	return TRUE;
 }
 
 int VmxSetupVmcs(PVOID GuestRsp)
@@ -1756,7 +1852,24 @@ int VmxSetupVmcs(PVOID GuestRsp)
 	//IDT
 	__vmx_vmwrite(GUEST_IDTR_BASE, GetIdtBase());
 	__vmx_vmwrite(GUEST_IDTR_LIMIT, GetIdtLimit());
-	__vmx_vmwrite(HOST_IDTR_BASE, GetIdtBase());
+	//v1.11a私有Host IDT: HOST_IDTR_BASE指私有页(256门全指VmxRootExceptStub),
+	//root窗口内异常/NMI不再经guest可改的OS IDT门向量(劫持链A封堵;
+	//IST=0不读TSS=链B顺带封堵)。门构建失败回退OS IDT(可用性优先)
+	if (VmxRootIdtBuild(cpuNumber))
+	{
+		__vmx_vmwrite(HOST_IDTR_BASE, currentCpu->RootIdt);
+		ULONG64 idtrBack = 0;
+		__vmx_vmread(HOST_IDTR_BASE, &idtrBack);
+		FlLog("cpu%u 私有Host IDT: VA=%llX 门=256→stub(回读=%llX%s)",
+			cpuNumber, (ULONG64)(ULONG_PTR)currentCpu->RootIdt, idtrBack,
+			idtrBack == (ULONG64)(ULONG_PTR)currentCpu->RootIdt
+			? "" : " !回读不一致!");
+	}
+	else
+	{
+		__vmx_vmwrite(HOST_IDTR_BASE, GetIdtBase());
+		FlLog("cpu%u 私有Host IDT构建失败, 回退OS IDT(劫持面未封)", cpuNumber);
+	}
 	//guest rsp rip
 	__vmx_vmwrite(GUEST_RSP, GuestRsp);
 	//GUEST_RIP指向落地探针(自证VM-entry+EPT取指+exit+RIP推进+vmresume

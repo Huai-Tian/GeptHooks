@@ -17,12 +17,12 @@ typedef union _EPT_EPTP
 		ULONG64 physicalAddr : 40; //bits 51:12 PML4表物理地址
 		ULONG64	reseved2 : 12;
 	}fileds;
-}EPT_EPTP, * PEPT_EPTP;
+}EPT_EPTP,*PEPT_EPTP;
 
 typedef union _EPT_PML4
 {
 	ULONG64 ALL;
-	struct
+	struct 
 	{
 		ULONG64 present : 1;
 		ULONG64 write : 1;
@@ -33,7 +33,7 @@ typedef union _EPT_PML4
 		ULONG64	physicalAddr : 40;
 		ULONG64	reseved3 : 12;
 	}fileds;
-}EPT_PML4, * PEPT_PML4;
+}EPT_PML4,*PEPT_PML4;
 
 typedef union _EPT_PDPTE
 {
@@ -49,7 +49,7 @@ typedef union _EPT_PDPTE
 		ULONG64	physicalAddr : 40;
 		ULONG64	reseved3 : 12;
 	}fileds;
-}EPT_PDPTE, * PEPT_PDPTE;
+}EPT_PDPTE,*PEPT_PDPTE;
 typedef union _EPT_PDPTE_1G
 {
 	ULONG64 ALL;
@@ -80,20 +80,20 @@ typedef union _EPT_PDE
 		ULONG64	execute : 1;
 		ULONG64 reseved1 : 5;
 		ULONG64	accessd : 1;
-		ULONG64 reseved2 : 1;
+		ULONG64 reseved2 : 1;	
 		ULONG64 userModeExecute : 1;
 		ULONG64	reseved3 : 1;
 		ULONG64	physicalAddr : 36;
 		ULONG64	reseved4 : 16;
 	}fileds;
-}EPT_PDE, * PEPT_PDE;
+}EPT_PDE,*PEPT_PDE;
 
 typedef union _EPT_PDE_2M
 {
 	ULONG64 ALL;
 	struct
 	{
-		ULONG64 present : 1;
+		ULONG64 present :1;
 		ULONG64 write : 1;
 		ULONG64	execute : 1;
 		ULONG64 memoryType : 3;
@@ -124,14 +124,14 @@ typedef union _EPT_PTE
 		ULONG64	physicalAddr : 40;
 		ULONG64	reseved3 : 12;
 	}fileds;
-}EPT_PTE, * PEPT_PTE;
+}EPT_PTE,*PEPT_PTE;
 
 typedef struct _EPT_DATA
 {
 	EPT_PML4 pml4[EPT_PREALLOC_PAGES];
 	EPT_PDPTE pdpte[EPT_PREALLOC_PAGES];
 	EPT_PDE_2M pde[EPT_PREALLOC_PAGES][EPT_PREALLOC_PAGES];
-}EPT_DATA, * PEPT_DATA;
+}EPT_DATA,*PEPT_DATA;
 
 typedef union _EPT_EXITDATA
 {
@@ -162,13 +162,13 @@ ULONG EptVerifyTables(ULONG cpuNumber, ULONG64 guestRspVa);
 void EptExitHandler(PGUEST_REGS GuestRegs);
 //hideRead: 1=hooked视图hook页R=0(exec-only)——读/写violation→切clean+MTF
 //单步透出原始字节(读透明)。需CPU exec-only支持(g_bEptExecOnly), 否则回退R=1
-void EptSetHook(ULONG64 orginalPagePFN, ULONG64 codePagePFN, ULONG64 hideRead);
+void EptSetHook(ULONG64 orginalPagePFN,ULONG64 codePagePFN,ULONG64 hideRead);
 //walker带显式PEPT_DATA参数(须明确目标视图): clean=g_vcpu[n].PeptData,
 //hooked=g_vcpu[n].PeptDataHooked, 当前视图=EptGetActiveData()
 PEPT_PDE_2M EptGetPde2B(PEPT_DATA ept, ULONG64 PFN);
 BOOLEAN EptPdeToPte(PEPT_PDE_2M pde2M);
 PEPT_PTE EptGetPte(PEPT_DATA ept, ULONG64 PFN);
-void EptUpdatePageAcess(PEPT_DATA ept, ULONG64 gpa, UCHAR acess, PPAGE_HOOK_ENTRY pageEntry);
+void EptUpdatePageAcess(PEPT_DATA ept, ULONG64 gpa,UCHAR acess,PPAGE_HOOK_ENTRY pageEntry);
 //本核当前视图的EPT(vmread EPT_POINTER比对, 仅VMX root上下文可调)
 PEPT_DATA EptGetActiveData(VOID);
 VOID EptInveptCurrent(VOID);   //统一invept入口(能力探测+EPTP填充+VMfail留痕)

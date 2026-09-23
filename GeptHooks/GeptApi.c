@@ -26,7 +26,7 @@ typedef struct _GEPT_API_ENTRY
 	PVOID ReplayVA;       //LDE重定位跳板(副本prologue+尾jmp回; fallback的GeptCallOriginal+replay自测共用)
 	ULONG ReplayLen;      //重定位覆盖的字节数(=PHHook跳转覆盖长度, 两者同源同长)
 	volatile LONG Removed;//1=已移除(Enumerate跳过; 内存延迟到卸载)
-} GEPT_API_ENTRY, * PGEPT_API_ENTRY;
+} GEPT_API_ENTRY, *PGEPT_API_ENTRY;
 
 static LIST_ENTRY s_apiList = { 0 };       //live+removed条目(卸载统一释放)
 static KSPIN_LOCK s_apiLock = { 0 };       //Install/Remove/Enumerate互斥(均PASSIVE)
@@ -36,7 +36,7 @@ static volatile LONG s_apiLockInit = 0;
 //(NonPagedPoolNx才是不可执行变体)
 #define GEPT_TRAMP_SLOT  64
 #define GEPT_TRAMP_PER_PAGE (PAGE_SIZE / GEPT_TRAMP_SLOT)
-static PVOID s_trampPool[32];    //池页(上限32页=2048个hook, demo足够)
+static PVOID s_trampPool[128];   //池页(懒分配, 上限128页=8192个hook; BSS仅1KB)
 static volatile LONG s_trampUsed = 0;
 static KIRQL s_apiOldIrql = 0;
 
@@ -143,7 +143,7 @@ static PVOID GeptAllocTrampoline(PGEPT_API_ENTRY entry)
 {
 	if (s_trampUsed >= (LONG)(sizeof(s_trampPool) / sizeof(s_trampPool[0]) * GEPT_TRAMP_PER_PAGE))
 	{
-		return NULL;    //2048个hook上限
+		return NULL;    //8192个hook上限(池页懒分配, 实际占用=已装数量)
 	}
 	LONG slotIdx = InterlockedIncrement(&s_trampUsed) - 1;
 	ULONG pageIdx = (ULONG)(slotIdx / GEPT_TRAMP_PER_PAGE);

@@ -424,17 +424,18 @@ Debug 构建崩溃 → `MEMORY.DMP`（看门狗 0xDEADC0DE 或原生）→ 用 �
 ## 11. 调试工具（DbgTools/）
 
 > 路径：https://github.com/Huai-Tian/GeptHooks/tree/main/DbgTools
-> 状态：**建设中**（工具正随框架调试实践筛选与整理，将陆续上传）。
-
-规划/已含的工具族：
+> 索引与用法详见 DbgTools/README.md。
 
 | 工具 | 用途 |
 |---|---|
-| 黑匣子解析器（gept_bb_parse 系） | 从 MEMORY.DMP 提取黑匣子环（全局 seq 重组，免疫 DMP 物理散列），输出事件时间线 txt |
-| ntoskrnl 分析工具族（nt_*.py 系） | PE 解析（.pdata 边界+导出表+capstone 反汇编）：定位蓝屏地址落在哪个函数/调用链分析/NT 符号离线分析 |
-| 日志判读辅助 | 按 §7.2 tag 表语义把环事件翻译为人类可读时间线 |
+| `gept_bb_parse.ps1`（Windows 实机主力） | 深度解析 MEMORY.DMP：黑匣子（GEPTBB01/02）+ 事件环全局 seq 重组（免疫 DMP 物理散列）+ 行环重组 + bugcheck 头 + 崩溃时 CR3 取证 |
+| `gept_bb_parse.py`（沙箱/Linux） | 同类黑匣子解析（黑匣子段） |
+| `ntkit.py` | 离线分析 ntoskrnl.exe（须同构建）：`info` / `at <RVA>`（函数识别+反汇编窗口）/ `callers <RVA>` / `bugcheck <code>`（raise 站点）/ `branches <RVA>` |
+| `make_test_dmp.py` | 合成 DMP 回归测试（解析器改动的冒烟验证） |
 
-用法原则：崩溃 DMP → 黑匣子解析出环时间线 → 最后一条事件 = 死亡点附近 → 对照 §8/§2 找根因。**环是真相，文件日志的最后一行 ≠ 真实死亡点**（异步落盘滞后）。
+**维护契约（改环相关代码时）**：环事件 tag 语义在 `common.h` 环 tag 注释、两个解析器的 tag 表三处同步；黑匣子布局变更同步解析器偏移常量。
+
+用法原则：崩溃 DMP → 黑匣子解析出环时间线 → 最后一条事件 = 死亡点附近 → 对照 §8/§2 找根因；需 nt 符号级分析用 ntkit。**环是真相，文件日志的最后一行 ≠ 真实死亡点**（异步落盘滞后）。
 
 ---
 

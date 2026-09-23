@@ -427,3 +427,13 @@ FodyWeavers.xsd
 *.msix
 *.msm
 *.msp
+
+# ===== GeptHooks additions =====
+# Crash dumps: huge + contain FULL physical memory — never commit
+*.dmp
+*.DMP
+# Built driver binaries (catches copies outside Debug/Release dirs)
+*.sys
+# Framework runtime log + parser report (contain machine info)
+gept_log*.txt
+gept_bb*.txt

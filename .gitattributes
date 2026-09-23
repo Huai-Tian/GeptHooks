@@ -1,0 +1,4 @@
+*.c / *.h / *.asm / *.inf / *.sln / *.vcxproj(.filters) → text eol=crlf   # 内核源码: 任何平台/配置检出必为CRLF
+*.py / *.md → text                                                        # 工具文档: 仓库原生不强制
+*.ps1 → text eol=crlf                                                     # PS5.1兼容
+*.dmp / *.exe / *.sys / *.pdf → binary                                    # 二进制永不规范化

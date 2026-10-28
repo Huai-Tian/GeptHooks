@@ -785,8 +785,7 @@ void VmxTscCompensate(ULONG64 entryTsc, ULONG64 exitTsc)
 	ULONG64 offset = 0;
 	__vmx_vmread(TSC_OFFSET, &offset);
 	//+K: 采样点外的硬件exit/entry净泄漏(VmxTscCalibrateAll, 0=未校准)
-	offset -= (exitTsc - entryTsc) +
-		(ULONG64)g_vcpu[KeGetCurrentProcessorNumber()].TscCalibK;
+	offset -= (exitTsc - entryTsc);
 	__vmx_vmwrite(TSC_OFFSET, offset);
 }
 

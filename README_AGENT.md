@@ -126,7 +126,7 @@
 
 ### J. 时序与 TSC
 
-- **RL-50** TSC offsetting 只单调向负推（`VmxTscCompensate`：每次 exit 的 root 驻留时长 + 采样点外净泄漏 K 全部从 guest 可见 TSC 扣除）。K 来自 `VmxTscCalibrateAll` 的每核校准（guest 态 rdtsc 夹逼空 vmcall 采样）。不要引入任何"正向补偿"——过补 = 时间轴前跳 = 检测向量。
+- **RL-50** TSC 补偿只扣除**实测窗口**：`VmxTscCompensate` 仅减 (exitTsc-entryTsc)（asm 帧 SAVE_ALL 后 → vmresume 前的 root 驻留实测），**绝不追加任何窗外泄漏估算项（K）**。补偿只单调向负推；欠补（guest 略偏快）单调安全，**过补（扣除 > 实际驻留）= guest 可见时间跨 exit 倒退 = 单调性红线 = 系统级时序灾难**。 `[i7-6700HQ 判例: 旧 K 项(校准测 vmcall 全往返, 与 asm 窗口大量重叠, 且核间离散 1377-2762)每 exit 多扣一次已被窗口覆盖的成本 → 夹逼中位数为负(guest 时间倒退, 累计毫秒级) → 探针风暴剂量下 DWM 崩溃循环, 命令结束后仍自持]`
 - **RL-51** RDTSC/RDTSCP/RDMSR(0x10) 不开 exiting（procCtl bit12=0），靠硬件 TSC offsetting 自动加偏移——零 exit。exit case 16/51 仅作控制位异变的防御保留。
 
 ### K. 编码与构建（编译期就会咬人的）
@@ -155,7 +155,8 @@
 | "私有 Host IDT/CR3 是为了反检测" | host-state 字段 guest 架构上不可见，共享 OS IDT 零可观测差异 | 真实价值=exit 窗口内 NMI/异常/页表篡改竞态的**加固**（抗攻击，非反检测） |
 | "时钟页应该整页仿真" | hal 热读是 GPR-MOV 族 | 快路径只仿真计数器读（零额外 exit），慢路径影子 flicker（RL-28/30/31），自然流量=0 |
 | "看门狗蓝屏 0xDEADC0DE 是恶意行为" | Debug 构建专属：日志线程 30s 冻结时主动 bugcheck 抓 DMP | 这是调试设施，Release 构建整体不编译（§10.1） |
-| "TSC 校准探针是死代码可删" | `TscCalibK` 被 `VmxTscCompensate` 消费 | 功能件（每 exit 补偿的一部分），非探针 |
+| "TSC 校准探针是死代码可删" | `TscCalibK` 现为纯诊断值（修复判例后不并入补偿），但校准循环仍是定位泄漏量级的观测件 | 保留校准作诊断，勿并入补偿（RL-50） |
+| "K=0 是欠优化，把校准泄漏加回补偿更精确" | K（vmcall 全往返测量）与 asm 补偿窗口（SAVE_ALL→vmresume）大量重叠——加扣 = 每 exit 过补 → guest 时间跨 exit 倒退 → 单调性破（DWM 崩溃循环判例） | 只扣实测窗口，宁欠勿过（RL-50） |
 | "EPT 自检/回扫自检失败应该警告后继续" | 带病上机 = 蓝屏在你不能调试的时机爆发 | FAIL → 放弃 vmlaunch / 拒绝安装 / 撤销安装（安全门语义） |
 
 ---
@@ -368,6 +369,7 @@ Debug 构建创建双自旋看门狗线程（纯 rdtsc 计时）：行环游标 
 | 0x1E @ ntoskrnl | hook 页与 VT 机器码同 4K 页，EPT 布防把 vmcall 返回路径卷进双视图互切 | CodePage/框架页布局分离（RL-18/19） |
 | 0x7E | demo 把 `L"NtClose"` 直接传 MmGetSystemRoutineAddress（需 PUNICODE_STRING） | API 用法判例（main.c 已正确） |
 | 卸载瞬间黑屏硬重启 | vmx_off 后 IDTR 仍指私有 Host IDT → 中断进私有门 → 递归 | RL-39（从 GUEST_IDTR_BASE 恢复） |
+| 探针风暴后 DWM 崩溃循环（命令结束仍自持） | K 项与补偿窗口重叠 → 每 exit 过补 → guest TSC 跨 exit 倒退（夹逼中位数为负，累计毫秒级） | RL-50（只扣实测窗口） |
 | GPU TDR 黑屏 | MSR 时钟位图拦截 → rdmsr 自旋环 exit 风暴 | RL-27 |
 | 编译崩 C2001/C2143 连锁 | .c/.h 无 BOM，cl 按 CP936 撕裂中文字符串 | RL-52 |
 | ml64 崩 | 混合行尾 / 非 GBK 字符 | RL-52 |
